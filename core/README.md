@@ -152,8 +152,17 @@ participate in the program.
 | `codec` | `stationid` — callsign + SSID | **done**, proven equivalent to the original `StationId` (one non-normative `strerror` off-by-one fixed) |
 | `codec` | `locator` — Maidenhead grid square | **done**, proven equivalent to the original `Locator` (empty-input now zeroes its output) |
 | **`codec`** | **layer complete** | frame, crc, packed6, rs, stationid, locator |
-| `modem` | — | not started |
+| `modem` | `modulate` — TX (4FSK 50/100 baud) | **in progress**, every sample proven bit-identical to ardopcf; 600-baud 4FSK and PSK/QAM pending |
+| `modem` | demodulate / sync / busy | not started |
 | `link` | — | not started |
+
+One temporary bridge: `modem/modulate` reaches the carrier-waveform templates
+(`int50BaudTwoToneLeaderTemplate` etc.) via `extern` declarations in
+`modem/templates.h`, whose definitions still live in the inherited
+`src/common/ardopSampleArrays.c`. Those are `const` generated data, so
+`check-pure` stays clean; relocating the generated file into `core/` is a
+tracked follow-up. It is the one place a core object currently links against a
+`src/` definition.
 
 ### A note on "these modules already qualify"
 
