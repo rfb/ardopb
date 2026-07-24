@@ -33,4 +33,7 @@ extern const short intFSK50bdCarTemplate[4][240];
 /** @brief 4FSK 100-baud carrier templates: 20 tones x 120 samples. */
 extern const short intFSK100bdCarTemplate[20][120];
 
+/** @brief 4FSK 600-baud carrier templates: 4 tones x 20 samples. */
+extern const short intFSK600bdCarTemplate[4][20];
+
 #endif /* ARDOP_MODEM_TEMPLATES_H_ */

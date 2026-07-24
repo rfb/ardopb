@@ -271,6 +271,181 @@ static void modulate_4fsk_data(ardop_mod *m, const uint8_t *encoded, size_t len,
 	}
 }
 
+/* 600-baud 4FSK: like the 50/100 path but width 2000, 20 samples/symbol, its
+ * own template, and no per-symbol sign inversion. Ported from Mod4FSK600Bd. */
+static void modulate_4fsk600_data(ardop_mod *m, const uint8_t *encoded,
+				  size_t len, uint8_t carriers)
+{
+	int data_bytes_per_car = (int)((len - 2) / carriers);
+	int samp_per_sym = ARDOP_MOD_SAMPLE_RATE / 600;  /* 20 */
+	int data_ptr = 2;
+
+	for (int b = 0; b < data_bytes_per_car; b++) {
+		uint8_t mask = 0xC0;
+		for (int k = 0; k < 4; k++) {
+			uint8_t sym = (uint8_t)((mask & encoded[data_ptr])
+						>> (2 * (3 - k)));
+			for (int n = 0; n < samp_per_sym; n++)
+				sample_sink(m, intFSK600bdCarTemplate[sym][n]);
+			mask = (uint8_t)(mask >> 2);
+		}
+		data_ptr++;
+	}
+}
+
+/* Soft-clip a summed PSK/QAM sample beyond +/-30000 with a sqrt taper. Ported
+ * from SoftClip; the clip-count diagnostic it kept is dropped (I/O-free core). */
+static int soft_clip(int input)
+{
+	if (input > 30000) {
+		double v = 30000 + 20 * sqrt((double)(input - 30000));
+		return (int)(v < 32700 ? v : 32700);
+	}
+	if (input < -30000) {
+		double v = -30000 - 20 * sqrt((double)(-(input + 30000)));
+		return (int)(v > -32700 ? v : -32700);
+	}
+	return input;
+}
+
+/*
+ * Phase/magnitude symbols for one carrier from its bytes. The low 3 bits are a
+ * differential phase (0..7 = 0..315 deg); bit 3 flags half magnitude. 4PSK
+ * steps the phase by 2 so it uses only even phases. Ported from
+ * Calc1CarPSKSymbols. Returns the number of symbols written.
+ */
+static int calc_psk_symbols(uint8_t *symbols, ardop_modulation mod,
+			    const uint8_t *src, int src_len)
+{
+	uint16_t databuf = 0;
+	int bits_buffered = 0;
+	int bits_per_symbol;
+	int sym_set = 1;
+
+	switch (mod) {
+	case ARDOP_MOD_4PSK: sym_set = 2; bits_per_symbol = 2; break;
+	case ARDOP_MOD_8PSK: bits_per_symbol = 3; break;
+	case ARDOP_MOD_16QAM: bits_per_symbol = 4; break;
+	default: return 0;
+	}
+
+	int symbol_count = src_len * 8 / bits_per_symbol;
+	for (int i = 0; i < symbol_count; i++) {
+		if (bits_buffered < bits_per_symbol) {
+			databuf = (uint16_t)(databuf
+				+ ((unsigned)*src++ << (8 - bits_buffered)));
+			bits_buffered += 8;
+		}
+		uint8_t raw = (uint8_t)(databuf >> (16 - bits_per_symbol));
+		databuf = (uint16_t)(databuf << bits_per_symbol);
+		bits_buffered -= bits_per_symbol;
+
+		if (i == 0)
+			symbols[i] = (uint8_t)((raw * sym_set) & 7);
+		else
+			symbols[i] = (uint8_t)((symbols[i - 1]
+					       + raw * sym_set) & 7);
+		symbols[i] = (uint8_t)(symbols[i] + (raw & 0x08));
+	}
+	return symbol_count;
+}
+
+/*
+ * Sum every carrier's template at each sample, scale, soft-clip, emit. Phases
+ * 4..7 are the negatives of 0..3; bit 3 halves the magnitude via a right shift.
+ * Carrier 4 (1500 Hz) is the single-carrier slot and is skipped by multi-carrier
+ * modes. Ported from PlayPSKSymbols.
+ */
+static void play_psk_symbols(ardop_mod *m, uint8_t symbols[8][462],
+			     int num_cars, int symbol_count, float scaling)
+{
+	const int samp_per_sym = 120;
+	int car_start = (num_cars == 1) ? 4 : (num_cars == 2) ? 3
+		      : (num_cars == 4) ? 2 : 0;
+
+	for (int sy = 0; sy < symbol_count; sy++) {
+		for (int n = 0; n < samp_per_sym; n++) {
+			int sample = 0;
+			int car_index = car_start;
+			for (int i = 0; i < num_cars; i++) {
+				uint8_t sym = symbols[i][sy];
+				int phase = sym & 0x07;
+				int shift = sym >> 3;
+				if (phase < 4)
+					sample += intPSK100bdCarTemplate
+						[car_index][phase][n] >> shift;
+				else
+					sample -= intPSK100bdCarTemplate
+						[car_index][phase - 4][n] >> shift;
+				car_index++;
+				if (car_index == 4)
+					car_index++;  /* skip 1500 Hz slot */
+			}
+			/* The reference scales in double: its scaling factor is
+			 * a float literal passed through a double parameter, so
+			 * the multiply happens in double precision. Doing it in
+			 * float drifts by 1 LSB on some carrier counts. */
+			sample = (int)((double)sample * (double)scaling);
+			sample_sink(m, (short)soft_clip(sample));
+		}
+	}
+}
+
+/* Empirical per-carrier scaling factors (crest-factor tuned). From ModPSK. */
+static float psk_scaling(uint8_t carriers, ardop_modulation mod)
+{
+	bool qam = (mod == ARDOP_MOD_16QAM);
+
+	switch (carriers) {
+	case 1: return 1.2f;
+	case 2: return qam ? 0.67f : 0.65f;
+	case 4: return 0.4f;
+	case 8: return qam ? 0.27f : 0.25f;
+	default: return 1.0f;
+	}
+}
+
+/*
+ * 4PSK / 8PSK / 16QAM over 1..8 carriers. A leading reference symbol (phase 0,
+ * full magnitude) sets the phase datum the differential data symbols are
+ * measured against. Ported from ModPSKDataAndPlay. Returns false if `encoded`
+ * is too short for the frame the spec describes.
+ */
+static bool modulate_psk(ardop_mod *m, const ardop_frame_spec *spec,
+			 const uint8_t *encoded, size_t len, uint16_t leader_ms)
+{
+	int num_car = spec->carriers;
+	int bytes_per_carrier = spec->data_bytes_per_carrier
+			      + spec->rs_bytes_per_carrier + 3;
+
+	if (2 + (size_t)num_car * (size_t)bytes_per_carrier > len)
+		return false;
+
+	int width = (num_car == 1) ? 200 : (num_car == 2) ? 500
+		  : (num_car == 4) ? 1000 : 2000;
+	init_filter(m, width, 1500);
+	send_leader_and_sync(m, encoded, leader_ms);
+
+	float scaling = psk_scaling(spec->carriers, spec->modulation);
+	uint8_t symbols[8][462] = {{0}};
+
+	/* One reference symbol on every carrier, before the data. */
+	for (int car = 0; car < num_car; car++)
+		symbols[car][0] = 0;
+	play_psk_symbols(m, symbols, num_car, 1, scaling);
+
+	int data_ptr = 2;
+	int symbol_count = 0;
+	for (int car = 0; car < num_car; car++) {
+		symbol_count = calc_psk_symbols(symbols[car], spec->modulation,
+						&encoded[data_ptr],
+						bytes_per_carrier);
+		data_ptr += bytes_per_carrier;
+	}
+	play_psk_symbols(m, symbols, num_car, symbol_count, scaling);
+	return true;
+}
+
 /* The trailer: 1 symbol plus one per 10 ms of trailer, of a fixed PSK template.
  * Ported from AddTrailer() (invoked by SoundFlush()). */
 static void add_trailer(ardop_mod *m, int trailer_ms)
@@ -293,12 +468,7 @@ bool ardop_mod_begin(ardop_mod *m, uint8_t frame_type, const uint8_t *encoded,
 		     size_t sample_cap)
 {
 	const ardop_frame_spec *spec = ardop_frame_spec_for(frame_type);
-	if (spec == NULL)
-		return false;
-	/* Only 4FSK at 50/100 baud so far. */
-	if (spec->modulation != ARDOP_MOD_4FSK || spec->baud == 600)
-		return false;
-	if (len < 2)
+	if (spec == NULL || len < 2)
 		return false;
 
 	m->frame = sample_buf;
@@ -307,11 +477,33 @@ bool ardop_mod_begin(ardop_mod *m, uint8_t frame_type, const uint8_t *encoded,
 	m->frame_pos = 0;
 	m->overflow = false;
 
-	init_filter(m, spec->baud == 50 ? 200 : 500, 1500);
-	send_leader_and_sync(m, encoded, leader_ms);
-	modulate_4fsk_data(m, encoded, len, spec->baud, spec->carriers);
-	add_trailer(m, TRAILER_MS_DEFAULT);
+	/* Each modulation sets up its own filter, then lays down leader and data;
+	 * the trailer is common. The filter bandwidth is chosen by baud for 4FSK
+	 * and by carrier count for PSK. */
+	switch (spec->modulation) {
+	case ARDOP_MOD_4FSK:
+		if (spec->baud == 600) {
+			init_filter(m, 2000, 1500);
+			send_leader_and_sync(m, encoded, leader_ms);
+			modulate_4fsk600_data(m, encoded, len, spec->carriers);
+		} else {
+			init_filter(m, spec->baud == 50 ? 200 : 500, 1500);
+			send_leader_and_sync(m, encoded, leader_ms);
+			modulate_4fsk_data(m, encoded, len, spec->baud,
+					   spec->carriers);
+		}
+		break;
+	case ARDOP_MOD_4PSK:
+	case ARDOP_MOD_8PSK:
+	case ARDOP_MOD_16QAM:
+		if (!modulate_psk(m, spec, encoded, len, leader_ms))
+			return false;
+		break;
+	default:
+		return false;
+	}
 
+	add_trailer(m, TRAILER_MS_DEFAULT);
 	return !m->overflow;
 }
 

@@ -152,7 +152,7 @@ participate in the program.
 | `codec` | `stationid` — callsign + SSID | **done**, proven equivalent to the original `StationId` (one non-normative `strerror` off-by-one fixed) |
 | `codec` | `locator` — Maidenhead grid square | **done**, proven equivalent to the original `Locator` (empty-input now zeroes its output) |
 | **`codec`** | **layer complete** | frame, crc, packed6, rs, stationid, locator |
-| `modem` | `modulate` — TX (4FSK 50/100 baud) | **in progress**, every sample proven bit-identical to ardopcf; 600-baud 4FSK and PSK/QAM pending |
+| `modem` | `modulate` — TX (all modulations) | **done**, every sample of the whole golden corpus (22 control + 108 data cases: 4FSK 50/100/600, 4PSK/8PSK/16QAM at 1–8 carriers) proven bit-identical to ardopcf |
 | `modem` | demodulate / sync / busy | not started |
 | `link` | — | not started |
 
