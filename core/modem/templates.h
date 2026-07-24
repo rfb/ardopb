@@ -11,12 +11,12 @@
  * another ARDOP station -- and they are generated data (from `CalcTemplates`),
  * not logic.
  *
- * TEMPORARY BRIDGE. The definitions still live in the inherited
- * `src/common/ardopSampleArrays.c`; this header only re-declares them so the
- * core modem can use them without including the 575-line `ARDOPC.h`. Relocating
- * the generated template data into `core/` is tracked as a follow-up (see
- * core/README.md). Because these are `extern const`, they contribute nothing to
- * the modem's own `.data`/`.bss`, so `make check-pure` stays clean.
+ * The definitions live in `templates.c` (relocated from the inherited
+ * `src/common/ardopSampleArrays.c`). The inherited tree still references these
+ * symbols by their original names via `ARDOPC.h`, so the names are unprefixed
+ * for now; they move behind the `ardop_` convention when the old tree retires.
+ * Being `extern const`, they contribute nothing to any translation unit's
+ * `.data`/`.bss`, so `make check-pure` stays clean.
  */
 
 #include <stdint.h>
@@ -30,8 +30,13 @@ extern const short intPSK100bdCarTemplate[9][4][120];
 /** @brief 4FSK 50-baud carrier templates: 4 tones x 240 samples. */
 extern const short intFSK50bdCarTemplate[4][240];
 
-/** @brief 4FSK 100-baud carrier templates: 20 tones x 120 samples. */
-extern const short intFSK100bdCarTemplate[20][120];
+/**
+ * @brief 4FSK 100-baud carrier templates: 4 tones x 120 samples.
+ *
+ * `ARDOPC.h` over-declares this `[20][120]`, but only four tones are defined and
+ * only four are ever used; the real extent is `[4][120]`.
+ */
+extern const short intFSK100bdCarTemplate[4][120];
 
 /** @brief 4FSK 600-baud carrier templates: 4 tones x 20 samples. */
 extern const short intFSK600bdCarTemplate[4][20];

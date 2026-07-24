@@ -1,6 +1,12 @@
 // These Templates are used to save lots of calculations when
 // generating samples. They are pre-calculated (by Calctemplates.c)
-// so they can be stored in ROM on embedded platforms
+// so they can be stored in ROM on embedded platforms.
+//
+// Relocated from src/common/ardopSampleArrays.c into core/. The declarations
+// are in modem/templates.h; the inherited tree still reaches these symbols by
+// name via ARDOPC.h during the transition.
+
+#include "modem/templates.h"
 
 const short int50BaudTwoToneLeaderTemplate[240] = {  // holds just 1 symbol (20 ms) of the 50 Baud leader
 

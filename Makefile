@@ -47,9 +47,9 @@ OBJS = \
 	lib/rawhid/rawhid.o \
 	lib/rockliff/rrs.o \
 	lib/ws_server/ws_server.o \
+	core/modem/templates.o \
 	src/common/ARDOPC.o \
 	src/common/ARDOPCommon.o \
-	src/common/ardopSampleArrays.o \
 	src/common/ARQ.o \
 	src/common/BusyDetect.o \
 	src/common/FEC.o \

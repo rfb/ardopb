@@ -120,8 +120,10 @@ core/
   link/      ARQ + FEC + RXO state machines              — explicit state
 ```
 
-Dependencies point down only: `link` → `modem` → `codec`. Nothing in `core/`
-includes anything from `src/`.
+Dependencies point down only: `link` → `modem` → `codec`. The only thing any
+`core/` module takes from `src/` is the compile-time-only `common/mustuse.h`
+macro header (rule 8); no core module includes `src/` code or links a
+`src/`-defined symbol.
 
 Include paths are rooted at `core/`, so a module is included as
 `#include "codec/frame.h"` — matching the existing `-Isrc` convention.
@@ -156,13 +158,12 @@ participate in the program.
 | `modem` | demodulate / sync / busy | not started |
 | `link` | — | not started |
 
-One temporary bridge: `modem/modulate` reaches the carrier-waveform templates
-(`int50BaudTwoToneLeaderTemplate` etc.) via `extern` declarations in
-`modem/templates.h`, whose definitions still live in the inherited
-`src/common/ardopSampleArrays.c`. Those are `const` generated data, so
-`check-pure` stays clean; relocating the generated file into `core/` is a
-tracked follow-up. It is the one place a core object currently links against a
-`src/` definition.
+The carrier-waveform templates (`int50BaudTwoToneLeaderTemplate` etc.) now live
+in `core/modem/templates.c`, declared by `modem/templates.h`. They were
+relocated from `src/common/ardopSampleArrays.c`; the inherited tree still links
+this core object for them during the transition. With that move, no core object
+links against a `src/`-defined symbol — the only remaining reference into `src/`
+is the compile-time-only `common/mustuse.h` macro header (rule 8).
 
 ### A note on "these modules already qualify"
 
