@@ -106,14 +106,18 @@ TEST_OBJS_COMMON = \
 CORE_OBJS = \
 	core/codec/crc.o \
 	core/codec/frame.o \
+	core/codec/locator.o \
 	core/codec/packed6.o \
 	core/codec/rs.o \
+	core/codec/stationid.o \
 
 CORE_TESTS = \
 	test/core/test_crc \
 	test/core/test_frame \
+	test/core/test_locator \
 	test/core/test_packed6 \
 	test/core/test_rs \
+	test/core/test_stationid \
 
 # define newline for use with foreach to run tests
 define newline

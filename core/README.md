@@ -149,7 +149,9 @@ participate in the program.
 | `codec` | `crc` — CRC-16 and CRC-8 | **done**, proven equivalent to `GenCRC16()`/`GenCRC8()` over a random corpus |
 | `codec` | `packed6` — 6-bit callsign/grid packing | **done**, proven equivalent to the original `Packed6` over a random corpus |
 | `codec` | `rs` — Reed-Solomon FEC | **done**, 5 globals moved into a caller-owned context; tables and encode/decode proven equivalent to `lib/rockliff/rrs` |
-| `codec` | StationId, Locator | not started |
+| `codec` | `stationid` — callsign + SSID | **done**, proven equivalent to the original `StationId` (one non-normative `strerror` off-by-one fixed) |
+| `codec` | `locator` — Maidenhead grid square | **done**, proven equivalent to the original `Locator` (empty-input now zeroes its output) |
+| **`codec`** | **layer complete** | frame, crc, packed6, rs, stationid, locator |
 | `modem` | — | not started |
 | `link` | — | not started |
 
@@ -162,14 +164,21 @@ generous:
 
 | Module | Mutable globals |
 |---|---|
-| `Packed6.o`, `FFT.o`, `log_file.o` | 0 — genuinely clean |
-| `StationId.o`, `Locator.o` | 1 each — a non-`const` string table, trivially fixed |
+| `Packed6.o`, `FFT.o`, `log_file.o`, `StationId.o`, `Locator.o` | 0 — genuinely clean |
 | `wav.o` | 1 — a global header struct; WAV writing is not reentrant |
 | `noise.o` | 2 — Box-Muller spare-value cache |
 | `sdft.o` | 5 — real module state |
 | `lib/rockliff/rrs.o` | 5 — Galois field tables, in the most normative code in the system |
 | `log.o` | 21 — a global service by design |
 
-So most of them need a state handle before they can move, and the "~2500 lines
-carry across unchanged" estimate is optimistic. This is exactly the kind of
-thing rule 1 exists to surface, and it surfaced it on the first run.
+An earlier version of this table listed `StationId.o` and `Locator.o` as having
+one global each, "a non-`const` string table". That was the `nm`-letter false
+positive that also shaped rule 1's check (see rule 1): the `strerror` message
+tables are `const` and land in `.data.rel.ro`, which `nm` mislabels `d`. The
+section-based `objdump` check reports them correctly as clean, which the
+completed `stationid`/`locator` ports confirm. `sdft.o` and `rrs.o` are the real
+module state; `rrs.o` is now moved.
+
+So some of them still need a state handle before they can move, and the
+"~2500 lines carry across unchanged" estimate is optimistic — but fewer than the
+first pass feared. This is exactly the kind of thing rule 1 exists to surface.
