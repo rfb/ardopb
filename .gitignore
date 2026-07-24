@@ -5,6 +5,9 @@ CalcTemplates
 /test/ardop/*
 !/test/ardop/*.[ch]
 !/test/ardop/*.bin
+# Compiled core test harnesses (keep sources, ignore built binaries).
+/test/core/*
+!/test/core/*.[ch]
 
 # Python tests may write a variety of temporary files to /test/python/tmp/
 /test/python/tmp/*

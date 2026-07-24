@@ -39,7 +39,7 @@
 #		sudo apt install mingw-w64
 #		make CC_NATIVE=gcc CC=i686-w64-mingw32-gcc-posix WIN32=1
 
-.PHONY: all buildtest test golden golden-regen
+.PHONY: all buildtest test golden golden-regen core check-pure check-headers test-core
 
 # list all object files and their directories
 # keep sorted by filename
@@ -98,6 +98,16 @@ TESTS = \
 # unit test common code
 TEST_OBJS_COMMON = \
 	test/ardop/setup.o \
+
+# core/ -- the rebuilt pure layers.  See core/README.md.
+# These are built to a stricter standard than the inherited tree: -Werror,
+# and no mutable global state (enforced by `make check-pure`).  They are not
+# yet linked into ardopcf.
+CORE_OBJS = \
+	core/codec/frame.o \
+
+CORE_TESTS = \
+	test/core/test_frame \
 
 # define newline for use with foreach to run tests
 define newline
@@ -163,6 +173,88 @@ buildtest: $(TESTS)
 # or failed.
 test: buildtest
 	$(foreach test, $(TESTS), @echo $(test):$(newline)@$(test)$(newline))
+
+# --- core/ ------------------------------------------------------------------
+#
+# core/ is held to a stricter standard than the inherited tree.  The flags are
+# separate from CFLAGS so that adding -Werror here cannot break the main build,
+# and so the inherited tree's 177 warnings do not have to be fixed first.
+CORE_CFLAGS = -std=c11 -Wall -Wextra -Werror -Wmissing-prototypes \
+	-Wstrict-prototypes -Wshadow -Wconversion -Wcast-qual -Wwrite-strings
+CORE_CPPFLAGS = -Icore -Isrc
+
+core/%.o: core/%.c
+	$(CC) $(CORE_CPPFLAGS) $(CFLAGS) $(CORE_CFLAGS) -c -o $@ $<
+
+# `make core` builds the rebuilt layers.
+core: $(CORE_OBJS)
+
+# `make check-pure` enforces the rule that makes core/ testable: no mutable
+# global state.  This is a link-time fact, not a code-review habit -- see
+# core/README.md rule 1.
+#
+# The test is which *section* a symbol lands in, not what nm calls it.  nm
+# reports a `static const` table containing pointers as `d`, which looks like
+# mutable data but is not: in a position-independent build such a table goes to
+# .data.rel.ro, which the loader maps read-only once relocations are applied.
+# Keying on nm's letter would reject every const table with a string in it.
+#
+#   rejected:  .data  .bss  *COM*     genuinely writable for the whole run
+#   allowed:   .rodata  .data.rel.ro*  .text
+#
+# It also checks that the core allocates nothing, so it can be driven from an
+# embedded shell or another language without sharing an allocator.  That catches
+# direct calls only, not transitive ones.
+check-pure: $(CORE_OBJS)
+	@fail=0; \
+	for o in $(CORE_OBJS); do \
+		syms=`objdump -t $$o \
+			| grep -E '[[:space:]](\.data|\.bss|\*COM\*)[[:space:]]' \
+			|| true`; \
+		if [ -n "$$syms" ]; then \
+			echo "FAIL: $$o has mutable global state:"; \
+			echo "$$syms" | sed 's/^/    /'; \
+			fail=1; \
+		fi; \
+		alloc=`nm --undefined-only $$o \
+			| grep -E ' U (malloc|calloc|realloc|free|strdup)$$' || true`; \
+		if [ -n "$$alloc" ]; then \
+			echo "FAIL: $$o allocates:"; \
+			echo "$$alloc" | sed 's/^/    /'; \
+			fail=1; \
+		fi; \
+	done; \
+	if [ $$fail -ne 0 ]; then exit 1; fi; \
+	echo "check-pure: $(words $(CORE_OBJS)) object(s), no mutable globals, no allocation"
+
+# Every core header must compile standalone -- a header that forgets an include
+# fails here rather than mysteriously later.  See core/README.md rule 7.
+check-headers:
+	@for h in `find core -name '*.h'`; do \
+		echo "#include \"$${h#core/}\"" > /tmp/ardop-hdr-$$$$.c; \
+		echo "int main(void){return 0;}" >> /tmp/ardop-hdr-$$$$.c; \
+		$(CC) $(CORE_CPPFLAGS) $(CORE_CFLAGS) -fsyntax-only \
+			/tmp/ardop-hdr-$$$$.c || exit 1; \
+		rm -f /tmp/ardop-hdr-$$$$.c; \
+	done; \
+	echo "check-headers: all core headers compile standalone"
+
+# `make test-core` builds and runs the core unit tests.
+test-core: $(CORE_TESTS)
+	$(foreach test, $(CORE_TESTS), @echo $(test):$(newline)@$(test)$(newline))
+
+# Core tests link the inherited objects too, because the equivalence tests use
+# the old implementation as an oracle.  That dependency disappears when the old
+# code does.
+test/core/test_%: test/core/test_%.c $(CORE_OBJS) $(OBJS) $(TEST_OBJS_COMMON)
+	$(CC) \
+		$(CPPFLAGS) $(CORE_CPPFLAGS) -Itest/ardop \
+		$(CFLAGS) \
+		$(LDFLAGS) \
+		$< \
+		$(CORE_OBJS) $(OBJS) $(TEST_OBJS_COMMON) \
+		$(LDLIBS) -lcmocka \
+		-o $@
 
 # `make golden` checks this build against the committed golden-vector corpus
 # in test/golden: that the modulator is still bit-exact, and that every
