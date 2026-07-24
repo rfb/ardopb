@@ -148,7 +148,8 @@ participate in the program.
 | `codec` | `frame` — frame type table | **done**, all 256 types proven equivalent to `FrameInfo()` |
 | `codec` | `crc` — CRC-16 and CRC-8 | **done**, proven equivalent to `GenCRC16()`/`GenCRC8()` over a random corpus |
 | `codec` | `packed6` — 6-bit callsign/grid packing | **done**, proven equivalent to the original `Packed6` over a random corpus |
-| `codec` | StationId, Locator, RS | not started |
+| `codec` | `rs` — Reed-Solomon FEC | **done**, 5 globals moved into a caller-owned context; tables and encode/decode proven equivalent to `lib/rockliff/rrs` |
+| `codec` | StationId, Locator | not started |
 | `modem` | — | not started |
 | `link` | — | not started |
 
