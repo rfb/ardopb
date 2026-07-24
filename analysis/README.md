@@ -43,14 +43,19 @@ Local technical review of `ardopcf`, written to answer two questions:
 | 07 | [Migration path](07-migration-path.md) | Staged route, working radio at each step |
 | 08 | [Style and tooling](08-style-and-tooling.md) | A deliberate style; warnings, LTO, sanitizers, CI |
 | 09 | [Embedding and bindings](09-embedding-and-bindings.md) | Driving the core from a higher-level language |
+| 10 | [Modem and link boundary](10-modem-link-design.md) | The concrete sans-I/O contract for the two hard layers, written before building them |
 
 **Short on time?** Read 03 and 04 — they contain the answers to the two
 motivating questions.
 
-**Stage 0 is built.** The golden-vector corpus that 07 argued for now exists in
-[`test/golden/`](../test/golden/README.md): `make golden` checks this build
-against 130 frozen cases in about six seconds, with no audio hardware. It was
-the one item worth doing whether or not a rebuild ever happens, and it is done.
+**Stage 0 is built, and Stage 1 is done.** The golden-vector corpus 07 argued for
+exists in [`test/golden/`](../test/golden/README.md): `make golden` checks this
+build against 130 frozen cases in about six seconds, no audio hardware. And the
+entire pure `codec` layer has been rebuilt in [`core/`](../core/README.md) —
+`frame`, `crc`, `packed6`, `rs`, `stationid`, `locator` — each built under
+`-Werror`, held to zero mutable globals by `make check-pure`, and proven
+equivalent to the original it replaces. [10](10-modem-link-design.md) is the
+design for what comes next.
 
 ## The findings in one page
 
