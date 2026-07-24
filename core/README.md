@@ -147,7 +147,8 @@ participate in the program.
 |---|---|---|
 | `codec` | `frame` — frame type table | **done**, all 256 types proven equivalent to `FrameInfo()` |
 | `codec` | `crc` — CRC-16 and CRC-8 | **done**, proven equivalent to `GenCRC16()`/`GenCRC8()` over a random corpus |
-| `codec` | Packed6, StationId, Locator, RS | not started |
+| `codec` | `packed6` — 6-bit callsign/grid packing | **done**, proven equivalent to the original `Packed6` over a random corpus |
+| `codec` | StationId, Locator, RS | not started |
 | `modem` | — | not started |
 | `link` | — | not started |
 
