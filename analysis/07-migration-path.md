@@ -56,11 +56,12 @@ name makes this run with no hardware and no real-time delay.
 The harness existed. What was missing was **persistence**: it generated WAVs,
 checked them, and deleted them.
 
-`test/golden/` is a separate harness rather than an extension of that one, for
-the same reason `analysis/` sits outside `docs/`: `test/python/` is upstream's
-working test code and may change, whereas a frozen corpus has to be
-self-describing and stable. It carries its own copy of the frame tables and
-imports nothing from `test/python/`.
+`test/golden/` is a separate harness rather than an extension of that one:
+`test/python/` is a working test script that is expected to change, whereas a
+frozen corpus has to be self-describing and stable. It carries its own copy of
+the frame tables and imports nothing from `test/python/`. (The original reason
+was that `test/python/` was upstream's; post-fork the separation still holds on
+the durability argument alone.)
 
 ### What was built, against the original list
 
@@ -225,8 +226,9 @@ with evidence, rather than now.
 
 ## Fixes worth landing independently
 
-These do not depend on the restructure and could go upstream on their own merits
-(subject to the human line-by-line review `CONTRIBUTING.md` asks for):
+These do not depend on the restructure and can be taken in any order, before or
+alongside Stage 1. Each is small, and each now has the Stage 0 corpus to prove
+it changed nothing it should not have:
 
 | Fix | Location | Note |
 |---|---|---|
@@ -241,6 +243,46 @@ These do not depend on the restructure and could go upstream on their own merits
 
 The first is the one to prioritise — it is a confirmed, silent, total RX failure
 reachable through a documented command-line option.
+
+---
+
+## Fork housekeeping
+
+Independent of the stages, and worth doing deliberately rather than drifting
+into. This is a fork of the *code*, not of the protocol — on-air interop and the
+TCP host interface still bind, which constrains two of these more than they look.
+
+| Item | Where | Note |
+|---|---|---|
+| Project name | `ProductName[] = "ardopcf"` (`ARDOPC.c:5`) | **See the warning below — not a free rename** |
+| Version scheme | `ProductVersion[]` (`version.h:7`), currently `1.0.4.1.3` | Diverging from upstream's numbering needs a scheme that cannot be mistaken for theirs |
+| Upstream URLs in output | 10 references to `github.com/pflarue` in `src/` and `webgui/` | Startup banner (`ALSASound.c:407`, `Waveout.c:371`), `--help`, WebGui |
+| `README.md` | root | Currently states the *upstream maintainer's* position on AI tools in the first person. Inaccurate on a fork and should not be left standing |
+| `docs/CONTRIBUTING.md` | `docs/` | No longer binding; rewrite or remove rather than leave contradicting practice |
+| Licence and attribution | `LICENSE` | Unchanged obligations — the work of Muething, Wiseman and LaRue must stay credited |
+
+**The name is part of the host interface.** `HostInterface.c:1494` answers the
+host `VERSION` command with:
+
+```c
+sprintf(cmdReply, "VERSION %s_%s", ProductName, ProductVersion);
+```
+
+so a client sees `VERSION ardopcf_1.0.4.1.3`. Anything that parses that string —
+Pat, WoAD, or a script — may match on the `ardopcf` prefix. Renaming
+`ProductName` is therefore a **host-interface compatibility change**, not
+cosmetics, and the commitment made for this fork is that Pat and WoAD keep
+working unchanged.
+
+Before renaming, check how the host clients actually parse it. If any of them
+match the prefix, the options are: keep `ProductName` as the wire identity and
+carry the fork's name only in the banner and documentation; or add a separate
+host command for the fork identity and leave `VERSION` alone. The first is
+cheaper and is the default recommendation until evidence says otherwise.
+
+Nothing on air carries the product name — the ID frame carries callsign and
+grid square only — so the fork is invisible to other stations, which is the
+desired outcome.
 
 ---
 

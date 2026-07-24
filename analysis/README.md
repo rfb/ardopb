@@ -7,13 +7,24 @@ Local technical review of `ardopcf`, written to answer two questions:
 
 ## Provenance and status
 
-- Written against commit `a7c9228` (v1.0.4.1.3), `master`.
-- **Not upstream documentation, and not a pull request.** Kept out of `docs/`
-  to mark that boundary — `docs/` is upstream's.
-- Produced with AI assistance. `docs/CONTRIBUTING.md` asks that AI-assisted
-  contributions get a line-by-line human review before being proposed upstream;
-  nothing here has had that review, and none of it should be submitted as a PR
-  until it has.
+- Written against commit `a7c9228` (v1.0.4.1.3), inherited from
+  `pflarue/ardop`.
+- **This is a hard fork.** The review was originally written under the
+  assumption that changes might flow back upstream; that is no longer the plan,
+  and `docs/CONTRIBUTING.md` no longer binds. Where a conclusion rested on
+  upstream mergeability it has been revisited — see [06](06-target-architecture.md).
+  Protocol compatibility is a separate commitment and **still binds**: on-air
+  interop with ARDOP_Win/ardopc per the 2017 spec, and the existing TCP host
+  interface.
+- Kept out of `docs/` on its own merits: `docs/` is documentation of how to
+  build and use the program, this is a point-in-time review of how it works.
+  Different lifetimes, different audiences.
+- **Produced with AI assistance and not line-by-line reviewed by a human.**
+  This is stated because it is true and load-bearing, not because a policy
+  requires it. Claims were checked against a live build where they could be;
+  where a claim is reasoning rather than observation it says so. At least one
+  claim was wrong on first writing and has been corrected in place with the
+  error left visible (`SlowCPU`, in [03](03-timing-model.md)).
 - Claims were checked against a live build where possible. Where a claim is
   reasoning rather than observation, it says so. Verification notes are at the
   end of [01](01-signal-chain.md) and inline elsewhere.

@@ -1,8 +1,8 @@
 # Build ardopcf and run both test suites.
 #
-# This is local to this fork.  Upstream (pflarue/ardop) has no CI; see
-# analysis/08-style-and-tooling.md for why that is worth changing and what
-# else could usefully be added here later (sanitizers, -flto, -Werror).
+# The codebase this fork inherits from had no CI at all.  This is step 1 of
+# the adoption order in analysis/08-style-and-tooling.md; steps 3 onward
+# (sanitizers, -flto, -fanalyzer, -Werror, a Windows job) are still open.
 
 name: test
 

@@ -12,14 +12,28 @@ to restyling — destroying `git blame` on inherited code — does not apply to 
 work. Inherited files keep their existing style until the stage that replaces
 them; there is no big-bang reformat.
 
-**Build tooling and development tooling are different things.** `CONTRIBUTING.md`
-says pull requests requiring "additional external libraries or build tools are
-unlikely to be accepted", and that constraint is right — the audience is amateur
-operators on Raspberry Pis, and `apt install build-essential libasound2-dev &&
-make` is a genuine feature.
+**Build tooling and development tooling are different things.** This distinction
+was originally introduced to satisfy `CONTRIBUTING.md`, which said pull requests
+requiring "additional external libraries or build tools are unlikely to be
+accepted". That document no longer binds — this is a hard fork.
 
-Nothing here changes that. Every tool below is either **already in GCC** or
-**CI/development-only**. The build stays `make` + gcc + libasound.
+**The distinction is kept anyway, because the reason behind it was never really
+upstream's policy.** The audience is amateur operators on Raspberry Pis, and
+`apt install build-essential libasound2-dev && make` is a genuine feature of
+this program. A user who wants to build a radio modem should not first have to
+install a package manager, a language toolchain, or a meta-build system.
+
+So the rule stands, now stated on its own merits and with a sharper boundary:
+
+- **What a *user* needs to build a working radio** stays minimal: `make`, gcc,
+  libasound. No new runtime dependencies, no new build-system layer.
+- **What a *developer* needs** is now unconstrained. Formatters, linters,
+  sanitizers, fuzzers, a test framework, CI — all fair game, provided a user who
+  ignores them can still type `make`.
+
+Every tool below already satisfies that: each is either **already in GCC** or
+**development/CI-only**. What the fork changes is that the list is no longer
+*restricted* to those — see "Now open" at the end.
 
 ---
 
@@ -131,10 +145,19 @@ Fixed-width types throughout: `int16_t` for samples, `uint8_t` for frame bytes,
 
 ### Comments — **kept, deliberately**
 
-`CONTRIBUTING.md` asks for "plentiful comments... that explain both what the code
-is doing and why", citing `sdft.c` as the model. That is a real project value
-tied to its audience, and the rebuild should keep it — this is the one place
-where the existing project is ahead of typical practice, not behind it.
+`CONTRIBUTING.md` asked for "plentiful comments... that explain both what the
+code is doing and why", citing `sdft.c` as the model. That document no longer
+binds, but **this convention is kept on its own merits, and it is the inherited
+practice most worth keeping.**
+
+The reason is specific to this codebase rather than general good manners. Most
+of [05](05-essential-vs-incidental.md) exists because nobody recorded *why* a
+constant had its value, so distinguishing normative protocol from implementation
+accident required reverse-engineering a VB translation. `sdft.c` is the one file
+where that question is already answered in place. Where the code is a DSP
+algorithm or a spec-mandated constant, the "why" is not recoverable from the
+"what" — and this is the one place where the existing project is ahead of
+typical practice, not behind it.
 
 Additions: Doxygen `/** */` on exported functions (`StationId.h` already does
 this well), and a comment on every normative constant citing the spec section it
@@ -360,3 +383,29 @@ Sequenced so nothing blocks on a large cleanup, and mapped onto
 Steps 1–3 are worth doing regardless of whether the rebuild proceeds, for the
 same reason as Stage 0's golden vectors: they are pure safety net, and they
 change no code.
+
+Step 1 is **done**: `.github/workflows/test.yml` builds, runs the 26 cmocka unit
+tests, runs the golden vectors, and reports the warning count as a non-blocking
+notice (step 2's baseline). Steps 3 onward are open.
+
+---
+
+## Now open (post-fork)
+
+Options previously ruled out only because upstream would not have taken them.
+None is a recommendation yet; they are recorded so the choice is deliberate when
+the time comes, rather than inherited by default a second time.
+
+| Option | Worth considering because | Cost |
+|---|---|---|
+| A real test framework | cmocka is already a dependency of `make test`, but is awkward for table-driven cases; the six existing suites cover only leaf modules | Another dev dependency; cmocka works well enough that this is low priority |
+| `clang-format` enforced in CI | Ends style argument permanently. Was previously "new files only" to avoid imposing a tool | Contributors need clang-format installed, or CI does the check for them |
+| `clang-tidy` / `cppcheck` gating | Catches the defect classes [04](04-coupling-map.md) found that GCC does not | Noisy on inherited code until Stage 1–2 land |
+| A generated-parser or table-driven host protocol | The ~1300-line `strcmp` ladder (`HostInterface.c:241`) is the worst single file in the tree | New build-time dependency — violates the *user* rule unless output is committed |
+| `meson`/`cmake` | Better cross-compilation and test integration than the hand-written Makefile | Directly violates the user rule; the Makefile is 200 lines and works. **Recommend against** |
+| Vendored dependencies (e.g. a DSP or FFT library) | `FFT.c`, `sdft.c` and `rrs.c` are hand-maintained | Must stay buildable with plain `make`; vendoring keeps that true |
+| Property-based / fuzz testing | `ardop_frame_decode` on arbitrary bytes is an obvious fuzz target once [06](06-target-architecture.md)'s API exists | Needs the Stage 1–3 restructure first |
+
+The one firm conclusion: **do not replace the build system.** Everything else on
+this list is a developer-side choice; a new build system is the only item that
+lands on users, and the current Makefile is not the problem with this codebase.

@@ -1,7 +1,8 @@
 # 00 — Overview
 
-> Local analysis of `ardopcf` at commit `a7c9228` (v1.0.4.1.3). Not upstream
-> documentation. See [README](README.md) for the reading path and provenance.
+> Analysis of `ardopcf` at commit `a7c9228` (v1.0.4.1.3), the point this hard
+> fork inherits from. See [README](README.md) for the reading path and
+> provenance.
 
 ## What ardopcf is
 

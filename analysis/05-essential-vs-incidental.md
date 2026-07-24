@@ -231,7 +231,7 @@ Already well-factored, already tested, no reason to rewrite:
 | `Packed6.{c,h}` | 6-byte compression; also Tier 1 normative. |
 | `log.c`, `log_file.c` | Over `lib/zf_log`; tested with `--wrap` mocks. |
 | `wav.c` | 79 lines, clean. |
-| `sdft.c` | Sliding DFT. Exemplary comments — the standard the project asks for in `CONTRIBUTING.md`. |
+| `sdft.c` | Sliding DFT. Exemplary comments — the one file that records *why*, not just *what* ([08](08-style-and-tooling.md)). |
 | `lib/rockliff/rrs.c` | Vendored RS. Do not touch. |
 | `FFT.c` | Self-contained. |
 | `noise.c` | Test-support noise injection. |

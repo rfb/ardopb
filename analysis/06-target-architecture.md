@@ -179,8 +179,13 @@ The evaluation you asked for, since this was left open.
    mismatch, buffer indexing errors, ambient mutation, reentrancy, platform type
    confusion. Which of these does the language prevent?
 3. **Build simplicity.** The target users are amateur operators on Raspberry Pi
-   Zeros. `CONTRIBUTING.md` makes "no additional build tools" an explicit goal.
-4. **Upstream mergeability.** Whether work can flow back to `pflarue/ardop`.
+   Zeros, and `apt install build-essential && make` is a genuine feature. This
+   criterion originally cited `CONTRIBUTING.md`; it survives that document's
+   retirement, because it is a property of the *audience*, not of upstream.
+4. ~~**Upstream mergeability.**~~ **Withdrawn.** This is now a hard fork; work
+   is not flowing back to `pflarue/ardop`. Struck rather than deleted so the
+   revision is visible — the original recommendation was made partly on this
+   criterion, and it is only honest to show which leg was removed.
 
 ### Assessment
 
@@ -193,10 +198,10 @@ The evaluation you asked for, since this was left open.
 | Reentrancy / TX-inside-TX | not prevented | prevented (`&mut` aliasing) |
 | Platform type confusion | not prevented | prevented |
 | Build simplicity | `apt install build-essential` | needs rustup; fine on Pi Zero 2, awkward on ARMv6 Pi Zero 1 |
-| Upstream mergeable | yes | no |
+| ~~Upstream mergeable~~ | ~~yes~~ | ~~no~~ — criterion withdrawn |
 
 Rust wins decisively on criterion 2 — it eliminates, at compile time, essentially
-every defect class this review found. C wins decisively on criteria 1, 3 and 4.
+every defect class this review found. C wins on criteria 1 and 3.
 
 ### Recommendation: restructure in C first, decide on Rust afterwards
 
@@ -219,15 +224,26 @@ pure, has explicit state, and is covered by golden vectors. That is *precisely*
 the input a language port wants — a port then becomes mechanical and verifiable
 rather than exploratory. Doing Rust second is much cheaper than doing it first.
 
-**What would change this recommendation:**
+**Re-examined after the decision to hard-fork, and it holds.** Both claims above
+are about *risk sequencing*, and neither ever depended on upstream. Losing
+criterion 4 narrows the margin but does not move the answer: criterion 1, the
+dominant risk, is unchanged, and criterion 3 turns out to be a property of the
+audience — Pi Zero operators — rather than of `CONTRIBUTING.md`, so it survives
+too.
 
-- If the goal is a genuinely independent project with no interest in upstream, and
-  you are willing to accept a longer path to a working radio, going straight to
-  Rust is defensible — the end state is better.
+**What would still change this recommendation:**
+
+- ~~A genuinely independent project with no interest in upstream~~ — **this has
+  now happened, and was not sufficient on its own.** It removed one of four
+  criteria; the other three are unchanged. Going straight to Rust remains
+  defensible if you would rather accept a longer path to a working radio for a
+  better end state, but that is now a preference, not something the analysis
+  forces.
 - If **concurrency** is on the roadmap (parallel demodulation of multiple
   carriers, or separating audio I/O onto its own thread), go to Rust sooner. This
   codebase is single-threaded and its global state makes threading unsafe; Rust
-  makes that transition tractable and C does not.
+  makes that transition tractable and C does not. **This is now the strongest
+  remaining trigger.**
 - If the DSP is going to be substantially rewritten anyway rather than ported,
   criterion 1 disappears and Rust wins outright.
 
