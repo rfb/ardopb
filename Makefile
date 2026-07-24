@@ -104,9 +104,11 @@ TEST_OBJS_COMMON = \
 # and no mutable global state (enforced by `make check-pure`).  They are not
 # yet linked into ardopcf.
 CORE_OBJS = \
+	core/codec/crc.o \
 	core/codec/frame.o \
 
 CORE_TESTS = \
+	test/core/test_crc \
 	test/core/test_frame \
 
 # define newline for use with foreach to run tests

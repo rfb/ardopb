@@ -146,7 +146,8 @@ participate in the program.
 | Layer | Module | State |
 |---|---|---|
 | `codec` | `frame` — frame type table | **done**, all 256 types proven equivalent to `FrameInfo()` |
-| `codec` | CRC, Packed6, StationId, Locator, RS | not started |
+| `codec` | `crc` — CRC-16 and CRC-8 | **done**, proven equivalent to `GenCRC16()`/`GenCRC8()` over a random corpus |
+| `codec` | Packed6, StationId, Locator, RS | not started |
 | `modem` | — | not started |
 | `link` | — | not started |
 
