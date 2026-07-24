@@ -1,0 +1,47 @@
+# Build ardopcf and run both test suites.
+#
+# This is local to this fork.  Upstream (pflarue/ardop) has no CI; see
+# analysis/08-style-and-tooling.md for why that is worth changing and what
+# else could usefully be added here later (sanitizers, -flto, -Werror).
+
+name: test
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libcmocka-dev
+
+      # -Wno-int-conversion works around lib/rawhid/rawhid.c, which assigns
+      # an int fd to a `hid_device *` on Linux.  GCC 14 makes that an error
+      # rather than a warning, so the tree does not build without it.  The
+      # fix is listed in analysis/07-migration-path.md; remove this flag
+      # once it lands.
+      - name: Build
+        run: make CFLAGS="-g -MMD -Wno-int-conversion"
+
+      - name: Unit tests
+        run: make CFLAGS="-g -MMD -Wno-int-conversion" test
+
+      - name: Golden vectors
+        run: make CFLAGS="-g -MMD -Wno-int-conversion" golden
+
+      # Non-blocking: report the current warning count so it is visible and
+      # can be driven down, without failing the build on day one.
+      - name: Warning census
+        continue-on-error: true
+        run: |
+          make clean
+          make CFLAGS="-g -MMD -Wno-int-conversion -Wall -Wextra" 2>&1 \
+            | tee build.log | grep -c "warning:" \
+            | xargs -I{} echo "::notice::{} warnings under -Wall -Wextra"

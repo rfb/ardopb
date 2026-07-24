@@ -39,7 +39,7 @@
 #		sudo apt install mingw-w64
 #		make CC_NATIVE=gcc CC=i686-w64-mingw32-gcc-posix WIN32=1
 
-.PHONY: all buildtest test
+.PHONY: all buildtest test golden golden-regen
 
 # list all object files and their directories
 # keep sorted by filename
@@ -163,6 +163,19 @@ buildtest: $(TESTS)
 # or failed.
 test: buildtest
 	$(foreach test, $(TESTS), @echo $(test):$(newline)@$(test)$(newline))
+
+# `make golden` checks this build against the committed golden-vector corpus
+# in test/golden: that the modulator is still bit-exact, and that every
+# frozen recording still decodes to the bytes it was made from.  It needs
+# only python3, no additional libraries.  See test/golden/README.md.
+golden: all
+	cd test/golden && ./test_golden.py
+
+# `make golden-regen` rewrites that corpus from the current build, moving the
+# baseline.  Review the resulting diff before committing: a changed tx_sha256
+# means the modulated audio changed.
+golden-regen: all
+	cd test/golden && ./gen_golden.py
 
 # rule to make test-case executables from their sources
 test/ardop/test_%: test/ardop/test_%.c $(OBJS) $(TEST_OBJS_COMMON)
