@@ -219,13 +219,14 @@ Consistent with the codec layer and rule 1 (`core/README.md`):
   are declared by the shell (on the stack or in a static arena) and passed in. No
   module holds file-scope mutable state, so `make check-pure` stays green for
   `modem` and `link` exactly as it does for `codec`.
-- **No hidden allocation.** Every buffer is caller-provided with its size; events
-  and actions land in caller arrays with an explicit cap and the overflow carried
-  to the next call. Payloads are fixed-size (`ARDOP_MAX_PAYLOAD`), sized to the
-  largest frame the [frame table](../core/codec/frame.h) allows.
-- **Samples are `int16_t` at the boundary.** Internally the DSP uses `float`
-  where it does today; the boundary type is the 16-bit PCM the device speaks, so
-  no conversion policy leaks into the API. (Open question §8.)
+- **No hidden allocation.** Every buffer is caller-provided with its size. Events
+  and actions land in caller arrays sized to a proven per-call maximum (§8.3), so
+  there is no overflow to carry and no ring buffer. Payloads are fixed-size
+  (`ARDOP_MAX_PAYLOAD`), sized to the largest frame the
+  [frame table](../core/codec/frame.h) allows.
+- **Samples are `int16_t` at the boundary** (§8.1). Internally the DSP uses
+  `float` where it does today; the boundary type is the 16-bit PCM the device
+  speaks, so no conversion policy leaks into the API.
 
 ---
 
@@ -253,30 +254,44 @@ inside the demodulator, `SlowCPU`, `FixTiming`, and any clock but `t`.
 
 ---
 
-## 8. Decisions to settle before/while building
+## 8. Decisions
 
-These are genuine forks, called out so they are chosen deliberately:
+Five forks were called out in review and settled deliberately. Four are fixed
+now; one is deferred to the demod step because it does not block anything before
+it and is better answered against the retransmit code than in the abstract.
 
-1. **Boundary sample type — `int16_t` vs `float`.** `int16_t` matches the device
-   and the golden vectors (which are 16-bit WAV) and makes TX conformance a
-   byte-compare. Float would defer one conversion. **Leaning `int16_t`** for the
-   exact-compare property; revisit only if a demod stage needs sub-LSB input.
-2. **Where Memory ARQ lives.** It averages *symbols* across retransmissions
-   (`SoundInput.c:295-340`), which is demod state, but it is triggered by a
-   *protocol* retransmission, which is link knowledge. **Leaning:** keep the
-   averaging buffers in `ardop_demod`, let the link enable/reset it via a small
-   control call or an action. Needs confirming against the retransmit flow.
-3. **Event/action queue sizing.** A single decoded frame can produce several
-   actions (PTT, send, timer). Fixed caps with carry-over (above) vs a
-   caller-drained ring. **Leaning** fixed caps; they are simplest and the counts
-   are small and bounded.
-4. **Modem granularity.** One `ardop_mod` that switches on `frame_type`, or a
-   per-modulation family split. **Leaning** one context, dispatching on the
-   [frame spec](../core/codec/frame.h), mirroring how `FrameInfo` already keys
-   everything off the type byte.
-5. **Busy detector placement.** It is DSP (`BusyDetect.c`) but its output is a
-   protocol input. It stays in `modem`, surfacing `ARDOP_EV_BUSY_CHANGED`; the
-   link consumes it. Low-risk, noted for completeness.
+1. **Boundary sample type — `int16_t`.** It matches the device (ALSA hands us
+   `short`), the golden vectors (16-bit WAV), and makes TX conformance a literal
+   byte-compare — the most valuable testing lever we have. The internal DSP stays
+   `float`. The embedding goal ([09](09-embedding-and-bindings.md)) of driving the
+   modem from Python is unaffected: numpy `int16` arrays work directly, and if
+   genuine float DSP access is later wanted, the right answer is a *read-only
+   float tap* into the demodulator internals, not moving the transport type —
+   which would push the exact-compare property out of the core to wherever int16
+   rounding happens.
+2. **Where Memory ARQ lives — deferred, leaning fully demod-local.** The averaging
+   buffers (`SoundInput.c:295-340`) are symbol-domain DSP and belong in
+   `ardop_demod`; that part is fixed. The open part is whether the
+   accumulate-vs-reset decision needs a hint from the link. The likely answer is
+   no: ARDOP's even/odd frame-type alternation *is* the retransmission signal, and
+   the demod acquires the type early (`AcquireFrameType`), so "same type as the
+   frame I just failed to decode ⇒ retransmit ⇒ average" is decidable without the
+   link. Confirmed against the retransmit flow when the demod (step 2b) is built,
+   not now.
+3. **Event/action queues — fixed arrays sized to a proven per-call maximum, no
+   carry-over.** One audio block completes at most one frame plus at most one
+   busy transition and one leader-detection, and one event drives a bounded
+   handful of actions, so the counts are small and boundable. The exact bound is
+   pinned when the demod is built; until then the caller passes an array of that
+   size and overflow is impossible. No ring, no carry-over state.
+4. **Modem granularity — one `ardop_mod`, dispatching on the
+   [frame spec](../core/codec/frame.h).** The caller always has a frame type, not
+   a modulation family, so a per-family split would expose surface for no gain.
+   One context mirrors how everything already keys off the type byte.
+5. **Busy detector — in `modem`, surfaced as `ARDOP_EV_BUSY_CHANGED`.** It is
+   spectral DSP over the RX samples (`BusyDetect.c`), so it belongs with the
+   demodulator; its output is a protocol input, which is what an event is for. The
+   link consumes it and decides whether to defer a transmit.
 
 ---
 
