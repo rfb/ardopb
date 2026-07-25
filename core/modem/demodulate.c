@@ -1107,6 +1107,70 @@ static void emit(ardop_event *events, size_t *nev, size_t max_events,
 }
 
 /*
+ * Rotate a carrier's phases to cancel a tuning-offset bias before decoding,
+ * ported from CorrectPhaseForTuningOffset. It averages the residual within each
+ * constellation cell (over symbols close enough to nominal), splitting the
+ * beginning and end quarters so a linear drift can be removed; otherwise it
+ * applies a single average rotation. Each result is truncated to short and then
+ * wrapped, matching the original order.
+ */
+static void correct_phase_for_tuning_offset(short *phase, int len, int psk_mode)
+{
+	int margin = 2793 / psk_mode;   /* acceptable correction range */
+	int inc = 6284 / psk_mode;      /* constellation cell size */
+	int acc_cnt = 0, begin_cnt = 0, end_cnt = 0;
+	int acc = 0, begin = 0, end = 0;
+	int avg = 0, avg_begin = 0, avg_end = 0;
+
+	for (int i = 0; i < len; i++) {
+		int test = phase[i] / inc;
+		int offset = phase[i] - test * inc;
+
+		if ((offset >= 0 && offset <= margin)
+		    || (offset < 0 && offset >= -margin)) {
+			acc_cnt++;
+			acc += offset;
+			if (i <= len / 4) {
+				begin_cnt++;
+				begin += offset;
+			} else if (i >= (3 * len) / 4) {
+				end_cnt++;
+				end += offset;
+			}
+		}
+	}
+
+	if (acc_cnt > 0)
+		avg = acc / acc_cnt;
+	if (begin_cnt > 0)
+		avg_begin = begin / begin_cnt;
+	if (end_cnt > 0)
+		avg_end = end / end_cnt;
+
+	if (begin_cnt > len / 8 && end_cnt > len / 8) {
+		/* Linear correction across the frame (removes drift). */
+		for (int i = 0; i < len; i++) {
+			phase[i] = (short)(phase[i]
+				- (avg_begin * (len - i) / len
+				   + avg_end * i / len));
+			if (phase[i] > 3142)
+				phase[i] = (short)(phase[i] - 6284);
+			else if (phase[i] < -3142)
+				phase[i] = (short)(phase[i] + 6284);
+		}
+	} else if (acc_cnt > len / 2) {
+		/* Single average rotation. */
+		for (int i = 0; i < len; i++) {
+			phase[i] = (short)(phase[i] - avg);
+			if (phase[i] > 3142)
+				phase[i] = (short)(phase[i] - 6284);
+			else if (phase[i] < -3142)
+				phase[i] = (short)(phase[i] + 6284);
+		}
+	}
+}
+
+/*
  * A whole frame's carriers have been demodulated (4FSK bytes are already in
  * frame_data; PSK/QAM leave phases/mags to decode here). Turn each carrier into
  * bytes, RS-correct it, concatenate the payloads, and emit the result.
@@ -1126,9 +1190,14 @@ static void deliver_frame(ardop_demod *d, ardop_event *events, size_t *nev,
 		    || d->frame_mod == ARDOP_MOD_8PSK)
 			ardop_decode_psk_char(d, c, d->frame_data[c],
 					      d->carrier_ok[c]);
-		else if (d->frame_mod == ARDOP_MOD_16QAM)
+		else if (d->frame_mod == ARDOP_MOD_16QAM) {
+			/* The original corrects only carrier 0's phases. */
+			if (c == 0)
+				correct_phase_for_tuning_offset(d->phases[0],
+								d->phases_len, 8);
 			ardop_decode_qam_char(d, c, d->frame_data[c],
 					      d->carrier_ok[c]);
+		}
 		/* 4FSK: frame_data[c] was filled while streaming. */
 
 		net = ardop_decode_carrier_rs(d->rs, d->frame_data[c],
@@ -1390,6 +1459,54 @@ size_t ardop_demod_push(ardop_demod *d, const int16_t *samples, size_t n,
 			else
 				d->symbols_left -= 3;
 
+			start += used;
+			d->filtered_mixed_len -= used;
+
+			if (d->symbols_left <= 0) {
+				d->state = ARDOP_RX_SEARCHING_FOR_LEADER;
+				clear_mixed(d);
+				deliver_frame(d, events, &nev, max_events);
+			}
+		}
+	}
+
+	/* --- Acquire frame: stream the data (16QAM) --- */
+	if (d->state == ARDOP_RX_ACQUIRE_FRAME
+	    && d->frame_mod == ARDOP_MOD_16QAM) {
+		int samp = d->frame_samp_per_sym;
+		int start = 0;
+
+		while (d->state == ARDOP_RX_ACQUIRE_FRAME) {
+			int used;
+
+			/* One QAM char is two symbols; keep ~8 buffered. */
+			if (d->filtered_mixed_len < 8 * samp + 10) {
+				if (d->filtered_mixed_len > 0)
+					memmove(d->filtered_mixed,
+						&d->filtered_mixed[start],
+						(size_t)d->filtered_mixed_len
+						* sizeof(int16_t));
+				return nev;
+			}
+
+			if (!d->psk_init_done) {
+				if (d->filtered_mixed_len < 9 * samp + 10)
+					return nev;
+				ardop_demod_psk_init(d, d->frame_num_car, 8);
+				d->filtered_mixed_len -= samp;  /* skip training */
+				start += samp;
+				d->psk_init_done = true;
+			}
+
+			used = ardop_demod_qam_char(d, start, 0,
+						    d->carrier_ok[0]);
+			for (int c = 1; c < d->frame_num_car; c++) {
+				d->phases_len -= 2;
+				ardop_demod_qam_char(d, start, c,
+						     d->carrier_ok[c]);
+			}
+
+			d->symbols_left -= 1;   /* one byte per char */
 			start += used;
 			d->filtered_mixed_len -= used;
 

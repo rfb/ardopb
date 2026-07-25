@@ -1218,6 +1218,7 @@ static void test_push_roundtrip(void **state)
 	expect_push_roundtrip(0x50, 2, 64, 32);   /* 4PSK.500.100:   2 car */
 	expect_push_roundtrip(0x60, 4, 64, 32);   /* 4PSK.1000.100:  4 car */
 	expect_push_roundtrip(0x70, 8, 64, 32);   /* 4PSK.2000.100:  8 car */
+	expect_push_roundtrip(0x46, 1, 128, 64);  /* 16QAM.200.100:  1 car */
 }
 
 int main(void)
