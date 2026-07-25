@@ -99,6 +99,9 @@ static ardop_rs g_rs;
 void InitDemodPSK(void);
 int Demod1CarPSKChar(int Start, int Carrier);
 void Decode1CarPSK(unsigned char *Decoded, int Carrier);
+void InitDemodQAM(void);
+int Demod1CarQAMChar(int Start, int Carrier);
+void Decode1CarQAM(unsigned char *Decoded, int Carrier);
 extern char strMod[16];
 extern int intNumCar;
 extern int intPSKMode;
@@ -984,6 +987,128 @@ static void test_psk_decode_matches_legacy(void **state)
 	}
 }
 
+/*
+ * QAM per-carrier demod on real baseband. InitDemodQAM is InitDemodPSK with the
+ * order fixed to 8, so the port sets up with ardop_demod_psk_init(.,.,8); the
+ * two-symbol Demod1CarQAMChar must then match the port's phases and mags.
+ */
+static void expect_qam_same(ardop_demod *d, int num_car, int start)
+{
+	strMod[0] = '1';  /* 16QAM; only the (dead) tracking init reads it */
+	strMod[1] = 0;
+	intNumCar = num_car;
+	InitDemodQAM();
+	for (int c = 0; c < 8; c++)
+		CarrierOk[c] = 0;
+	for (int c = 0; c < num_car; c++)
+		Demod1CarQAMChar(start, c);
+
+	ardop_demod_psk_init(d, num_car, 8);
+	for (int c = 0; c < num_car; c++)
+		ardop_demod_qam_char(d, start, c, false);
+
+	if (d->phases_len != intPhasesLen)
+		fail_msg("qam %dc phases_len: legacy %d, port %d", num_car,
+			 intPhasesLen, d->phases_len);
+	for (int c = 0; c < num_car; c++) {
+		if (d->freq_bin[c] != dblFreqBin[c]
+		    || d->car_mag_threshold[c] != intCarMagThreshold[c])
+			fail_msg("qam %dc car %d init mismatch", num_car, c);
+		for (int j = c * 2; j < (c + 1) * 2; j++) {
+			if (d->phases[c][j] != intPhases[c][j])
+				fail_msg("qam %dc car %d phase[%d]: legacy %d, port %d",
+					 num_car, c, j, intPhases[c][j],
+					 d->phases[c][j]);
+			if (d->mags[c][j] != intMags[c][j])
+				fail_msg("qam %dc car %d mag[%d]: legacy %d, port %d",
+					 num_car, c, j, intMags[c][j],
+					 d->mags[c][j]);
+		}
+	}
+}
+
+static void test_qam_matches_legacy(void **state)
+{
+	(void)state;
+
+	static int16_t frame[ARDOP_MOD_MAX_SAMPLES];
+	ardop_mod m;
+	ardop_mod_init(&m, 30);
+	const uint8_t enc[2] = { 0x23, 0x23 };
+	assert_true(ardop_mod_begin(&m, 0x23, enc, sizeof(enc), 240, frame,
+				    ARDOP_MOD_MAX_SAMPLES));
+	size_t nn = ardop_mod_pull(&m, frame, ARDOP_MOD_MAX_SAMPLES);
+	int total = (int)nn < 4900 ? (int)nn : 4900;
+
+	static ardop_demod d;
+	ardop_demod_init(&d, 100, 5);
+	for (int off = 0; off < total; off += 1200) {
+		int len = total - off < 1200 ? total - off : 1200;
+		ardop_demod_mix_filter(&d, &frame[off], len, 0.0f);
+	}
+	intFilteredMixedSamplesLength = d.filtered_mixed_len;
+	for (int i = 0; i < d.filtered_mixed_len; i++)
+		intFilteredMixedSamples[i] = d.filtered_mixed[i];
+
+	int cars[] = {1, 2, 4};
+	for (int ci = 0; ci < 3; ci++)
+		for (int start = 200; start + 2 * 120 <= total; start += 500)
+			expect_qam_same(&d, cars[ci], start);
+}
+
+/*
+ * QAM phase+magnitude -> bits decode over random phases/mags and a random
+ * starting threshold: the port must match Decode1CarQAM's bytes and the final
+ * adapted magnitude threshold.
+ */
+static void test_qam_decode_matches_legacy(void **state)
+{
+	(void)state;
+
+	uint32_t rng = 0xB16B00B5u;
+	static ardop_demod d;
+	ardop_demod_init(&d, 100, 5);
+
+	for (int trial = 0; trial < 500; trial++) {
+		int units = 1 + (int)(xorshift32(&rng) % 12u);
+		int len = units * 2;
+		int carrier = (int)(xorshift32(&rng) % 8u);
+		short thr = (short)(xorshift32(&rng) % 20000u);
+
+		for (int j = 0; j < len; j++) {
+			short p = (short)((int)(xorshift32(&rng) % 6601u)
+					  - 3300);
+			short mg = (short)(xorshift32(&rng) % 25000u);
+			d.phases[carrier][j] = p;
+			d.mags[carrier][j] = mg;
+			intPhases[carrier][j] = p;
+			intMags[carrier][j] = mg;
+		}
+		d.phases_len = len;
+		d.car_mag_threshold[carrier] = thr;
+		intPhasesLen = len;
+		intCarMagThreshold[carrier] = thr;
+		CarrierOk[carrier] = 0;
+
+		unsigned char odec[256] = {0};
+		uint8_t pdec[256] = {0};
+		Decode1CarQAM(odec, carrier);
+		int pn = ardop_decode_qam_char(&d, carrier, pdec, false);
+
+		if (pn != len / 2)
+			fail_msg("qam decode count: got %d, expected %d", pn,
+				 len / 2);
+		for (int i = 0; i < pn; i++)
+			if (pdec[i] != odec[i])
+				fail_msg("qam byte %d: legacy %02x, port %02x",
+					 i, odec[i], pdec[i]);
+		if (d.car_mag_threshold[carrier] != intCarMagThreshold[carrier])
+			fail_msg("qam final threshold: legacy %d, port %d",
+				 intCarMagThreshold[carrier],
+				 d.car_mag_threshold[carrier]);
+	}
+}
+
 int main(void)
 {
 	const struct CMUnitTest tests[] = {
@@ -1002,6 +1127,8 @@ int main(void)
 		cmocka_unit_test(test_carrier_rs_matches_legacy),
 		cmocka_unit_test(test_psk_matches_legacy),
 		cmocka_unit_test(test_psk_decode_matches_legacy),
+		cmocka_unit_test(test_qam_matches_legacy),
+		cmocka_unit_test(test_qam_decode_matches_legacy),
 	};
 
 	ardop_test_setup();

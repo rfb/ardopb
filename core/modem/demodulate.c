@@ -944,3 +944,92 @@ int ardop_decode_psk_char(const ardop_demod *d, int carrier, uint8_t *decoded,
 
 	return char_index;
 }
+
+int ardop_demod_qam_char(ardop_demod *d, int start, int carrier,
+			 bool carrier_already_ok)
+{
+	int num_symbols = 2;
+	int orig_start = start;
+
+	if (carrier_already_ok) {
+		d->phases_len += num_symbols;
+		return d->psk_samp_per_sym * num_symbols;
+	}
+
+	for (int i = 0; i < num_symbols; i++) {
+		float real, imag;
+		short phase_0;
+
+		ardop_goertzel_hanning(d->filtered_mixed,
+				       start + d->cp[carrier],
+				       d->n_for_goertzel[carrier],
+				       d->freq_bin[carrier], &real, &imag);
+		d->mags[carrier][d->phases_len] =
+			(short)sqrtf(powf(real, 2) + powf(imag, 2));
+		phase_0 = (short)(1000 * atan2f(imag, real));
+		d->phases[carrier][d->phases_len] =
+			(short)(-compute_ang1_ang2(phase_0,
+						   d->psk_phase_1[carrier]));
+		d->psk_phase_1[carrier] = phase_0;
+		d->phases_len++;
+		start += d->psk_samp_per_sym;
+	}
+
+	return start - orig_start;
+}
+
+int ardop_decode_qam_char(ardop_demod *d, int carrier, uint8_t *decoded,
+			  bool carrier_already_ok)
+{
+	int threshold = d->car_mag_threshold[carrier];
+	int len = d->phases_len;
+	int psk_start = 0;
+	int char_index = 0;
+
+	if (carrier_already_ok)
+		return 0;
+
+	while (len > 0) {
+		unsigned int data = 0;  /* two nibbles -> one byte */
+
+		for (int k = 0; k < 2; k++) {
+			short p = d->phases[carrier][psk_start];
+			short mag = d->mags[carrier][psk_start];
+
+			data <<= 4;
+			/* Three bits from the phase sector (as 8PSK). */
+			if (p < 393 && p > -393)
+				;  /* 0 */
+			else if (p >= 393 && p < 1179)
+				data += 1;
+			else if (p >= 1179 && p < 1965)
+				data += 2;
+			else if (p >= 1965 && p < 2751)
+				data += 3;
+			else if (p >= 2751 || p < -2751)
+				data += 4;
+			else if (p >= -2751 && p < -1965)
+				data += 5;
+			else if (p >= -1965 && p <= -1179)
+				data += 6;
+			else
+				data += 7;
+
+			/* Fourth bit: inner ring when below the rolling
+			 * threshold, which tracks toward the seen magnitude
+			 * (weighted more strongly for inner symbols). */
+			if (mag < threshold) {
+				data += 8;
+				threshold = (threshold * 900 + mag * 150) / 1000;
+			} else {
+				threshold = (threshold * 900 + mag * 75) / 1000;
+			}
+			d->car_mag_threshold[carrier] = (short)threshold;
+			psk_start++;
+		}
+		decoded[char_index++] = (uint8_t)data;
+		len -= 2;
+	}
+
+	return char_index;
+}

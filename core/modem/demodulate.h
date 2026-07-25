@@ -358,4 +358,40 @@ int ardop_demod_psk_char(ardop_demod *d, int start, int carrier,
 int ardop_decode_psk_char(const ardop_demod *d, int carrier, uint8_t *decoded,
 			  bool carrier_already_ok);
 
+/**
+ * @brief Demodulate one 16QAM character for one carrier (stage 5).
+ *
+ * Ported from `Demod1CarQAMChar`. Like ardop_demod_psk_char but always two
+ * symbols and always Hanning-windowed; per-frame setup is ardop_demod_psk_init
+ * with @p psk_mode 8 (as `InitDemodQAM` does). Stores differential phase and
+ * magnitude per symbol; the magnitude carries the QAM amplitude bit.
+ *
+ * @param d                  Receiver; reads filtered_mixed, updates phases/mags.
+ * @param start              Sample offset of the first symbol.
+ * @param carrier            Carrier index.
+ * @param carrier_already_ok If true, skip the DSP but still advance phases_len.
+ * @return Samples consumed (2 * samples-per-symbol).
+ */
+int ardop_demod_qam_char(ardop_demod *d, int start, int carrier,
+			 bool carrier_already_ok);
+
+/**
+ * @brief Decode one carrier's 16QAM phases + magnitudes into bytes (stage 5).
+ *
+ * Ported from `Decode1CarQAM`. Each symbol is a nibble: three bits from the
+ * differential phase (8 sectors, same boundaries as 8PSK) plus one amplitude
+ * bit set when the magnitude is below a rolling threshold (inner constellation
+ * ring). Two symbols pack into one byte. The threshold adapts per symbol and is
+ * kept in @p d->car_mag_threshold[carrier].
+ *
+ * @param[in,out] d                  Receiver; reads phases/mags, updates the
+ *                                   per-carrier magnitude threshold.
+ * @param[in]     carrier            Carrier index.
+ * @param[out]    decoded            Decoded bytes (caller storage).
+ * @param[in]     carrier_already_ok If true, decode nothing.
+ * @return The number of bytes written to @p decoded.
+ */
+int ardop_decode_qam_char(ardop_demod *d, int carrier, uint8_t *decoded,
+			  bool carrier_already_ok);
+
 #endif /* ARDOP_MODEM_DEMODULATE_H_ */
