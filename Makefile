@@ -110,6 +110,7 @@ CORE_OBJS = \
 	core/codec/packed6.o \
 	core/codec/rs.o \
 	core/codec/stationid.o \
+	core/modem/goertzel.o \
 	core/modem/modulate.o \
 
 CORE_TESTS = \
@@ -119,6 +120,7 @@ CORE_TESTS = \
 	test/core/test_packed6 \
 	test/core/test_rs \
 	test/core/test_stationid \
+	test/core/test_goertzel \
 	test/core/test_modulate \
 
 # define newline for use with foreach to run tests

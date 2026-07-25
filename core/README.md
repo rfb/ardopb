@@ -155,7 +155,8 @@ participate in the program.
 | `codec` | `locator` — Maidenhead grid square | **done**, proven equivalent to the original `Locator` (empty-input now zeroes its output) |
 | **`codec`** | **layer complete** | frame, crc, packed6, rs, stationid, locator |
 | `modem` | `modulate` — TX (all modulations) | **done**, every sample of the whole golden corpus (22 control + 108 data cases: 4FSK 50/100/600, 4PSK/8PSK/16QAM at 1–8 carriers) proven bit-identical to ardopcf |
-| `modem` | demodulate / sync / busy | not started |
+| `modem` | `goertzel` — single-bin DFT + peak locator | **done**, the RX DSP foundation; proven bit-identical to the `GoertzelRealImag*`/`SpectralPeakLocator` originals |
+| `modem` | demodulate / sync / busy (RX pipeline) | in progress — Goertzel done; leader search, acquisition FSM, per-modulation demod next |
 | `link` | — | not started |
 
 The carrier-waveform templates (`int50BaudTwoToneLeaderTemplate` etc.) now live
