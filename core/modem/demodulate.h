@@ -341,4 +341,21 @@ void ardop_demod_psk_init(ardop_demod *d, int num_car, int psk_mode);
 int ardop_demod_psk_char(ardop_demod *d, int start, int carrier,
 			 bool carrier_already_ok);
 
+/**
+ * @brief Decode one carrier's PSK differential phases into bytes (stage 5).
+ *
+ * Ported from `Decode1CarPSK`. Slices @p d->phases[carrier] into symbols by
+ * milliradian decision boundaries: 4PSK maps four phases to one byte (2 bits
+ * each), 8PSK maps eight phases to three bytes (3 bits each). Consumes all
+ * @p d->phases_len phases. The result feeds ardop_decode_carrier_rs().
+ *
+ * @param[in]  d                  Receiver; reads phases[carrier] and psk_mode.
+ * @param[in]  carrier            Carrier index.
+ * @param[out] decoded            Decoded bytes (caller storage).
+ * @param[in]  carrier_already_ok If true, decode nothing (already decoded).
+ * @return The number of bytes written to @p decoded.
+ */
+int ardop_decode_psk_char(const ardop_demod *d, int carrier, uint8_t *decoded,
+			  bool carrier_already_ok);
+
 #endif /* ARDOP_MODEM_DEMODULATE_H_ */

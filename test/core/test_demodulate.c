@@ -98,6 +98,7 @@ static ardop_rs g_rs;
  */
 void InitDemodPSK(void);
 int Demod1CarPSKChar(int Start, int Carrier);
+void Decode1CarPSK(unsigned char *Decoded, int Carrier);
 extern char strMod[16];
 extern int intNumCar;
 extern int intPSKMode;
@@ -937,6 +938,52 @@ static void test_psk_matches_legacy(void **state)
 				expect_psk_same(&d, cars[ci], modes[mi], start);
 }
 
+/*
+ * PSK phase->bits decode over random phases (all decision regions), for 4PSK
+ * and 8PSK: the port must slice phases into bytes exactly like Decode1CarPSK.
+ */
+static void test_psk_decode_matches_legacy(void **state)
+{
+	(void)state;
+
+	uint32_t rng = 0x5A5AF00Du;
+	static ardop_demod d;
+	ardop_demod_init(&d, 100, 5);
+
+	for (int trial = 0; trial < 500; trial++) {
+		int psk_mode = (xorshift32(&rng) & 1u) ? 8 : 4;
+		int units = 1 + (int)(xorshift32(&rng) % 8u);
+		int len = units * psk_mode;
+		int carrier = (int)(xorshift32(&rng) % 8u);
+
+		for (int j = 0; j < len; j++) {
+			short p = (short)((int)(xorshift32(&rng) % 6601u)
+					  - 3300);
+			d.phases[carrier][j] = p;
+			intPhases[carrier][j] = p;
+		}
+		d.psk_mode = psk_mode;
+		d.phases_len = len;
+		intPSKMode = psk_mode;
+		intPhasesLen = len;
+		CarrierOk[carrier] = 0;
+
+		unsigned char odec[256] = {0};
+		uint8_t pdec[256] = {0};
+		Decode1CarPSK(odec, carrier);
+		int pn = ardop_decode_psk_char(&d, carrier, pdec, false);
+
+		int expect = (psk_mode == 4) ? len / 4 : (len / 8) * 3;
+		if (pn != expect)
+			fail_msg("psk%d decode count: got %d, expected %d",
+				 psk_mode, pn, expect);
+		for (int i = 0; i < pn; i++)
+			if (pdec[i] != odec[i])
+				fail_msg("psk%d byte %d: legacy %02x, port %02x",
+					 psk_mode, i, odec[i], pdec[i]);
+	}
+}
+
 int main(void)
 {
 	const struct CMUnitTest tests[] = {
@@ -954,6 +1001,7 @@ int main(void)
 		cmocka_unit_test(test_4fsk_char_matches_legacy),
 		cmocka_unit_test(test_carrier_rs_matches_legacy),
 		cmocka_unit_test(test_psk_matches_legacy),
+		cmocka_unit_test(test_psk_decode_matches_legacy),
 	};
 
 	ardop_test_setup();

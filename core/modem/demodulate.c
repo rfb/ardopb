@@ -874,3 +874,73 @@ int ardop_demod_psk_char(ardop_demod *d, int start, int carrier,
 
 	return start - orig_start;
 }
+
+int ardop_decode_psk_char(const ardop_demod *d, int carrier, uint8_t *decoded,
+			  bool carrier_already_ok)
+{
+	int len = d->phases_len;
+	int psk_start = 0;
+	int char_index = 0;
+
+	if (carrier_already_ok)
+		return 0;  /* already decoded; don't do it again */
+
+	while (len > 0) {
+		if (d->psk_mode == 4) {
+			/* Four phases -> one byte, 2 bits each. */
+			uint8_t raw = 0;
+
+			for (int k = 0; k < 4; k++) {
+				short p = d->phases[carrier][psk_start];
+
+				if (k != 0)
+					raw = (uint8_t)(raw << 2);
+				if (p < 786 && p > -786)
+					;  /* 0 */
+				else if (p >= 786 && p < 2356)
+					raw = (uint8_t)(raw + 1);
+				else if (p >= 2356 || p <= -2356)
+					raw = (uint8_t)(raw + 2);
+				else
+					raw = (uint8_t)(raw + 3);
+				psk_start++;
+			}
+			decoded[char_index++] = raw;
+			len -= 4;
+		} else if (d->psk_mode == 8) {
+			/* Eight phases -> 24 bits -> three bytes, 3 bits each. */
+			unsigned int bits24 = 0;
+
+			for (int k = 0; k < 8; k++) {
+				short p = d->phases[carrier][psk_start];
+
+				bits24 <<= 3;
+				if (p < 393 && p > -393)
+					;  /* 0 */
+				else if (p >= 393 && p < 1179)
+					bits24 += 1;
+				else if (p >= 1179 && p < 1965)
+					bits24 += 2;
+				else if (p >= 1965 && p < 2751)
+					bits24 += 3;
+				else if (p >= 2751 || p < -2751)
+					bits24 += 4;
+				else if (p >= -2751 && p < -1965)
+					bits24 += 5;
+				else if (p >= -1965 && p <= -1179)
+					bits24 += 6;
+				else
+					bits24 += 7;
+				psk_start++;
+			}
+			decoded[char_index++] = (uint8_t)(bits24 >> 16);
+			decoded[char_index++] = (uint8_t)(bits24 >> 8);
+			decoded[char_index++] = (uint8_t)bits24;
+			len -= 8;
+		} else {
+			return char_index;  /* unsupported PSK mode */
+		}
+	}
+
+	return char_index;
+}
