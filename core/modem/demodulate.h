@@ -170,6 +170,8 @@ typedef struct {
 	int frame_samp_per_sym;      /**< Samples per data symbol (12000/baud). */
 	int symbols_left;            /**< Bytes still to demodulate (all carriers). */
 	int char_index;              /**< Next byte index within a carrier block. */
+	bool psk_init_done;          /**< PSK/QAM training symbol consumed this frame. */
+	bool carrier_ok[ARDOP_DEMOD_MAX_CARRIERS]; /**< Per-carrier decode success. */
 	uint8_t frame_data[ARDOP_DEMOD_MAX_CARRIERS][ARDOP_DEMOD_MAX_CARRIER_BYTES];
 	                             /**< Raw demodulated bytes, per carrier. */
 	uint8_t payload[ARDOP_DEMOD_MAX_PAYLOAD]; /**< Decoded payload for the event. */

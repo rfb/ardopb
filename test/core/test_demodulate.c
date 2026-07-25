@@ -1110,24 +1110,18 @@ static void test_qam_decode_matches_legacy(void **state)
 }
 
 /*
- * The capstone: a full core TX -> RX round trip through the streaming push FSM.
- * Hand-build an encoded 4FSK.200.50 data frame ([ft, ft^sid] + [len][data][CRC]
- * [RS]) around a known payload, modulate it with the core modulator, then push
- * the samples in chunks through ardop_demod_push and require it to emit
- * FRAME_DECODED with exactly that payload -- the whole receiver, assembled.
+ * A full core TX -> RX round trip through the streaming push FSM. Hand-build an
+ * encoded single-carrier data frame ([ft, ft^sid] + [len][data][CRC][RS]) around
+ * a known payload, modulate it with the core modulator, then push the samples in
+ * chunks through ardop_demod_push and require FRAME_DECODED with exactly that
+ * payload -- the whole receiver, assembled, for one modulation.
  */
-static void test_push_decodes_modulated_4fsk_frame(void **state)
+static void expect_push_roundtrip(uint8_t ft, int data_len, int rs_len)
 {
-	(void)state;
-
 	assert_true(ardop_rs_init(&g_rs, kRSLens, NUM_RSLENS));
 
-	const uint8_t ft = 0x48;   /* 4FSK.200.50S.E: 1 car, 50 baud */
-	const int data_len = 16, rs_len = 4;
-
-	/* Known payload, and the per-carrier RS block around it. */
-	uint32_t rng = 0x0DDBA115u;
-	uint8_t payload[16];
+	uint32_t rng = 0x0DDBA115u ^ ft;
+	uint8_t payload[256];
 	for (int i = 0; i < data_len; i++)
 		payload[i] = (uint8_t)xorshift32(&rng);
 
@@ -1142,13 +1136,12 @@ static void test_push_decodes_modulated_4fsk_frame(void **state)
 	assert_int_equal(ardop_rs_append(&g_rs, block, data_len + 3, rs_len), 0);
 	int block_len = data_len + rs_len + 3;
 
-	uint8_t encoded[64];
+	uint8_t encoded[320];
 	encoded[0] = ft;
 	encoded[1] = ft ^ 0;   /* session id 0 */
 	memcpy(&encoded[2], block, (size_t)block_len);
 	size_t enc_len = (size_t)(2 + block_len);
 
-	/* Modulate the frame. */
 	static int16_t frame[ARDOP_MOD_MAX_SAMPLES];
 	ardop_mod mm;
 	ardop_mod_init(&mm, 30);
@@ -1157,7 +1150,13 @@ static void test_push_decodes_modulated_4fsk_frame(void **state)
 	size_t total = ardop_mod_pull(&mm, frame, ARDOP_MOD_MAX_SAMPLES);
 	assert_true(total > 3000);
 
-	/* Receive it through the push FSM. */
+	/* Real capture has silence after the frame; the demod needs it to flush
+	 * the last symbols (the streaming loop holds back ~1.5 chars). */
+	size_t pad = total + 2400;
+	assert_true(pad <= ARDOP_MOD_MAX_SAMPLES);
+	for (size_t i = total; i < pad; i++)
+		frame[i] = 0;
+
 	static ardop_demod d;
 	ardop_demod_init(&d, 100, 5);
 	d.rs = &g_rs;
@@ -1174,8 +1173,8 @@ static void test_push_decodes_modulated_4fsk_frame(void **state)
 	uint8_t got_data[256];
 	uint64_t now = 1000000ull;   /* past the full-search gate */
 
-	for (size_t off = 0; off < total; off += 1200) {
-		size_t chunk = total - off < 1200 ? total - off : 1200;
+	for (size_t off = 0; off < pad; off += 1200) {
+		size_t chunk = pad - off < 1200 ? pad - off : 1200;
 		ardop_event evs[8];
 		size_t ne = ardop_demod_push(&d, &frame[off], chunk, now, evs, 8);
 		now += chunk;
@@ -1192,12 +1191,25 @@ static void test_push_decodes_modulated_4fsk_frame(void **state)
 		}
 	}
 
-	assert_true(got_leader);
-	assert_true(got_decoded);
+	if (!got_leader)
+		fail_msg("ft %02x: no leader detected", ft);
+	if (!got_decoded)
+		fail_msg("ft %02x: no frame decoded", ft);
 	assert_int_equal(got_type, ft);
 	assert_int_equal(got_len, data_len);
 	for (int i = 0; i < data_len; i++)
-		assert_int_equal(got_data[i], payload[i]);
+		if (got_data[i] != payload[i])
+			fail_msg("ft %02x byte %d: sent %02x, got %02x", ft, i,
+				 payload[i], got_data[i]);
+}
+
+/* The capstone: end-to-end round trip for a single-carrier 4FSK and 4PSK frame. */
+static void test_push_roundtrip(void **state)
+{
+	(void)state;
+
+	expect_push_roundtrip(0x48, 16, 4);   /* 4FSK.200.50S:  1 car, 50 baud */
+	expect_push_roundtrip(0x42, 16, 8);   /* 4PSK.200.100S: 1 car, 100 baud */
 }
 
 int main(void)
@@ -1220,7 +1232,7 @@ int main(void)
 		cmocka_unit_test(test_psk_decode_matches_legacy),
 		cmocka_unit_test(test_qam_matches_legacy),
 		cmocka_unit_test(test_qam_decode_matches_legacy),
-		cmocka_unit_test(test_push_decodes_modulated_4fsk_frame),
+		cmocka_unit_test(test_push_roundtrip),
 	};
 
 	ardop_test_setup();

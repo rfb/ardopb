@@ -1107,25 +1107,47 @@ static void emit(ardop_event *events, size_t *nev, size_t max_events,
 }
 
 /*
- * A whole frame's carriers are demodulated; RS-decode each and emit the result.
- * For now the single-carrier path (4FSK/PSK/QAM 1 carrier) is wired; wider
- * frames extend the carrier loop.
+ * A whole frame's carriers have been demodulated (4FSK bytes are already in
+ * frame_data; PSK/QAM leave phases/mags to decode here). Turn each carrier into
+ * bytes, RS-correct it, concatenate the payloads, and emit the result.
  */
 static void deliver_frame(ardop_demod *d, ardop_event *events, size_t *nev,
 			  size_t max_events)
 {
-	uint8_t *raw = d->frame_data[0];
-	bool ok = false;
-	int net = ardop_decode_carrier_rs(d->rs, raw, d->payload,
-					  d->frame_data_len, d->frame_rs_len,
-					  d->frame_type, false, &ok);
+	int frame_len = 0;
+	bool all_ok = true;
 	ardop_event ev = {0};
 
+	for (int c = 0; c < d->frame_num_car; c++) {
+		bool ok = false;
+		int net;
+
+		if (d->frame_mod == ARDOP_MOD_4PSK
+		    || d->frame_mod == ARDOP_MOD_8PSK)
+			ardop_decode_psk_char(d, c, d->frame_data[c],
+					      d->carrier_ok[c]);
+		else if (d->frame_mod == ARDOP_MOD_16QAM)
+			ardop_decode_qam_char(d, c, d->frame_data[c],
+					      d->carrier_ok[c]);
+		/* 4FSK: frame_data[c] was filled while streaming. */
+
+		net = ardop_decode_carrier_rs(d->rs, d->frame_data[c],
+					      &d->payload[frame_len],
+					      d->frame_data_len, d->frame_rs_len,
+					      d->frame_type, d->carrier_ok[c],
+					      &ok);
+		if (ok)
+			d->carrier_ok[c] = true;
+		frame_len += net;
+		if (!d->carrier_ok[c])
+			all_ok = false;
+	}
+
 	ev.frame_type = d->frame_type;
-	if (ok) {
+	if (all_ok) {
 		ev.kind = ARDOP_EV_FRAME_DECODED;
 		ev.data = d->payload;
-		ev.data_len = net;
+		ev.data_len = frame_len;
 	} else {
 		ev.kind = ARDOP_EV_FRAME_BAD;
 	}
@@ -1270,6 +1292,9 @@ size_t ardop_demod_push(ardop_demod *d, const int16_t *samples, size_t n,
 			d->symbols_left = d->frame_data_len + d->frame_rs_len;
 		d->char_index = 0;
 		d->phases_len = 0;
+		d->psk_init_done = false;
+		for (int c = 0; c < ARDOP_DEMOD_MAX_CARRIERS; c++)
+			d->carrier_ok[c] = false;
 
 		if (d->frame_mod == ARDOP_MOD_4PSK)
 			ardop_demod_psk_init(d, d->frame_num_car, 4);
@@ -1309,6 +1334,66 @@ size_t ardop_demod_push(ardop_demod *d, const int16_t *samples, size_t n,
 			d->filtered_mixed_len -= used;
 
 			if (d->symbols_left == 0) {
+				d->state = ARDOP_RX_SEARCHING_FOR_LEADER;
+				clear_mixed(d);
+				deliver_frame(d, events, &nev, max_events);
+			}
+		}
+	}
+
+	/* --- Acquire frame: stream the data (PSK) --- */
+	if (d->state == ARDOP_RX_ACQUIRE_FRAME
+	    && (d->frame_mod == ARDOP_MOD_4PSK
+		|| d->frame_mod == ARDOP_MOD_8PSK)) {
+		int psk_mode = (d->frame_mod == ARDOP_MOD_8PSK) ? 8 : 4;
+		int samp = d->frame_samp_per_sym;
+		int start = 0;
+
+		while (d->state == ARDOP_RX_ACQUIRE_FRAME) {
+			int used;
+
+			/* Need ~1.5 chars (one char is psk_mode symbols). */
+			if (d->filtered_mixed_len < 1.5 * psk_mode * samp) {
+				if (d->filtered_mixed_len > 0 && start > 0)
+					memmove(d->filtered_mixed,
+						&d->filtered_mixed[start],
+						(size_t)d->filtered_mixed_len
+						* sizeof(int16_t));
+				return nev;
+			}
+
+			if (!d->psk_init_done) {
+				/* Need a bit more before the first char. */
+				if (d->filtered_mixed_len < 2.5 * psk_mode * samp)
+					return nev;
+				ardop_demod_psk_init(d, d->frame_num_car,
+						     psk_mode);
+				d->filtered_mixed_len -= samp;  /* skip training */
+				start += samp;
+				d->psk_init_done = true;
+			}
+
+			/* Demodulate one char for each carrier. Carriers past
+			 * the first rewind phases_len so all write the same
+			 * slots (the decoder reads [0, phases_len) per carrier). */
+			used = ardop_demod_psk_char(d, start, 0,
+						    d->carrier_ok[0]);
+			for (int c = 1; c < d->frame_num_car; c++) {
+				d->phases_len -= psk_mode;
+				ardop_demod_psk_char(d, start, c,
+						     d->carrier_ok[c]);
+			}
+
+			/* One 4PSK char is a byte; one 8PSK char is three. */
+			if (psk_mode == 4)
+				d->symbols_left -= 1;
+			else
+				d->symbols_left -= 3;
+
+			start += used;
+			d->filtered_mixed_len -= used;
+
+			if (d->symbols_left <= 0) {
 				d->state = ARDOP_RX_SEARCHING_FOR_LEADER;
 				clear_mixed(d);
 				deliver_frame(d, events, &nev, max_events);
