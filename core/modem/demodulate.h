@@ -35,6 +35,12 @@ typedef enum {
 	ARDOP_RX_ACQUIRE_FRAME,
 } ardop_rx_state;
 
+/** Maximum simultaneous carriers (8-carrier PSK is the widest frame). */
+#define ARDOP_DEMOD_MAX_CARRIERS 8
+
+/** Maximum PSK symbols demodulated per carrier per frame. */
+#define ARDOP_DEMOD_MAX_PSK_SYMBOLS 520
+
 /**
  * @brief Receiver state. Caller-owned; the members are an implementation
  *        detail and grow as demodulator stages are ported.
@@ -80,6 +86,23 @@ typedef struct {
 	 * and AcquireFrameSyncRSB. */
 	int mfs_read_ptr;   /**< Read cursor into filtered_mixed. */
 	int leader_rcvd_ms; /**< Measured leader length, ms (ARQ timing input). */
+
+	/* --- stage 5: per-frame PSK demod state (group d) ---
+	 * Set up by ardop_demod_psk_init at the start of a PSK frame, then filled
+	 * by ardop_demod_psk_char one carrier at a time. Ported from InitDemodPSK
+	 * and Demod1CarPSKChar. */
+	int psk_mode;          /**< PSK order: 4 or 8 (also symbols per char). */
+	int psk_samp_per_sym;  /**< Samples per PSK symbol (120). */
+	float freq_bin[ARDOP_DEMOD_MAX_CARRIERS];  /**< Goertzel bin per carrier. */
+	short n_for_goertzel[ARDOP_DEMOD_MAX_CARRIERS]; /**< Goertzel length. */
+	short cp[ARDOP_DEMOD_MAX_CARRIERS];        /**< Cyclic-prefix offset. */
+	short psk_phase_1[ARDOP_DEMOD_MAX_CARRIERS]; /**< Prior phase, milliradians. */
+	short car_mag_threshold[ARDOP_DEMOD_MAX_CARRIERS]; /**< Ref magnitude*0.75. */
+	short phases[ARDOP_DEMOD_MAX_CARRIERS][ARDOP_DEMOD_MAX_PSK_SYMBOLS];
+	                       /**< Differential phases per carrier, milliradians. */
+	short mags[ARDOP_DEMOD_MAX_CARRIERS][ARDOP_DEMOD_MAX_PSK_SYMBOLS];
+	                       /**< Symbol magnitudes per carrier. */
+	int phases_len;        /**< Symbols demodulated so far (index into above). */
 } ardop_demod;
 
 /**
@@ -284,5 +307,38 @@ int ardop_decode_carrier_rs(const ardop_rs *rs, uint8_t *raw,
 			    uint8_t *corrected, int data_len, int rs_len,
 			    uint8_t frame_type, bool carrier_already_ok,
 			    bool *decoded_ok);
+
+/**
+ * @brief Set up per-frame PSK demodulation state (stage 5).
+ *
+ * Ported from `InitDemodPSK` (the demod-relevant part; the disabled
+ * symbol-tracking init is dropped). Assigns each carrier its frequency bin and
+ * Goertzel length, and measures an initial reference phase (and magnitude
+ * threshold) from the training symbol at the start of @p d->filtered_mixed.
+ * Carriers run highest frequency first (the sideband is reversed).
+ *
+ * @param d        Receiver; reads filtered_mixed, initialises the PSK state.
+ * @param num_car  Number of carriers (1, 2, 4 or 8).
+ * @param psk_mode PSK order: 4 (4PSK) or 8 (8PSK).
+ */
+void ardop_demod_psk_init(ardop_demod *d, int num_car, int psk_mode);
+
+/**
+ * @brief Demodulate one PSK character for one carrier (stage 5).
+ *
+ * Ported from `Demod1CarPSKChar`. Demodulates @p d->psk_mode symbols starting at
+ * @p start: for each it takes a (Hanning-windowed) Goertzel, stores the
+ * magnitude and the differential phase from the prior symbol (in milliradians),
+ * and advances @p d->phases_len. Returns the number of samples consumed.
+ *
+ * @param d                  Receiver; reads filtered_mixed, updates phases/mags.
+ * @param start              Sample offset of the first symbol.
+ * @param carrier            Carrier index (0-based).
+ * @param carrier_already_ok If true, skip the DSP (this carrier already decoded)
+ *                           but still advance phases_len, as the original does.
+ * @return Samples consumed (psk_mode * samples-per-symbol).
+ */
+int ardop_demod_psk_char(ardop_demod *d, int start, int carrier,
+			 bool carrier_already_ok);
 
 #endif /* ARDOP_MODEM_DEMODULATE_H_ */

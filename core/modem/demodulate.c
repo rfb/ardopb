@@ -784,3 +784,93 @@ bad:
 	memcpy(corrected, &raw[1], (size_t)data_len);
 	return data_len;
 }
+
+/*
+ * Angle subtraction in milliradians, wrapped to +/- pi (+/- 3142). Ported from
+ * ComputeAng1_Ang2.
+ */
+static int compute_ang1_ang2(int ang1, int ang2)
+{
+	int diff = ang1 - ang2;
+
+	if (diff < -3142)
+		diff += 6284;
+	else if (diff > 3142)
+		diff -= 6284;
+	return diff;
+}
+
+void ardop_demod_psk_init(ardop_demod *d, int num_car, int psk_mode)
+{
+	/* Highest carrier first (reversed sideband): 1500 for a single carrier,
+	 * otherwise stepping down by 200 Hz from the top of the group. */
+	float car_freq = (num_car == 1) ? 1500.0f
+					: (float)(1400 + (num_car / 2) * 200);
+
+	d->psk_mode = psk_mode;
+	d->psk_samp_per_sym = 120;
+	d->phases_len = 0;
+
+	for (int i = 0; i < num_car; i++) {
+		float real, imag;
+
+		d->n_for_goertzel[i] = 120;
+		d->freq_bin[i] = car_freq / 100;
+		d->cp[i] = 0;
+
+		/* Reference phase from the training symbol at the buffer start. */
+		ardop_goertzel_hanning(d->filtered_mixed, 0, d->n_for_goertzel[i],
+				       d->freq_bin[i], &real, &imag);
+		d->psk_phase_1[i] = (short)(1000 * atan2f(imag, real));
+
+		/* Reference magnitude (for QAM); the truncation to short before
+		 * the 0.75 scaling is the inherited two-step and is preserved. */
+		d->car_mag_threshold[i] =
+			(short)sqrtf(powf(real, 2) + powf(imag, 2));
+		d->car_mag_threshold[i] =
+			(short)(d->car_mag_threshold[i] * 0.75);
+
+		car_freq -= 200;
+	}
+}
+
+int ardop_demod_psk_char(ardop_demod *d, int start, int carrier,
+			 bool carrier_already_ok)
+{
+	int num_symbols = d->psk_mode;
+	int orig_start = start;
+
+	if (carrier_already_ok) {
+		/* Skip the DSP but still advance, as the original does. */
+		d->phases_len += num_symbols;
+		return d->psk_samp_per_sym * num_symbols;
+	}
+
+	for (int i = 0; i < num_symbols; i++) {
+		float real, imag;
+		short phase_0;
+
+		if (d->cp[carrier] == 0)
+			ardop_goertzel_hanning(d->filtered_mixed, start,
+					       d->n_for_goertzel[carrier],
+					       d->freq_bin[carrier],
+					       &real, &imag);
+		else
+			ardop_goertzel(d->filtered_mixed,
+				       start + d->cp[carrier],
+				       d->n_for_goertzel[carrier],
+				       d->freq_bin[carrier], &real, &imag);
+
+		d->mags[carrier][d->phases_len] =
+			(short)sqrtf(powf(real, 2) + powf(imag, 2));
+		phase_0 = (short)(1000 * atan2f(imag, real));
+		d->phases[carrier][d->phases_len] =
+			(short)(-compute_ang1_ang2(phase_0,
+						   d->psk_phase_1[carrier]));
+		d->psk_phase_1[carrier] = phase_0;
+		d->phases_len++;
+		start += d->psk_samp_per_sym;
+	}
+
+	return start - orig_start;
+}

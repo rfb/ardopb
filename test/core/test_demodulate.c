@@ -91,6 +91,26 @@ static const int kRSLens[] = {2, 4, 8, 16, 32, 36, 50, 64};
 static ardop_rs g_rs;
 
 /*
+ * Oracle for stage 5 (PSK): InitDemodPSK sets up per-carrier frequency bins and
+ * reference phases from the training symbol; Demod1CarPSKChar demodulates
+ * psk_mode symbols per carrier into intPhases/intMags. The carrier count comes
+ * from intNumCar and the PSK order from strMod[0].
+ */
+void InitDemodPSK(void);
+int Demod1CarPSKChar(int Start, int Carrier);
+extern char strMod[16];
+extern int intNumCar;
+extern int intPSKMode;
+extern int intPhasesLen;
+extern short intPhases[8][520];
+extern short intMags[8][520];
+extern short intPSKPhase_1[8];
+extern short intNforGoertzel[8];
+extern short intCP[8];
+extern short intCarMagThreshold[8];
+extern float dblFreqBin[8];
+
+/*
  * Oracle for stage 4b: the minimal-distance acceptance decision. It reads the
  * connection state from globals (ProtocolState selects the valid-types list;
  * blnPending/blnARQConnected/bytLastARQSessionID pick the branch) and, on a
@@ -827,6 +847,96 @@ static void test_carrier_rs_matches_legacy(void **state)
 	}
 }
 
+/*
+ * PSK init + per-carrier demod on real baseband. For each carrier count and PSK
+ * order, InitDemodPSK and the port must set up identical carrier bins and
+ * reference phases, and Demod1CarPSKChar and the port must produce identical
+ * differential phases and magnitudes (all integer milliradians -- the
+ * byte-exactness-sensitive part) at every carrier and offset.
+ */
+static void expect_psk_same(ardop_demod *d, int num_car, int psk_mode,
+			    int start)
+{
+	strMod[0] = (psk_mode == 8) ? '8' : '4';
+	strMod[1] = 0;
+	intNumCar = num_car;
+	InitDemodPSK();
+	for (int c = 0; c < 8; c++)
+		CarrierOk[c] = 0;
+	for (int c = 0; c < num_car; c++)
+		Demod1CarPSKChar(start, c);
+
+	ardop_demod_psk_init(d, num_car, psk_mode);
+	for (int c = 0; c < num_car; c++)
+		ardop_demod_psk_char(d, start, c, false);
+
+	if (d->phases_len != intPhasesLen)
+		fail_msg("psk %dc/%d phases_len: legacy %d, port %d", num_car,
+			 psk_mode, intPhasesLen, d->phases_len);
+
+	for (int c = 0; c < num_car; c++) {
+		/* Init state (unchanged by the demod). */
+		if (d->freq_bin[c] != dblFreqBin[c])
+			fail_msg("psk %dc/%d car %d freq_bin: legacy %g, port %g",
+				 num_car, psk_mode, c, (double)dblFreqBin[c],
+				 (double)d->freq_bin[c]);
+		if (d->n_for_goertzel[c] != intNforGoertzel[c]
+		    || d->cp[c] != intCP[c]
+		    || d->car_mag_threshold[c] != intCarMagThreshold[c])
+			fail_msg("psk %dc/%d car %d init state mismatch",
+				 num_car, psk_mode, c);
+		if (d->psk_phase_1[c] != intPSKPhase_1[c])
+			fail_msg("psk %dc/%d car %d final phase: legacy %d, port %d",
+				 num_car, psk_mode, c, intPSKPhase_1[c],
+				 d->psk_phase_1[c]);
+
+		/* Demod output: carrier c wrote at indices [c*psk_mode, ...). */
+		for (int j = c * psk_mode; j < (c + 1) * psk_mode; j++) {
+			if (d->phases[c][j] != intPhases[c][j])
+				fail_msg("psk %dc/%d car %d phase[%d]: "
+					 "legacy %d, port %d", num_car, psk_mode,
+					 c, j, intPhases[c][j], d->phases[c][j]);
+			if (d->mags[c][j] != intMags[c][j])
+				fail_msg("psk %dc/%d car %d mag[%d]: "
+					 "legacy %d, port %d", num_car, psk_mode,
+					 c, j, intMags[c][j], d->mags[c][j]);
+		}
+	}
+}
+
+static void test_psk_matches_legacy(void **state)
+{
+	(void)state;
+
+	/* A real frame's baseband gives the carriers something to lock onto. */
+	static int16_t frame[ARDOP_MOD_MAX_SAMPLES];
+	ardop_mod m;
+	ardop_mod_init(&m, 30);
+	const uint8_t enc[2] = { 0x23, 0x23 };
+	assert_true(ardop_mod_begin(&m, 0x23, enc, sizeof(enc), 240, frame,
+				    ARDOP_MOD_MAX_SAMPLES));
+	size_t nn = ardop_mod_pull(&m, frame, ARDOP_MOD_MAX_SAMPLES);
+	int total = (int)nn < 4900 ? (int)nn : 4900;
+
+	static ardop_demod d;
+	ardop_demod_init(&d, 100, 5);
+	for (int off = 0; off < total; off += 1200) {
+		int len = total - off < 1200 ? total - off : 1200;
+		ardop_demod_mix_filter(&d, &frame[off], len, 0.0f);
+	}
+	intFilteredMixedSamplesLength = d.filtered_mixed_len;
+	for (int i = 0; i < d.filtered_mixed_len; i++)
+		intFilteredMixedSamples[i] = d.filtered_mixed[i];
+
+	int cars[] = {1, 2, 4, 8};
+	int modes[] = {4, 8};
+	for (int ci = 0; ci < 4; ci++)
+		for (int mi = 0; mi < 2; mi++)
+			for (int start = 200; start + 8 * 120 <= total;
+			     start += 700)
+				expect_psk_same(&d, cars[ci], modes[mi], start);
+}
+
 int main(void)
 {
 	const struct CMUnitTest tests[] = {
@@ -843,6 +953,7 @@ int main(void)
 		cmocka_unit_test(test_mindist_matches_legacy_noise),
 		cmocka_unit_test(test_4fsk_char_matches_legacy),
 		cmocka_unit_test(test_carrier_rs_matches_legacy),
+		cmocka_unit_test(test_psk_matches_legacy),
 	};
 
 	ardop_test_setup();
