@@ -7,6 +7,7 @@
 
 #include "setup.h"
 
+#include "codec/frame.h"
 #include "modem/demodulate.h"
 #include "modem/modulate.h"
 
@@ -59,6 +60,27 @@ int DemodFrameType4FSK(int intPtr, short *intSamples, int *intToneMags);
 float ComputeDecodeDistance(int intTonePtr, int *intToneMags,
 			    unsigned char bytFrameType, unsigned char bytID);
 extern int UseSDFT;
+
+/*
+ * Oracle for stage 4b: the minimal-distance acceptance decision. It reads the
+ * connection state from globals (ProtocolState selects the valid-types list;
+ * blnPending/blnARQConnected/bytLastARQSessionID pick the branch) and, on a
+ * confident decode, sets dttLastGoodFrameTypeDecode = Now. The test drives all
+ * of those and detects the timestamp write to compare against set_last_good.
+ */
+int MinimalDistanceFrameType(int *intToneMags, unsigned char bytSessionID);
+extern int ProtocolState;   /* enum _ARDOPState; ISS == 2 */
+extern int blnPending;
+extern int blnARQConnected;
+extern unsigned char bytLastARQSessionID;
+extern float dblOffsetHz;
+extern const unsigned char bytValidFrameTypesALL[];
+extern const unsigned char bytValidFrameTypesISS[];
+extern int bytValidFrameTypesLengthALL;
+extern int bytValidFrameTypesLengthISS;
+
+#define ISS_STATE 2   /* enum _ARDOPState: OFFLINE, DISC, ISS, ... */
+#define NON_ISS_STATE 1
 
 /* Full-search branch: Now - lastGoodDecode must exceed 20000 ms. */
 #define NOW_MS 1000000
@@ -476,6 +498,135 @@ static void test_decode_distance_matches_legacy(void **state)
 	}
 }
 
+/*
+ * Run the minimal-distance decision in both the original and the port from the
+ * same tone magnitudes and the same connection state, and require the same
+ * frame type and the same "refresh the tuning timestamp" decision. The oracle
+ * reports the timestamp write by whether it overwrote our sentinel with Now.
+ */
+static void expect_mindist_same(const int32_t *mags, bool is_iss,
+				uint8_t session_id, bool pending,
+				bool arq_connected, uint8_t last_arq_sid, int tag)
+{
+	int omags[ARDOP_FRAMETYPE_TONE_MAGS];
+	for (int i = 0; i < ARDOP_FRAMETYPE_TONE_MAGS; i++)
+		omags[i] = mags[i];
+
+	ProtocolState = is_iss ? ISS_STATE : NON_ISS_STATE;
+	blnPending = pending;
+	blnARQConnected = arq_connected;
+	bytLastARQSessionID = last_arq_sid;
+	dblOffsetHz = 12.0f;
+	AccumulateStats = 0;
+	DecodeWav[0][0] = 'x';
+	WavNow = 555555;
+	dttLastGoodFrameTypeDecode = -999999;
+
+	int oret = MinimalDistanceFrameType(omags, session_id);
+	bool oset = (dttLastGoodFrameTypeDecode == 555555);
+
+	ardop_frametype_decode_ctx ctx = {
+		.valid_types = is_iss ? bytValidFrameTypesISS
+				      : bytValidFrameTypesALL,
+		.valid_len = is_iss ? bytValidFrameTypesLengthISS
+				    : bytValidFrameTypesLengthALL,
+		.session_id = session_id,
+		.pending = pending,
+		.arq_connected = arq_connected,
+		.last_arq_session_id = last_arq_sid,
+	};
+	bool mset = false;
+	int mret = ardop_frametype_minimal_distance(mags, &ctx, &mset);
+
+	if (oret != mret)
+		fail_msg("[%d] type: legacy %d, port %d "
+			 "(iss=%d sid=%02x pend=%d conn=%d last=%02x)", tag,
+			 oret, mret, is_iss, session_id, pending, arq_connected,
+			 last_arq_sid);
+	if (oset != mset)
+		fail_msg("[%d] set_last_good: legacy %d, port %d", tag, oset,
+			 mset);
+}
+
+/* Force one frame-type byte's tones to cleanly encode value b at tone_ptr. */
+static void set_byte_tones(int32_t *mags, int tone_ptr, uint8_t b)
+{
+	uint8_t mask = 0xC0;
+	for (int j = 0; j <= 4; j++) {
+		int idx;
+		if (j < 4)
+			idx = (b & mask) >> (6 - 2 * j);
+		else
+			idx = ardop_frame_type_parity(b);
+		for (int k = 0; k < 4; k++)
+			mags[tone_ptr + 4 * j + k] = (k == idx) ? 10000 : 1;
+		mask = (uint8_t)(mask >> 2);
+	}
+}
+
+/*
+ * Synthesised clean decodes across random types and connection states. Setting
+ * byte 1's tones to T1 and byte 2's to T2^session makes the two bytes decode
+ * to T1 and T2, so iat1==iat2 (and the accept branches) fire whenever T1==T2 --
+ * exercising acceptance, not just rejection, deterministically. Both
+ * implementations must agree on every combination.
+ */
+static void test_mindist_matches_legacy_synth(void **state)
+{
+	(void)state;
+
+	uint32_t rng = 0x1234ABCDu;
+	int lenALL = bytValidFrameTypesLengthALL;
+
+	for (int t = 0; t < 5000; t++) {
+		uint8_t t1 = bytValidFrameTypesALL[xorshift32(&rng)
+						   % (uint32_t)lenALL];
+		/* Half the time force T2==T1 so iat1==iat2 can accept. */
+		uint8_t t2 = (xorshift32(&rng) & 1u)
+			     ? t1
+			     : bytValidFrameTypesALL[xorshift32(&rng)
+						     % (uint32_t)lenALL];
+		uint8_t session = (uint8_t)xorshift32(&rng);
+		if (xorshift32(&rng) % 3u == 0)
+			session = 0xFF;
+		uint8_t last = (uint8_t)xorshift32(&rng);
+		bool pending = xorshift32(&rng) & 1u;
+		bool conn = xorshift32(&rng) & 1u;
+		bool is_iss = xorshift32(&rng) & 1u;
+
+		int32_t mags[ARDOP_FRAMETYPE_TONE_MAGS];
+		set_byte_tones(mags, 0, t1);
+		set_byte_tones(mags, 20, (uint8_t)(t2 ^ session));
+
+		expect_mindist_same(mags, is_iss, session, pending, conn, last,
+				     t);
+	}
+}
+
+/* Noisy tone sets: mostly rejects, exercising the argmin and the reject paths. */
+static void test_mindist_matches_legacy_noise(void **state)
+{
+	(void)state;
+
+	uint32_t rng = 0x77AA33FFu;
+	for (int t = 0; t < 3000; t++) {
+		int32_t mags[ARDOP_FRAMETYPE_TONE_MAGS];
+		for (int i = 0; i < ARDOP_FRAMETYPE_TONE_MAGS; i++)
+			mags[i] = (int32_t)(xorshift32(&rng) % 100000u);
+
+		uint8_t session = (uint8_t)xorshift32(&rng);
+		if (xorshift32(&rng) % 3u == 0)
+			session = 0xFF;
+		uint8_t last = (uint8_t)xorshift32(&rng);
+		bool pending = xorshift32(&rng) & 1u;
+		bool conn = xorshift32(&rng) & 1u;
+		bool is_iss = xorshift32(&rng) & 1u;
+
+		expect_mindist_same(mags, is_iss, session, pending, conn, last,
+				     t);
+	}
+}
+
 int main(void)
 {
 	const struct CMUnitTest tests[] = {
@@ -488,6 +639,8 @@ int main(void)
 		cmocka_unit_test(test_sync_matches_legacy_on_noise),
 		cmocka_unit_test(test_frametype_matches_legacy_on_frame),
 		cmocka_unit_test(test_decode_distance_matches_legacy),
+		cmocka_unit_test(test_mindist_matches_legacy_synth),
+		cmocka_unit_test(test_mindist_matches_legacy_noise),
 	};
 
 	ardop_test_setup();

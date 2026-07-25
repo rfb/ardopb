@@ -192,4 +192,41 @@ bool ardop_demod_frametype_tonemags(const ardop_demod *d, int ptr,
 float ardop_frametype_decode_distance(const int32_t *mags, int tone_ptr,
 				      uint8_t frame_type, uint8_t id);
 
+/**
+ * @brief Protocol context for the frame-type acceptance decision (stage 4b).
+ *
+ * The frame-type decision is protocol-coupled: the second byte is XORed with
+ * the session id (a decode key you cannot omit), and how confident a match must
+ * be depends on the connection state. Rather than read that state from globals,
+ * the demodulator is handed it explicitly here, keeping the core free of
+ * protocol state. The caller (the link layer, eventually) fills this in.
+ */
+typedef struct {
+	const uint8_t *valid_types; /**< Allowed types (bytValidFrameTypes{ISS,ALL}). */
+	int valid_len;              /**< Number of entries in valid_types. */
+	uint8_t session_id;         /**< Decode key for the 2nd byte (bytSessionID). */
+	bool pending;               /**< ARQ connection pending (blnPending). */
+	bool arq_connected;         /**< ARQ session up (blnARQConnected). */
+	uint8_t last_arq_session_id;/**< Prior session id (bytLastARQSessionID). */
+} ardop_frametype_decode_ctx;
+
+/**
+ * @brief Decide the frame type by minimal distance over the valid types (stage 4b).
+ *
+ * Ported from `MinimalDistanceFrameType`. Scores every valid type against the
+ * measured tones for byte 1 (key 0), byte 2 (key @p ctx->session_id) and a
+ * third variant (key 0xFF when pending, else @p ctx->last_arq_session_id), then
+ * applies the connection-state-dependent acceptance rules.
+ *
+ * @param[in]  mags          Tone magnitudes from ardop_demod_frametype_tonemags().
+ * @param[in]  ctx           Protocol context (valid types, session id, flags).
+ * @param[out] set_last_good True if this is a confident decode that should
+ *                           refresh the last-good-decode tuning timestamp
+ *                           (mirrors the original setting dttLastGoodFrameTypeDecode).
+ * @return frame type 0..255, or -1 on a poor-quality decode.
+ */
+int ardop_frametype_minimal_distance(const int32_t *mags,
+				     const ardop_frametype_decode_ctx *ctx,
+				     bool *set_last_good);
+
 #endif /* ARDOP_MODEM_DEMODULATE_H_ */

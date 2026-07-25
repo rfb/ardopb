@@ -1,4 +1,5 @@
 #include <stddef.h>
+#include <string.h>
 
 #include "codec/frame.h"
 
@@ -128,6 +129,18 @@ const ardop_frame_spec *ardop_frame_spec_for(uint8_t frame_type)
 	/* frame_type is a uint8_t, so it cannot index outside the table. */
 	const ardop_frame_spec *spec = &frame_table[frame_type];
 	return spec->name != NULL ? spec : NULL;
+}
+
+bool ardop_frame_is_data(uint8_t frame_type)
+{
+	const ardop_frame_spec *spec = ardop_frame_spec_for(frame_type);
+
+	/* A data frame is one whose name carries the even/odd suffix, matching
+	 * the inherited IsDataFrame (which tests the name for ".E"/".O"). */
+	if (spec == NULL || spec->name == NULL || spec->name[0] == 0)
+		return false;
+	return strstr(spec->name, ".E") != NULL
+	       || strstr(spec->name, ".O") != NULL;
 }
 
 uint8_t ardop_frame_type_parity(uint8_t frame_type)

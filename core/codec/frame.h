@@ -142,6 +142,15 @@ static inline uint16_t ardop_frame_rs_bytes(const ardop_frame_spec *spec)
 }
 
 /**
+ * @brief Whether a frame type is a data frame (has an even/odd form).
+ *
+ * True for the frame types that carry payload in even/odd alternation (their
+ * names end in ".E"/".O"), false for control frames and invalid bytes. Ported
+ * from `IsDataFrame`.
+ */
+bool ardop_frame_is_data(uint8_t frame_type);
+
+/**
  * @brief The 2-bit parity symbol for a frame type.
  *
  * A frame type is sent as four 2-bit 4FSK symbols (its four dibits) followed by

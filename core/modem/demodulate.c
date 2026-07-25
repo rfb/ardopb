@@ -587,3 +587,108 @@ float ardop_frametype_decode_distance(const int32_t *mags, int tone_ptr,
 
 	return distance / 5;  /* normalise back to 0..1 */
 }
+
+/* Frame-type classification values (ARDOPC.h), for the acceptance rules. */
+#define FT_BREAK	0x23
+#define FT_DISC		0x29
+#define FT_END		0x2C
+#define FT_CONREQ_MIN	0x31
+#define FT_CONREQ_MAX	0x38
+#define FT_DATAACK_MIN	0xE0
+#define FT_DATAACK_MAX	0xFF
+
+int ardop_frametype_minimal_distance(const int32_t *mags,
+				     const ardop_frametype_decode_ctx *ctx,
+				     bool *set_last_good)
+{
+	float min1 = 5, min2 = 5, min3 = 5;  /* large initial distances */
+	int iat1 = 0, iat2 = 0, iat3 = 0;
+
+	*set_last_good = false;
+
+	/* Minimal distance over the valid types, for each of the three keys. */
+	for (int i = 0; i < ctx->valid_len; i++) {
+		uint8_t type = ctx->valid_types[i];
+		float d1 = ardop_frametype_decode_distance(mags, 0, type, 0);
+		float d2 = ardop_frametype_decode_distance(mags, 20, type,
+							   ctx->session_id);
+		float d3;
+
+		if (ctx->pending)
+			d3 = ardop_frametype_decode_distance(mags, 20, type,
+							     0xFF);
+		else
+			d3 = ardop_frametype_decode_distance(
+				mags, 20, type, ctx->last_arq_session_id);
+
+		if (d1 < min1) { min1 = d1; iat1 = type; }
+		if (d2 < min2) { min2 = d2; iat2 = type; }
+		if (d3 < min3) { min3 = d3; iat3 = type; }
+	}
+
+	/*
+	 * Acceptance rules by connection state. The distance thresholds keep the
+	 * inherited literal types exactly (0.3 double vs 0.3f float vs 0.4), as
+	 * they can differ at the boundary. Only some accepting branches refresh
+	 * the tuning timestamp; that branch-specificity is reported via
+	 * set_last_good.
+	 */
+	if (ctx->session_id == 0xFF) {
+		/* FEC / monitoring / not yet pending or connected. */
+		if (iat1 == FT_DISC && iat3 == FT_DISC
+		    && (min1 < 0.3 || min3 < 0.3))
+			return iat1;  /* stale DISC from a prior session */
+		if (iat1 == iat2 && (min1 < 0.3 || min2 < 0.3)) {
+			*set_last_good = true;
+			return iat1;
+		}
+		if (min1 < 0.3 && min1 < min2
+		    && ardop_frame_is_data((uint8_t)iat1))
+			return iat1;
+		if (min2 < 0.3 && min2 < min1
+		    && ardop_frame_is_data((uint8_t)iat2))
+			return iat2;
+		return -1;
+	} else if (ctx->pending) {
+		/* Expecting a ConAck from the ISS. */
+		if (iat1 == iat2) {
+			if (min1 < 0.3 || min2 < 0.3) {
+				*set_last_good = true;
+				return iat1;
+			}
+			return -1;
+		} else if (iat1 == iat3) {
+			/* ISS missed our ConAck and repeated the ConReq. */
+			if (iat1 >= FT_CONREQ_MIN && iat1 <= FT_CONREQ_MAX
+			    && (min1 < 0.3 || min3 < 0.3)) {
+				*set_last_good = true;
+				return iat1;
+			}
+			return -1;
+		}
+		/* no match: fall through to the poor-decode return */
+	} else if (ctx->arq_connected) {
+		if (iat1 == iat2) {
+			bool critical = (iat1 >= FT_DATAACK_MIN
+					 && iat1 <= FT_DATAACK_MAX)
+					|| iat1 == FT_BREAK || iat1 == FT_END
+					|| iat1 == FT_DISC;
+			if (critical) {
+				if (min1 < 0.3f || min2 < 0.3f) {
+					*set_last_good = true;
+					return iat1;
+				}
+				return -1;
+			}
+			/* non-critical frames: no protocol risk, looser bound */
+			if (min1 < 0.4 || min2 < 0.4) {
+				*set_last_good = true;
+				return iat1;
+			}
+			return -1;
+		}
+		return -1;
+	}
+
+	return -1;  /* poor-quality decode; don't use */
+}
