@@ -1,6 +1,7 @@
 #include "modem/demodulate.h"
 
 #include <math.h>
+#include <string.h>
 
 #include "modem/goertzel.h"
 
@@ -22,12 +23,29 @@ static const float ARDOP_2PI = 2 * 3.1415926f;
 /* 20000 ms full-search gate, in samples at 12000 Hz. */
 #define FULL_SEARCH_GATE_SAMPLES 240000u
 
+/* The 2 kHz filter: xdblR (stability, must be < 1) and xintN (length = 12000
+ * / 100 Hz) in the inherited FSMixFilter2000Hz. Kept as named constants. */
+#define FILTER_R 0.9995f
+#define FILTER_N 120
+
 void ardop_demod_init(ardop_demod *d, int tuning_range, int squelch)
 {
 	*d = (ardop_demod){0};
 	d->tuning_range = tuning_range;
 	d->squelch = squelch;
 	d->prior_fine_offset = 1000.0f;
+
+	/*
+	 * Resonator coefficients for the 2 kHz filter (bins 4..26). The
+	 * inherited code computes these lazily on the first FSMixFilter2000Hz
+	 * call; here they are a deterministic function of the constants, so we
+	 * compute them once at init. filt_coef[0..3] stay zero, as they do in
+	 * the original (its loop also starts at 4). ARDOP_2PI carries the
+	 * reduced pi, matching the original's 2 * M_PI.
+	 */
+	for (int i = 4; i <= 26; i++)
+		d->filt_coef[i] = 2 * FILTER_R
+				  * cosf(ARDOP_2PI * (float)i / (float)FILTER_N);
 }
 
 bool ardop_demod_leader_search(ardop_demod *d, const int16_t *samples,
@@ -239,4 +257,81 @@ bool ardop_demod_leader_search(ardop_demod *d, const int16_t *samples,
 		}
 	}
 	return false;
+}
+
+/*
+ * The 23-section frequency-selective filter, ported from FSMixFilter2000Hz. A
+ * comb feeds 23 resonators (bins 4..26); their scaled sum, rescaled for the
+ * filter gain, is the baseband output. dblRn/dblR2 and the coefficients are
+ * deterministic functions of the constants; the comb and resonator delay lines
+ * (filt_z*) carry across calls, as does the 120-sample prior_mixed history.
+ */
+static void fs_mix_filter_2000hz(ardop_demod *d, const int16_t *mixed,
+				 int length)
+{
+	float rn = powf(FILTER_R, FILTER_N);
+	float r2 = powf(FILTER_R, 2);
+
+	for (int i = 0; i < length; i++) {
+		float filtered = 0;
+		float zin;
+
+		if (i < FILTER_N)
+			zin = (float)mixed[i] - rn * (float)d->prior_mixed[i];
+		else
+			zin = (float)mixed[i] - rn * (float)mixed[i - FILTER_N];
+
+		/* Comb. */
+		d->filt_zcomb = zin - d->filt_zin_2 * r2;
+		d->filt_zin_2 = d->filt_zin_1;
+		d->filt_zin_1 = zin;
+
+		/* Resonators: bins 4 and 26 scaled by 0.389, the rest summed
+		 * with alternating sign (even +, odd -). */
+		for (int j = 4; j <= 26; j++) {
+			d->filt_zout_0[j] = d->filt_zcomb
+					    + d->filt_coef[j] * d->filt_zout_1[j]
+					    - r2 * d->filt_zout_2[j];
+			d->filt_zout_2[j] = d->filt_zout_1[j];
+			d->filt_zout_1[j] = d->filt_zout_0[j];
+
+			if (j == 4 || j == 26)
+				filtered += 0.389f * d->filt_zout_0[j];
+			else if ((j & 1) == 0)
+				filtered += d->filt_zout_0[j];
+			else
+				filtered -= d->filt_zout_0[j];
+		}
+
+		filtered = filtered * 0.00833333333f;
+		d->filtered_mixed[d->filtered_mixed_len++] = (int16_t)filtered;
+	}
+
+	/* Keep the last FILTER_N mixed samples for the next call's history. */
+	memmove(d->prior_mixed, &mixed[length - FILTER_N],
+		FILTER_N * sizeof(int16_t));
+}
+
+void ardop_demod_mix_filter(ardop_demod *d, const int16_t *samples, int length,
+			    float offset_hz)
+{
+	int16_t mixed[2400];
+
+	if (length == 0)
+		return;
+
+	/* Nominal NCO is 3000 Hz: downmixing (NCO - Fnew) lands the signal at
+	 * a 1500 Hz centre and inverts the sideband. */
+	d->nco_freq = 3000 + offset_hz;
+	d->nco_phase_inc = d->nco_freq * ARDOP_2PI / 12000;
+
+	for (int i = 0; i < length; i++) {
+		mixed[i] = (int16_t)(int)ceilf((float)samples[i]
+					       * cosf(d->nco_phase));
+		d->nco_phase += d->nco_phase_inc;
+		if (d->nco_phase > ARDOP_2PI)
+			d->nco_phase -= ARDOP_2PI;
+	}
+
+	fs_mix_filter_2000hz(d, mixed, length);
 }
