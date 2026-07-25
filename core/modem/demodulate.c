@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "modem/goertzel.h"
+#include "modem/templates.h"
 
 /*
  * Stage 1 of the receiver: the 50-baud two-tone leader search, ported from
@@ -17,7 +18,8 @@
  * transmitter and the inherited receiver. See [[ardop-mpi-normative-accident]].
  */
 
-/* The inherited dbl2Pi = 2 * M_PI with the reduced-precision M_PI. */
+/* The inherited reduced-precision M_PI and the derived 2*pi. */
+static const float ARDOP_PI = 3.1415926f;
 static const float ARDOP_2PI = 2 * 3.1415926f;
 
 /* 20000 ms full-search gate, in samples at 12000 Hz. */
@@ -334,4 +336,185 @@ void ardop_demod_mix_filter(ardop_demod *d, const int16_t *samples, int length,
 	}
 
 	fs_mix_filter_2000hz(d, mixed, length);
+}
+
+/*
+ * The 75 Hz envelope filter (3 resonators, bins 29..31), ported from Filter75Hz.
+ * Its comb and resonator delay lines are local and reset each call, so the
+ * output is a pure function of the input window -- with one inherited quirk that
+ * must be preserved: `filter_out` is NOT reset per sample. It accumulates across
+ * the whole window, and that running sum is on-air normative (it shaped the
+ * decode the transmitter was tuned against). Reads filtered_mixed from
+ * mfs_read_ptr; writes `count` samples to out.
+ */
+static void filter_75hz(const ardop_demod *d, int16_t *out, int count)
+{
+	const float r = 0.9995f;   /* stability factor, as in the 2 kHz filter */
+	const int n = 240;         /* filter length 12000/50; delays 120 samples */
+	float rn = powf(r, (float)n);
+	float r2 = powf(r, 2);
+	float coef[3];
+	float zin_1 = 0, zin_2 = 0, zcomb;
+	float zout_0[3] = {0}, zout_1[3] = {0}, zout_2[3] = {0};
+	float filter_out = 0;  /* deliberately not reset per sample (see above) */
+	int base = d->mfs_read_ptr;
+
+	for (int i = 0; i < 3; i++)
+		coef[i] = 2 * r * cosf(ARDOP_2PI * (float)(29 + i) / (float)n);
+
+	for (int i = 0; i < count; i++) {
+		float zin;
+
+		if (i < n)
+			zin = (float)d->filtered_mixed[base + i];
+		else
+			zin = (float)d->filtered_mixed[base + i]
+			      - rn * (float)d->filtered_mixed[base + i - n];
+
+		zcomb = zin - zin_2 * r2;
+		zin_2 = zin_1;
+		zin_1 = zin;
+
+		for (int j = 0; j < 3; j++) {
+			zout_0[j] = zcomb + coef[j] * zout_1[j] - r2 * zout_2[j];
+			zout_2[j] = zout_1[j];
+			zout_1[j] = zout_0[j];
+
+			/* Bins 29 and 31 subtract (0.39811 transition), 30 adds. */
+			if (j == 0 || j == 2)
+				filter_out -= 0.39811f * zout_0[j];
+			else
+				filter_out += zout_0[j];
+		}
+		out[i] = (int16_t)(int)ceil(filter_out * 0.0041f);
+	}
+}
+
+/*
+ * Correlate 1.5 symbols of the 75 Hz-filtered baseband against the leader
+ * template and return the sample offset of best correlation (the symbol
+ * boundary), or -1 if the correlation is too weak. Ported from
+ * EnvelopeCorrelator; the stats accumulation is dropped.
+ */
+static int envelope_correlator(const ardop_demod *d)
+{
+	float cor_max = -1000000.0f;
+	float cor_sum, cor_product, cor_max_product = 0.0f;
+	int j_at_max = 0;
+	int16_t filt75[720];
+
+	if (d->filtered_mixed_len < d->mfs_read_ptr + 720)
+		return -1;
+
+	filter_75hz(d, filt75, 720);
+
+	for (int j = 0; j < 360; j++) {  /* over 1.5 symbols */
+		cor_sum = 0;
+		for (int i = 0; i < 240; i++) {  /* over one 50-baud symbol */
+			/* 120 accommodates the 75 Hz filter's 120-sample delay. */
+			cor_product = (float)(int50BaudTwoToneLeaderTemplate[i]
+					      * filt75[120 + i + j]);
+			cor_sum += cor_product;
+			if (fabsf(cor_product) > cor_max_product)
+				cor_max_product = fabsf(cor_product);
+		}
+		if (fabsf(cor_sum) > cor_max) {
+			cor_max = fabsf(cor_sum);
+			j_at_max = j;
+		}
+	}
+
+	if (cor_max > 40 * cor_max_product)
+		return j_at_max;
+	return -1;
+}
+
+bool ardop_demod_symbol_framing(ardop_demod *d)
+{
+	float real, imag;
+	float car_ph, abs_ph_err;
+	float min_abs_ph_err = 5000;  /* initialised to an excessive value */
+	int i_at_min_err = 0;
+	int local_ptr;
+
+	if ((d->filtered_mixed_len - d->mfs_read_ptr) < 860)
+		return false;  /* not enough */
+
+	/* Correlator positions the pointer at the symbol boundary. */
+	local_ptr = d->mfs_read_ptr + envelope_correlator(d);
+
+	/* Refine within +/-2 samples to the minimum 1500 Hz phase error (the
+	 * leader's nominal phase is 0 or 180 degrees). */
+	for (int i = -2; i <= 2; i++) {
+		ardop_goertzel(d->filtered_mixed, local_ptr + i, 120, 30,
+			       &real, &imag);
+		car_ph = atan2f(imag, real);
+		abs_ph_err = fabsf((float)((double)car_ph
+			- ceil((double)(car_ph / ARDOP_PI)) * (double)ARDOP_PI));
+		if (abs_ph_err < min_abs_ph_err) {
+			min_abs_ph_err = abs_ph_err;
+			i_at_min_err = i;
+		}
+	}
+
+	d->mfs_read_ptr = local_ptr + i_at_min_err;
+	d->state = ARDOP_RX_ACQUIRE_FRAME_SYNC;
+	return true;
+}
+
+bool ardop_demod_frame_sync(ardop_demod *d)
+{
+	int local_ptr = d->mfs_read_ptr;
+	int available_symbols = (d->filtered_mixed_len - d->mfs_read_ptr) / 240;
+	float phase_sym1, phase_sym2, phase_sym3;
+	float real, imag;
+	float phase_diff12, phase_diff23;
+
+	if (available_symbols < 3)
+		return false;  /* need at least 3 symbols to compare */
+
+	ardop_goertzel(d->filtered_mixed, local_ptr, 240, 30, &real, &imag);
+	phase_sym1 = atan2f(imag, real);
+	local_ptr += 240;
+	ardop_goertzel(d->filtered_mixed, local_ptr, 240, 30, &real, &imag);
+	phase_sym2 = atan2f(imag, real);
+	local_ptr += 240;
+
+	for (int i = 0; i <= available_symbols - 3; i++) {
+		ardop_goertzel(d->filtered_mixed, local_ptr, 240, 30,
+			       &real, &imag);
+		phase_sym3 = atan2f(imag, real);
+
+		phase_diff12 = phase_sym1 - phase_sym2;
+		if (phase_diff12 > ARDOP_PI)  /* bound to +/- pi */
+			phase_diff12 -= ARDOP_2PI;
+		else if (phase_diff12 < -ARDOP_PI)
+			phase_diff12 += ARDOP_2PI;
+
+		phase_diff23 = phase_sym2 - phase_sym3;
+		if (phase_diff23 > ARDOP_PI)
+			phase_diff23 -= ARDOP_2PI;
+		else if (phase_diff23 < -ARDOP_PI)
+			phase_diff23 += ARDOP_2PI;
+
+		/* Sync symbol: a large step into it, then no step out (< 60 deg). */
+		if (fabsf(phase_diff12) > 0.6667f * ARDOP_PI
+		    && fabsf(phase_diff23) < 0.3333f * ARDOP_PI) {
+			/* 30 accommodates the initial filter-length pointer
+			 * offset. The ceil is a no-op over integer division;
+			 * kept to mirror the original exactly. */
+			d->leader_rcvd_ms =
+				(int)ceil((double)((local_ptr - 30) / 12));
+			d->mfs_read_ptr = local_ptr + 240;
+			return true;  /* pointer now at the first frame-type symbol */
+		}
+
+		phase_sym1 = phase_sym2;
+		phase_sym2 = phase_sym3;
+		local_ptr += 240;
+	}
+
+	/* Back up two symbols so the next call resumes cleanly. */
+	d->mfs_read_ptr = local_ptr - 480;
+	return false;
 }

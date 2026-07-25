@@ -156,7 +156,7 @@ participate in the program.
 | **`codec`** | **layer complete** | frame, crc, packed6, rs, stationid, locator |
 | `modem` | `modulate` — TX (all modulations) | **done**, every sample of the whole golden corpus (22 control + 108 data cases: 4FSK 50/100/600, 4PSK/8PSK/16QAM at 1–8 carriers) proven bit-identical to ardopcf |
 | `modem` | `goertzel` — single-bin DFT + peak locator | **done**, the RX DSP foundation; proven bit-identical to the `GoertzelRealImag*`/`SpectralPeakLocator` originals |
-| `modem` | `demodulate` — RX pipeline (stages 1–2) | in progress — leader search (bit-identical to `SearchFor2ToneLeader3`, detecting the modulator's own leader — TX→RX join) and downmix/2 kHz filter (bit-identical to `MixNCOFilter`/`FSMixFilter2000Hz`) done; symbol/frame sync → frame-type → demod → decode next ([analysis/11](../analysis/11-demod-design.md)) |
+| `modem` | `demodulate` — RX pipeline (stages 1–3) | in progress — leader search, downmix/2 kHz filter, and symbol + frame sync done, each bit-identical to its `SoundInput.c` original (`SearchFor2ToneLeader3`, `MixNCOFilter`/`FSMixFilter2000Hz`, `Acquire2ToneLeaderSymbolFraming`/`AcquireFrameSyncRSB`); the modulator's own frame is downmixed and both sync searches lock onto its sync symbol (TX→RX join through stage 3); frame-type → demod → decode next ([analysis/11](../analysis/11-demod-design.md)) |
 | `link` | — | not started |
 
 The carrier-waveform templates (`int50BaudTwoToneLeaderTemplate` etc.) now live

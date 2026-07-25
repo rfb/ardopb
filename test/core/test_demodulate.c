@@ -39,6 +39,17 @@ extern short intPriorMixedSamples[120];
 extern short intFilteredMixedSamples[5000];
 extern int intFilteredMixedSamplesLength;
 
+/*
+ * Oracle for stage 3: the symbol-framing and frame-sync searches. Both read the
+ * baseband in intFilteredMixedSamples from intMFSReadPtr and advance it; the
+ * frame-sync records the leader length in intLeaderRcvdMs. AccumulateStats is
+ * held at 0 so they don't touch the stats globals.
+ */
+int Acquire2ToneLeaderSymbolFraming(void);
+int AcquireFrameSyncRSB(void);
+extern int intMFSReadPtr;
+extern int intLeaderRcvdMs;
+
 /* Full-search branch: Now - lastGoodDecode must exceed 20000 ms. */
 #define NOW_MS 1000000
 #define NOW_SAMPLES ((uint64_t)NOW_MS * 12)
@@ -261,6 +272,111 @@ static void test_mix_matches_legacy_on_leader(void **state)
 	expect_mix_same(&leader[240], 600, -37.5f);
 }
 
+/*
+ * Downmix a sample stream to baseband with the proven stage-2 filter, mirror it
+ * into the oracle's buffer, then run symbol framing and frame sync in both and
+ * require identical results: the returns, the advancing read pointer, and (on a
+ * sync) the recorded leader length. Same baseband into both, so this isolates
+ * the stage-3 logic.
+ */
+static void run_sync_compare(const int16_t *samples, int total, float offset)
+{
+	ardop_demod d;
+	ardop_demod_init(&d, 100, 5);
+	for (int off = 0; off < total; off += 1200) {
+		int len = total - off < 1200 ? total - off : 1200;
+		ardop_demod_mix_filter(&d, &samples[off], len, offset);
+	}
+	assert_true(d.filtered_mixed_len <= 5000);
+
+	AccumulateStats = 0;
+	intFilteredMixedSamplesLength = d.filtered_mixed_len;
+	for (int i = 0; i < d.filtered_mixed_len; i++)
+		intFilteredMixedSamples[i] = d.filtered_mixed[i];
+	intMFSReadPtr = 30;
+	intLeaderRcvdMs = 0;
+	d.mfs_read_ptr = 30;
+
+	int oframe = Acquire2ToneLeaderSymbolFraming();
+	bool mframe = ardop_demod_symbol_framing(&d);
+	if ((oframe != 0) != mframe)
+		fail_msg("framing return: legacy %d, port %d", oframe, mframe);
+	if (intMFSReadPtr != d.mfs_read_ptr)
+		fail_msg("framing ptr: legacy %d, port %d", intMFSReadPtr,
+			 d.mfs_read_ptr);
+
+	if (oframe) {
+		int osync = AcquireFrameSyncRSB();
+		int optr = intMFSReadPtr;
+		int oms = intLeaderRcvdMs;
+		bool msync = ardop_demod_frame_sync(&d);
+		if ((osync != 0) != msync)
+			fail_msg("sync return: legacy %d, port %d", osync, msync);
+		if (optr != d.mfs_read_ptr)
+			fail_msg("sync ptr: legacy %d, port %d", optr,
+				 d.mfs_read_ptr);
+		if (osync && oms != d.leader_rcvd_ms)
+			fail_msg("leader ms: legacy %d, port %d", oms,
+				 d.leader_rcvd_ms);
+	}
+}
+
+/* The modulator's own frame, downmixed and run through both sync searches. */
+static void test_sync_matches_legacy_on_frame(void **state)
+{
+	(void)state;
+
+	static int16_t frame[ARDOP_MOD_MAX_SAMPLES];
+	ardop_mod m;
+	ardop_mod_init(&m, 30);
+	const uint8_t enc[2] = { 0x23, 0x23 };
+	assert_true(ardop_mod_begin(&m, 0x23, enc, sizeof(enc), 240, frame,
+				    ARDOP_MOD_MAX_SAMPLES));
+	size_t n = ardop_mod_pull(&m, frame, ARDOP_MOD_MAX_SAMPLES);
+	int total = (int)n < 4800 ? (int)n : 4800;  /* keep baseband < 5000 */
+	assert_true(total >= 3600);
+
+	run_sync_compare(frame, total, 0.0f);
+
+	/*
+	 * And the point: on the real frame this is a detection, not vacuous
+	 * agreement. Framing must succeed and advance to frame sync, and the
+	 * sync search must lock onto the sync symbol just past the leader.
+	 */
+	ardop_demod d;
+	ardop_demod_init(&d, 100, 5);
+	for (int off = 0; off < total; off += 1200) {
+		int len = total - off < 1200 ? total - off : 1200;
+		ardop_demod_mix_filter(&d, &frame[off], len, 0.0f);
+	}
+	d.mfs_read_ptr = 30;
+	assert_true(ardop_demod_symbol_framing(&d));
+	assert_int_equal(d.state, ARDOP_RX_ACQUIRE_FRAME_SYNC);
+	assert_true(ardop_demod_frame_sync(&d));
+	assert_true(d.leader_rcvd_ms > 150 && d.leader_rcvd_ms < 260);
+}
+
+/*
+ * Noise baseband across the tuning range: symbol framing always returns (it
+ * only declines on too-few samples) and both must agree on the pointer even
+ * when the correlation is junk.
+ */
+static void test_sync_matches_legacy_on_noise(void **state)
+{
+	(void)state;
+
+	uint32_t rng = 0x9E3779B9u;
+	static int16_t buf[4800];
+	for (int i = 0; i < 4800; i++)
+		buf[i] = (int16_t)xorshift32(&rng);
+
+	for (int t = 0; t < 20; t++) {
+		int len = 1200 + (int)(xorshift32(&rng) % (4800 - 1200 + 1));
+		float offset = (float)((int)(xorshift32(&rng) % 200u) - 100);
+		run_sync_compare(buf, len, offset);
+	}
+}
+
 int main(void)
 {
 	const struct CMUnitTest tests[] = {
@@ -269,6 +385,8 @@ int main(void)
 		cmocka_unit_test(test_detects_modulator_leader),
 		cmocka_unit_test(test_mix_matches_legacy_on_noise),
 		cmocka_unit_test(test_mix_matches_legacy_on_leader),
+		cmocka_unit_test(test_sync_matches_legacy_on_frame),
+		cmocka_unit_test(test_sync_matches_legacy_on_noise),
 	};
 
 	ardop_test_setup();

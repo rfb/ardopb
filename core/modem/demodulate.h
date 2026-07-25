@@ -71,6 +71,13 @@ typedef struct {
 	int16_t prior_mixed[120]; /**< Last 120 mixed samples for the next call. */
 	int16_t filtered_mixed[5000]; /**< Baseband output; later stages read it. */
 	int filtered_mixed_len;   /**< Valid samples in filtered_mixed. */
+
+	/* --- stage 3: symbol + frame sync ---
+	 * Both walk the baseband in filtered_mixed from mfs_read_ptr, advancing
+	 * it as symbols are consumed. Ported from Acquire2ToneLeaderSymbolFraming
+	 * and AcquireFrameSyncRSB. */
+	int mfs_read_ptr;   /**< Read cursor into filtered_mixed. */
+	int leader_rcvd_ms; /**< Measured leader length, ms (ARQ timing input). */
 } ardop_demod;
 
 /**
@@ -119,5 +126,34 @@ bool ardop_demod_leader_search(ardop_demod *d, const int16_t *samples,
  */
 void ardop_demod_mix_filter(ardop_demod *d, const int16_t *samples, int length,
 			    float offset_hz);
+
+/**
+ * @brief Establish symbol framing on the two-tone leader (stage 3a).
+ *
+ * Ported from `Acquire2ToneLeaderSymbolFraming`. Correlates the baseband
+ * against the leader template to find the symbol boundary, then refines it to
+ * minimum 1500 Hz phase error, positioning @p d->mfs_read_ptr at a symbol
+ * start. On success advances @p d to ARDOP_RX_ACQUIRE_FRAME_SYNC.
+ *
+ * @param[in,out] d Receiver; reads filtered_mixed from mfs_read_ptr, updates
+ *                  mfs_read_ptr and state.
+ * @return true once framing is established (needs >= 860 samples buffered).
+ */
+bool ardop_demod_symbol_framing(ardop_demod *d);
+
+/**
+ * @brief Find the BPSK frame-sync symbol (stage 3b).
+ *
+ * Ported from `AcquireFrameSyncRSB`. Scans symbols for the sync signature (a
+ * large phase step into the reference symbol followed by none), and on a match
+ * positions @p d->mfs_read_ptr at the first frame-type symbol and records the
+ * received leader length. On no match, backs the cursor up two symbols for the
+ * next call.
+ *
+ * @param[in,out] d Receiver; reads filtered_mixed from mfs_read_ptr, updates
+ *                  mfs_read_ptr and leader_rcvd_ms.
+ * @return true when the sync symbol is found.
+ */
+bool ardop_demod_frame_sync(ardop_demod *d);
 
 #endif /* ARDOP_MODEM_DEMODULATE_H_ */
