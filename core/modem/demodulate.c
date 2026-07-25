@@ -3,7 +3,9 @@
 #include <math.h>
 #include <string.h>
 
+#include "codec/crc.h"
 #include "codec/frame.h"
+#include "codec/rs.h"
 #include "modem/goertzel.h"
 #include "modem/templates.h"
 
@@ -738,4 +740,47 @@ uint8_t ardop_demod_4fsk_char(const ardop_demod *d, int start, int center_freq,
 	}
 
 	return byte;
+}
+
+int ardop_decode_carrier_rs(const ardop_rs *rs, uint8_t *raw,
+			    uint8_t *corrected, int data_len, int rs_len,
+			    uint8_t frame_type, bool carrier_already_ok,
+			    bool *decoded_ok)
+{
+	int combined = data_len + rs_len + 3;
+	int nerrors;
+
+	*decoded_ok = false;
+
+	if (carrier_already_ok) {
+		/* Already good; it may just be misplaced after another carrier
+		 * decoded wrong, so re-emit the net bytes without re-decoding. */
+		memcpy(corrected, &raw[1], raw[0]);
+		return raw[0];
+	}
+
+	/* Always RS-correct before the CRC check: RS can repair a block that
+	 * would otherwise pass a lucky CRC, and correcting first lowers the
+	 * chance of an undetected error. */
+	nerrors = ardop_rs_correct(rs, raw, combined, rs_len, false);
+	if (nerrors < 0)
+		goto bad;  /* RS could not correct */
+
+	/*
+	 * RS occasionally reports success on a block it did not truly fix, so
+	 * the CRC (with the frame type mixed in) is the real arbiter. A sane
+	 * reported length guards the memcpy.
+	 */
+	if (nerrors >= 0 && raw[0] <= data_len
+	    && ardop_crc16_trailer_ok(raw, (size_t)(data_len + 1), frame_type,
+				      &raw[data_len + 1])) {
+		memcpy(corrected, &raw[1], raw[0]);
+		*decoded_ok = true;
+		return raw[0];
+	}
+
+bad:
+	/* Hand back the uncorrected data bytes (no length byte, no parity). */
+	memcpy(corrected, &raw[1], (size_t)data_len);
+	return data_len;
 }

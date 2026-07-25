@@ -7,7 +7,9 @@
 
 #include "setup.h"
 
+#include "codec/crc.h"
 #include "codec/frame.h"
+#include "codec/rs.h"
 #include "modem/demodulate.h"
 #include "modem/modulate.h"
 
@@ -73,6 +75,20 @@ extern int intSampPerSym;
 extern int intToneMagsIndex;
 extern int charIndex;
 extern int intToneMags[];
+
+/*
+ * Oracle for stage 5 decode: CorrectRawDataWithRS RS-corrects a carrier block
+ * and CRC-checks it, recording success in CarrierOk[Carrier]. init_rs sets up
+ * the rockliff tables it uses, mirroring ardop_rs_init for the port.
+ */
+int CorrectRawDataWithRS(unsigned char *raw, unsigned char *corrected,
+			 int data_len, int rs_len, int frame_type, int carrier);
+int init_rs(int *lengths, int count);
+extern char CarrierOk[8];
+
+static const int kRSLens[] = {2, 4, 8, 16, 32, 36, 50, 64};
+#define NUM_RSLENS ((int)(sizeof kRSLens / sizeof kRSLens[0]))
+static ardop_rs g_rs;
 
 /*
  * Oracle for stage 4b: the minimal-distance acceptance decision. It reads the
@@ -708,6 +724,109 @@ static void test_4fsk_char_matches_legacy(void **state)
 	assert_true(checked >= 1);
 }
 
+/* Build a valid carrier block: [len][data+pad][CRC][RS parity]. */
+static void build_rs_block(uint8_t *raw, int data_len, int rs_len,
+			   uint8_t frame_type, uint8_t net_len, uint32_t *rng)
+{
+	raw[0] = net_len;
+	for (int i = 0; i < net_len; i++)
+		raw[1 + i] = (uint8_t)xorshift32(rng);
+	for (int i = net_len; i < data_len; i++)
+		raw[1 + i] = 0;  /* padding */
+
+	uint8_t trailer[2];
+	ardop_crc16_trailer(raw, (size_t)(data_len + 1), frame_type, trailer);
+	raw[data_len + 1] = trailer[0];
+	raw[data_len + 2] = trailer[1];
+
+	assert_int_equal(ardop_rs_append(&g_rs, raw, data_len + 3, rs_len), 0);
+}
+
+/*
+ * Run one carrier block through CorrectRawDataWithRS and the port from an
+ * identical copy, and require the same return, the same corrected bytes, and
+ * (for a fresh decode) the same success verdict.
+ */
+static void expect_rs_same(const uint8_t *block, int data_len, int rs_len,
+			   uint8_t frame_type, bool already_ok, int tag)
+{
+	int combined = data_len + rs_len + 3;
+	uint8_t oraw[256], praw[256], ocorr[256], pcorr[256];
+	memcpy(oraw, block, (size_t)combined);
+	memcpy(praw, block, (size_t)combined);
+
+	CarrierOk[3] = already_ok ? 1 : 0;
+	int oret = CorrectRawDataWithRS(oraw, ocorr, data_len, rs_len,
+					frame_type, 3);
+	bool ook = CarrierOk[3];
+
+	bool pok = false;
+	int pret = ardop_decode_carrier_rs(&g_rs, praw, pcorr, data_len, rs_len,
+					   frame_type, already_ok, &pok);
+
+	if (oret != pret)
+		fail_msg("[%d] return: legacy %d, port %d", tag, oret, pret);
+	for (int i = 0; i < pret; i++)
+		if (pcorr[i] != ocorr[i])
+			fail_msg("[%d] corrected byte %d: legacy %d, port %d",
+				 tag, i, ocorr[i], pcorr[i]);
+	if (!already_ok && ook != pok)
+		fail_msg("[%d] decoded_ok: legacy %d, port %d", tag, ook, pok);
+}
+
+/*
+ * RS correct + CRC check across error counts: none, within the RS budget
+ * (rs_len/2), and beyond it. The port composes the already-proven core rs and
+ * crc; this pins the composition to CorrectRawDataWithRS.
+ */
+static void test_carrier_rs_matches_legacy(void **state)
+{
+	(void)state;
+
+	assert_true(ardop_rs_init(&g_rs, kRSLens, NUM_RSLENS));
+	assert_int_equal(init_rs((int *)kRSLens, NUM_RSLENS), 0);
+
+	uint32_t rng = 0xDECAF001u;
+	int rslens[] = {4, 8, 16, 32};
+	int datalens[] = {16, 32, 64, 100};
+
+	for (int ri = 0; ri < 4; ri++) {
+		for (int di = 0; di < 4; di++) {
+			int rs_len = rslens[ri];
+			int data_len = datalens[di];
+			uint8_t ft = (uint8_t)(0x48 + (ri & 1));
+			int combined = data_len + rs_len + 3;
+
+			for (int trial = 0; trial < 40; trial++) {
+				uint8_t net = (uint8_t)(xorshift32(&rng)
+							% (uint32_t)(data_len + 1));
+				uint8_t block[256];
+				build_rs_block(block, data_len, rs_len, ft, net,
+					       &rng);
+
+				/* Corrupt a chosen number of distinct bytes. */
+				int nerr = (int)(xorshift32(&rng)
+						 % (uint32_t)(rs_len));
+				for (int e = 0; e < nerr; e++) {
+					int pos = (int)(xorshift32(&rng)
+							% (uint32_t)combined);
+					block[pos] = (uint8_t)(block[pos]
+							       ^ (xorshift32(&rng)
+								  | 1u));
+				}
+
+				expect_rs_same(block, data_len, rs_len, ft,
+					       false, ri * 100 + di * 10 + trial);
+			}
+
+			/* The already-decoded short-circuit, on a clean block. */
+			uint8_t clean[256];
+			build_rs_block(clean, data_len, rs_len, ft, 5, &rng);
+			expect_rs_same(clean, data_len, rs_len, ft, true, 999);
+		}
+	}
+}
+
 int main(void)
 {
 	const struct CMUnitTest tests[] = {
@@ -723,6 +842,7 @@ int main(void)
 		cmocka_unit_test(test_mindist_matches_legacy_synth),
 		cmocka_unit_test(test_mindist_matches_legacy_noise),
 		cmocka_unit_test(test_4fsk_char_matches_legacy),
+		cmocka_unit_test(test_carrier_rs_matches_legacy),
 	};
 
 	ardop_test_setup();

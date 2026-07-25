@@ -5,6 +5,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "codec/rs.h"
+
 /**
  * @file demodulate.h
  * @brief The receive chain: samples in, frames out. Sans-I/O.
@@ -251,5 +253,36 @@ int ardop_frametype_minimal_distance(const int32_t *mags,
  */
 uint8_t ardop_demod_4fsk_char(const ardop_demod *d, int start, int center_freq,
 			      int baud, int samp_per_sym, int32_t *tone_mags);
+
+/**
+ * @brief Reed-Solomon correct and CRC-check one carrier's raw bytes (stage 5).
+ *
+ * Ported from `CorrectRawDataWithRS`. @p raw is one carrier's received block,
+ * laid out as `[length][data (data_len)][CRC-16 (2)][RS parity (rs_len)]`
+ * (@p data_len + @p rs_len + 3 bytes total). It is RS-corrected in place; if the
+ * correction succeeds, the reported length is sane and the CRC (frame type mixed
+ * in) checks out, the @p data_len net bytes are copied to @p corrected and
+ * @p decoded_ok is set. Otherwise the uncorrected data bytes are copied and
+ * @p decoded_ok stays false.
+ *
+ * The per-carrier "already decoded" cache and the Memory-ARQ update are the
+ * caller's to keep: pass @p carrier_already_ok to short-circuit, and act on
+ * @p decoded_ok. Stats and logging are dropped.
+ *
+ * @param[in]  rs                 RS context whose rslen set includes @p rs_len.
+ * @param[in,out] raw             Received block; corrected in place.
+ * @param[out] corrected          Net data bytes (caller storage, >= data_len).
+ * @param[in]  data_len           Gross data length (per the frame spec).
+ * @param[in]  rs_len             RS parity length (per the frame spec).
+ * @param[in]  frame_type         Frame type, mixed into the CRC.
+ * @param[in]  carrier_already_ok Skip decoding; just re-emit the net bytes.
+ * @param[out] decoded_ok         True iff this call produced a good decode.
+ * @return The number of bytes written to @p corrected: the net length on a good
+ *         decode (or when already ok), else @p data_len.
+ */
+int ardop_decode_carrier_rs(const ardop_rs *rs, uint8_t *raw,
+			    uint8_t *corrected, int data_len, int rs_len,
+			    uint8_t frame_type, bool carrier_already_ok,
+			    bool *decoded_ok);
 
 #endif /* ARDOP_MODEM_DEMODULATE_H_ */
