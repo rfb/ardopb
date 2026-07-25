@@ -1116,31 +1116,35 @@ static void test_qam_decode_matches_legacy(void **state)
  * chunks through ardop_demod_push and require FRAME_DECODED with exactly that
  * payload -- the whole receiver, assembled, for one modulation.
  */
-static void expect_push_roundtrip(uint8_t ft, int data_len, int rs_len)
+static void expect_push_roundtrip(uint8_t ft, int num_car, int data_len,
+				  int rs_len)
 {
 	assert_true(ardop_rs_init(&g_rs, kRSLens, NUM_RSLENS));
 
 	uint32_t rng = 0x0DDBA115u ^ ft;
-	uint8_t payload[256];
-	for (int i = 0; i < data_len; i++)
+	int total_payload = num_car * data_len;
+	uint8_t payload[1024];
+	for (int i = 0; i < total_payload; i++)
 		payload[i] = (uint8_t)xorshift32(&rng);
 
-	uint8_t block[256];
-	block[0] = (uint8_t)data_len;
-	for (int i = 0; i < data_len; i++)
-		block[1 + i] = payload[i];
-	uint8_t trailer[2];
-	ardop_crc16_trailer(block, (size_t)(data_len + 1), ft, trailer);
-	block[data_len + 1] = trailer[0];
-	block[data_len + 2] = trailer[1];
-	assert_int_equal(ardop_rs_append(&g_rs, block, data_len + 3, rs_len), 0);
-	int block_len = data_len + rs_len + 3;
-
-	uint8_t encoded[320];
+	/* Header, then one [len][data][CRC][RS] block per carrier. */
+	uint8_t encoded[320 * 8];
 	encoded[0] = ft;
 	encoded[1] = ft ^ 0;   /* session id 0 */
-	memcpy(&encoded[2], block, (size_t)block_len);
-	size_t enc_len = (size_t)(2 + block_len);
+	int block_len = data_len + rs_len + 3;
+	for (int c = 0; c < num_car; c++) {
+		uint8_t *block = &encoded[2 + c * block_len];
+		block[0] = (uint8_t)data_len;
+		for (int i = 0; i < data_len; i++)
+			block[1 + i] = payload[c * data_len + i];
+		uint8_t trailer[2];
+		ardop_crc16_trailer(block, (size_t)(data_len + 1), ft, trailer);
+		block[data_len + 1] = trailer[0];
+		block[data_len + 2] = trailer[1];
+		assert_int_equal(ardop_rs_append(&g_rs, block, data_len + 3,
+						 rs_len), 0);
+	}
+	size_t enc_len = (size_t)(2 + num_car * block_len);
 
 	static int16_t frame[ARDOP_MOD_MAX_SAMPLES];
 	ardop_mod mm;
@@ -1170,7 +1174,7 @@ static void expect_push_roundtrip(uint8_t ft, int data_len, int rs_len)
 	bool got_leader = false, got_decoded = false;
 	uint8_t got_type = 0;
 	int got_len = -1;
-	uint8_t got_data[256];
+	uint8_t got_data[1024];
 	uint64_t now = 1000000ull;   /* past the full-search gate */
 
 	for (size_t off = 0; off < pad; off += 1200) {
@@ -1196,20 +1200,24 @@ static void expect_push_roundtrip(uint8_t ft, int data_len, int rs_len)
 	if (!got_decoded)
 		fail_msg("ft %02x: no frame decoded", ft);
 	assert_int_equal(got_type, ft);
-	assert_int_equal(got_len, data_len);
-	for (int i = 0; i < data_len; i++)
+	assert_int_equal(got_len, total_payload);
+	for (int i = 0; i < total_payload; i++)
 		if (got_data[i] != payload[i])
 			fail_msg("ft %02x byte %d: sent %02x, got %02x", ft, i,
 				 payload[i], got_data[i]);
 }
 
-/* The capstone: end-to-end round trip for a single-carrier 4FSK and 4PSK frame. */
+/* End-to-end round trips: single- and multi-carrier 4FSK and PSK. */
 static void test_push_roundtrip(void **state)
 {
 	(void)state;
 
-	expect_push_roundtrip(0x48, 16, 4);   /* 4FSK.200.50S:  1 car, 50 baud */
-	expect_push_roundtrip(0x42, 16, 8);   /* 4PSK.200.100S: 1 car, 100 baud */
+	expect_push_roundtrip(0x48, 1, 16, 4);    /* 4FSK.200.50S:   1 car */
+	expect_push_roundtrip(0x42, 1, 16, 8);    /* 4PSK.200.100S:  1 car */
+	expect_push_roundtrip(0x44, 1, 108, 36);  /* 8PSK.200.100:   1 car */
+	expect_push_roundtrip(0x50, 2, 64, 32);   /* 4PSK.500.100:   2 car */
+	expect_push_roundtrip(0x60, 4, 64, 32);   /* 4PSK.1000.100:  4 car */
+	expect_push_roundtrip(0x70, 8, 64, 32);   /* 4PSK.2000.100:  8 car */
 }
 
 int main(void)
