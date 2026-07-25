@@ -44,6 +44,7 @@ Local technical review of `ardopcf`, written to answer two questions:
 | 08 | [Style and tooling](08-style-and-tooling.md) | A deliberate style; warnings, LTO, sanitizers, CI |
 | 09 | [Embedding and bindings](09-embedding-and-bindings.md) | Driving the core from a higher-level language |
 | 10 | [Modem and link boundary](10-modem-link-design.md) | The concrete sans-I/O contract for the two hard layers, written before building them |
+| 11 | [Demodulator design](11-demod-design.md) | The field-level `ardop_demod` context, its push/event FSM, and the stage-by-stage port order with oracles |
 
 **Short on time?** Read 03 and 04 — they contain the answers to the two
 motivating questions.
