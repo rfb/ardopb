@@ -45,6 +45,7 @@ Local technical review of `ardopcf`, written to answer two questions:
 | 09 | [Embedding and bindings](09-embedding-and-bindings.md) | Driving the core from a higher-level language |
 | 10 | [Modem and link boundary](10-modem-link-design.md) | The concrete sans-I/O contract for the two hard layers, written before building them |
 | 11 | [Demodulator design](11-demod-design.md) | The field-level `ardop_demod` context, its push/event FSM, and the stage-by-stage port order with oracles |
+| 12 | [Normative accidents](12-normative-accidents.md) | The reference-implementation bugs we preserve bit-for-bit for interop, and which ones a future `improved` mode could fix |
 
 **Short on time?** Read 03 and 04 — they contain the answers to the two
 motivating questions.
