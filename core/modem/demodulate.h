@@ -5,6 +5,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "codec/frame.h"
 #include "codec/rs.h"
 
 /**
@@ -40,6 +41,51 @@ typedef enum {
 
 /** Maximum PSK symbols demodulated per carrier per frame. */
 #define ARDOP_DEMOD_MAX_PSK_SYMBOLS 520
+
+/** Maximum gross bytes in one carrier's block ([len][data][CRC][RS]). */
+#define ARDOP_DEMOD_MAX_CARRIER_BYTES 256
+
+/** Maximum decoded payload bytes handed out with a FRAME_DECODED event. */
+#define ARDOP_DEMOD_MAX_PAYLOAD 1024
+
+/**
+ * @brief What the receiver reports. The whole outward vocabulary of the demod;
+ *        the link layer routes these, the demod never acts on protocol state.
+ */
+typedef enum {
+	ARDOP_EV_LEADER_DETECTED,  /**< Acquisition started: offset_hz, sn. */
+	ARDOP_EV_FRAME_DECODED,    /**< Good frame: frame_type, data/data_len. */
+	ARDOP_EV_FRAME_BAD,        /**< Frame acquired but failed CRC/RS. */
+} ardop_event_kind;
+
+/** @brief One receiver event, written into the caller's array by push. */
+typedef struct {
+	ardop_event_kind kind;
+	uint8_t frame_type;   /**< FRAME_DECODED / FRAME_BAD. */
+	float offset_hz;      /**< LEADER_DETECTED tuning offset. */
+	int sn;               /**< LEADER_DETECTED signal/noise, dB. */
+	const uint8_t *data;  /**< FRAME_DECODED payload; points into the demod,
+	                       *   valid until the next push. */
+	int data_len;         /**< FRAME_DECODED payload length. */
+} ardop_event;
+
+/**
+ * @brief Protocol context for the frame-type acceptance decision (stage 4b).
+ *
+ * The frame-type decision is protocol-coupled: the second byte is XORed with
+ * the session id (a decode key you cannot omit), and how confident a match must
+ * be depends on the connection state. Rather than read that state from globals,
+ * the demodulator is handed it explicitly here, keeping the core free of
+ * protocol state. The caller (the link layer, eventually) fills this in.
+ */
+typedef struct {
+	const uint8_t *valid_types; /**< Allowed types (bytValidFrameTypes{ISS,ALL}). */
+	int valid_len;              /**< Number of entries in valid_types. */
+	uint8_t session_id;         /**< Decode key for the 2nd byte (bytSessionID). */
+	bool pending;               /**< ARQ connection pending (blnPending). */
+	bool arq_connected;         /**< ARQ session up (blnARQConnected). */
+	uint8_t last_arq_session_id;/**< Prior session id (bytLastARQSessionID). */
+} ardop_frametype_decode_ctx;
 
 /**
  * @brief Receiver state. Caller-owned; the members are an implementation
@@ -103,6 +149,30 @@ typedef struct {
 	short mags[ARDOP_DEMOD_MAX_CARRIERS][ARDOP_DEMOD_MAX_PSK_SYMBOLS];
 	                       /**< Symbol magnitudes per carrier. */
 	int phases_len;        /**< Symbols demodulated so far (index into above). */
+
+	/* --- stage 6: streaming push FSM working state ---
+	 * The push driver appends to raw[], runs the acquisition FSM, streams
+	 * the frame's carriers, and emits events. Ported from ProcessNewSamples.
+	 * Protocol decisions stay outside: the caller sets ft_ctx (the frame-type
+	 * decode keys) and rs (the RS context), and routes the events. */
+	const ardop_rs *rs;          /**< RS context for carrier decode (caller-set). */
+	ardop_frametype_decode_ctx ft_ctx; /**< Frame-type decode keys (caller-set). */
+
+	int16_t raw[2400];           /**< Pre-mix samples held for the leader search. */
+	int raw_len;                 /**< Valid samples in raw. */
+
+	uint8_t frame_type;          /**< Frame type being acquired. */
+	int frame_num_car;           /**< Carriers in the current frame. */
+	int frame_baud;              /**< Baud of the current frame's data. */
+	int frame_data_len;          /**< Per-carrier gross data length. */
+	int frame_rs_len;            /**< Per-carrier RS parity length. */
+	ardop_modulation frame_mod;  /**< Modulation of the current frame. */
+	int frame_samp_per_sym;      /**< Samples per data symbol (12000/baud). */
+	int symbols_left;            /**< Bytes still to demodulate (all carriers). */
+	int char_index;              /**< Next byte index within a carrier block. */
+	uint8_t frame_data[ARDOP_DEMOD_MAX_CARRIERS][ARDOP_DEMOD_MAX_CARRIER_BYTES];
+	                             /**< Raw demodulated bytes, per carrier. */
+	uint8_t payload[ARDOP_DEMOD_MAX_PAYLOAD]; /**< Decoded payload for the event. */
 } ardop_demod;
 
 /**
@@ -216,24 +286,6 @@ bool ardop_demod_frametype_tonemags(const ardop_demod *d, int ptr,
  */
 float ardop_frametype_decode_distance(const int32_t *mags, int tone_ptr,
 				      uint8_t frame_type, uint8_t id);
-
-/**
- * @brief Protocol context for the frame-type acceptance decision (stage 4b).
- *
- * The frame-type decision is protocol-coupled: the second byte is XORed with
- * the session id (a decode key you cannot omit), and how confident a match must
- * be depends on the connection state. Rather than read that state from globals,
- * the demodulator is handed it explicitly here, keeping the core free of
- * protocol state. The caller (the link layer, eventually) fills this in.
- */
-typedef struct {
-	const uint8_t *valid_types; /**< Allowed types (bytValidFrameTypes{ISS,ALL}). */
-	int valid_len;              /**< Number of entries in valid_types. */
-	uint8_t session_id;         /**< Decode key for the 2nd byte (bytSessionID). */
-	bool pending;               /**< ARQ connection pending (blnPending). */
-	bool arq_connected;         /**< ARQ session up (blnARQConnected). */
-	uint8_t last_arq_session_id;/**< Prior session id (bytLastARQSessionID). */
-} ardop_frametype_decode_ctx;
 
 /**
  * @brief Decide the frame type by minimal distance over the valid types (stage 4b).
@@ -393,5 +445,32 @@ int ardop_demod_qam_char(ardop_demod *d, int start, int carrier,
  */
 int ardop_decode_qam_char(ardop_demod *d, int carrier, uint8_t *decoded,
 			  bool carrier_already_ok);
+
+/**
+ * @brief Drive the whole receiver on a block of samples (stage 6).
+ *
+ * Ported from `ProcessNewSamples`, stripped of its protocol/transmit/GUI
+ * coupling. Appends @p samples to the internal pre-mix buffer and runs the
+ * acquisition state machine as far as the available data allows: leader search,
+ * downmix/filter, symbol and frame sync, frame-type acquisition, then streaming
+ * per-carrier demodulation and RS decode. Terminal points are written to
+ * @p events as ::ardop_event values rather than acted on.
+ *
+ * The caller owns the two pieces of protocol context the DSP needs: set
+ * @p d->rs (RS context) and @p d->ft_ctx (frame-type decode keys) before
+ * pushing. Payload pointers in FRAME_DECODED events point into @p d and stay
+ * valid until the next push.
+ *
+ * @param[in]  d           Receiver.
+ * @param[in]  samples     Newly captured samples.
+ * @param[in]  n           Number of samples.
+ * @param[in]  now_samples Current time as an elapsed sample count.
+ * @param[out] events      Caller array for emitted events.
+ * @param[in]  max_events  Capacity of @p events.
+ * @return The number of events written.
+ */
+size_t ardop_demod_push(ardop_demod *d, const int16_t *samples, size_t n,
+			uint64_t now_samples, ardop_event *events,
+			size_t max_events);
 
 #endif /* ARDOP_MODEM_DEMODULATE_H_ */

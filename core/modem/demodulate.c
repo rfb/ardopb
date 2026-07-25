@@ -591,9 +591,13 @@ float ardop_frametype_decode_distance(const int32_t *mags, int tone_ptr,
 }
 
 /* Frame-type classification values (ARDOPC.h), for the acceptance rules. */
+#define FT_DATANAK_MAX	0x1F
 #define FT_BREAK	0x23
+#define FT_IDLE		0x24
 #define FT_DISC		0x29
 #define FT_END		0x2C
+#define FT_CONREJBUSY	0x2D
+#define FT_CONREJBW	0x2E
 #define FT_CONREQ_MIN	0x31
 #define FT_CONREQ_MAX	0x38
 #define FT_DATAACK_MIN	0xE0
@@ -1032,4 +1036,285 @@ int ardop_decode_qam_char(ardop_demod *d, int carrier, uint8_t *decoded,
 	}
 
 	return char_index;
+}
+
+/* ------------------------------------------------------------------------- *
+ * Stage 6: the streaming push FSM (ported from ProcessNewSamples).
+ * ------------------------------------------------------------------------- */
+
+/* Short control frames carry no data: the frame type is the whole message. */
+static bool is_short_control_frame(uint8_t t)
+{
+	if (t <= FT_DATANAK_MAX)
+		return true;
+	if (t == FT_BREAK || t == FT_IDLE || t == FT_DISC || t == FT_END
+	    || t == FT_CONREJBUSY || t == FT_CONREJBW)
+		return true;
+	if (t >= FT_DATAACK_MIN)
+		return true;
+	return false;
+}
+
+/* Reset the baseband buffer between frames (ClearAllMixedSamples). */
+static void clear_mixed(ardop_demod *d)
+{
+	d->filtered_mixed_len = 0;
+	d->mfs_read_ptr = 0;
+}
+
+/* Slide filtered_mixed down so mfs_read_ptr becomes 0, dropping used samples. */
+static void compact_mixed(ardop_demod *d)
+{
+	d->filtered_mixed_len -= d->mfs_read_ptr;
+	if (d->filtered_mixed_len < 0)
+		d->filtered_mixed_len = 0;
+	memmove(d->filtered_mixed, &d->filtered_mixed[d->mfs_read_ptr],
+		(size_t)d->filtered_mixed_len * sizeof(int16_t));
+	d->mfs_read_ptr = 0;
+}
+
+/*
+ * Acquire4FSKFrameType wrapper: measure the frame-type tones, choose the type
+ * by minimal distance (using the caller-set decode keys), advance past the
+ * 10-symbol field, and refresh the tuning timestamp on a confident decode.
+ * Returns the type, -1 for a poor decode, or -2 for insufficient samples.
+ */
+static int acquire_frame_type(ardop_demod *d, uint64_t now)
+{
+	int32_t mags[ARDOP_FRAMETYPE_TONE_MAGS];
+	bool set_last_good;
+	int type;
+
+	if ((d->filtered_mixed_len - d->mfs_read_ptr) < 240 * 10.5)
+		return -2;  /* wait for more samples */
+	if (!ardop_demod_frametype_tonemags(d, d->mfs_read_ptr, mags))
+		return -1;
+
+	type = ardop_frametype_minimal_distance(mags, &d->ft_ctx, &set_last_good);
+	if (set_last_good)
+		d->last_good_frametype_decode = now;
+
+	d->mfs_read_ptr += 240 * 10;  /* advance to the first data symbol */
+	return type;
+}
+
+/* Emit an event if there is room. */
+static void emit(ardop_event *events, size_t *nev, size_t max_events,
+		 const ardop_event *ev)
+{
+	if (*nev < max_events)
+		events[(*nev)++] = *ev;
+}
+
+/*
+ * A whole frame's carriers are demodulated; RS-decode each and emit the result.
+ * For now the single-carrier path (4FSK/PSK/QAM 1 carrier) is wired; wider
+ * frames extend the carrier loop.
+ */
+static void deliver_frame(ardop_demod *d, ardop_event *events, size_t *nev,
+			  size_t max_events)
+{
+	uint8_t *raw = d->frame_data[0];
+	bool ok = false;
+	int net = ardop_decode_carrier_rs(d->rs, raw, d->payload,
+					  d->frame_data_len, d->frame_rs_len,
+					  d->frame_type, false, &ok);
+	ardop_event ev = {0};
+
+	ev.frame_type = d->frame_type;
+	if (ok) {
+		ev.kind = ARDOP_EV_FRAME_DECODED;
+		ev.data = d->payload;
+		ev.data_len = net;
+	} else {
+		ev.kind = ARDOP_EV_FRAME_BAD;
+	}
+	emit(events, nev, max_events, &ev);
+}
+
+size_t ardop_demod_push(ardop_demod *d, const int16_t *samples, size_t n,
+			uint64_t now_samples, ardop_event *events,
+			size_t max_events)
+{
+	size_t nev = 0;
+	const int16_t *smp;
+	int nsmp;
+
+	/* Append to anything held back from last time. */
+	if (d->raw_len) {
+		memcpy(&d->raw[d->raw_len], samples, n * sizeof(int16_t));
+		d->raw_len += (int)n;
+		nsmp = d->raw_len;
+		smp = d->raw;
+	} else {
+		nsmp = (int)n;
+		smp = samples;
+	}
+	d->raw_len = 0;
+
+	if (nsmp < 1024) {
+		/* Not enough to work on yet; hold it. */
+		memmove(d->raw, smp, (size_t)nsmp * sizeof(int16_t));
+		d->raw_len = nsmp;
+		return nev;
+	}
+
+	/* --- Searching for leader (on raw, unmixed samples) --- */
+	if (d->state == ARDOP_RX_SEARCHING_FOR_LEADER) {
+		while (d->state == ARDOP_RX_SEARCHING_FOR_LEADER && nsmp >= 1200) {
+			int sn = 0;
+			bool found = ardop_demod_leader_search(d, smp, nsmp,
+							       now_samples, &sn);
+			if (found) {
+				ardop_event ev = {0};
+
+				d->last_leader_detect = now_samples;
+				nsmp -= 480;
+				smp += 480;
+				/* InitializeMixedSamples: filter delay offset. */
+				d->filtered_mixed_len = 0;
+				d->mfs_read_ptr = 30;
+				d->state = ARDOP_RX_ACQUIRE_SYMBOL_SYNC;
+
+				ev.kind = ARDOP_EV_LEADER_DETECTED;
+				ev.offset_hz = d->offset_hz;
+				ev.sn = sn;
+				emit(events, &nev, max_events, &ev);
+			} else {
+				nsmp -= 240;  /* SlowCPU's 480 hop is dropped */
+				smp += 240;
+			}
+		}
+		if (d->state == ARDOP_RX_SEARCHING_FOR_LEADER) {
+			memmove(d->raw, smp, (size_t)nsmp * sizeof(int16_t));
+			d->raw_len = nsmp;
+			return nev;
+		}
+	}
+
+	/* Mix and filter all remaining samples to baseband. */
+	ardop_demod_mix_filter(d, smp, nsmp, d->offset_hz);
+	nsmp = 0;
+
+	/* --- Acquire symbol sync --- */
+	if (d->state == ARDOP_RX_ACQUIRE_SYMBOL_SYNC) {
+		if ((d->filtered_mixed_len - d->mfs_read_ptr) > 860) {
+			if (!ardop_demod_symbol_framing(d)) {
+				d->state = ARDOP_RX_SEARCHING_FOR_LEADER;
+				clear_mixed(d);
+				return nev;
+			}
+			/* symbol_framing advanced to ACQUIRE_FRAME_SYNC. */
+		}
+	}
+
+	/* --- Acquire frame sync --- */
+	if (d->state == ARDOP_RX_ACQUIRE_FRAME_SYNC) {
+		if (ardop_demod_frame_sync(d))
+			d->state = ARDOP_RX_ACQUIRE_FRAME_TYPE;
+		compact_mixed(d);
+		/* 1000 ms (12000 samples) without frame sync: give up. */
+		if ((now_samples - d->last_leader_detect) > 12000) {
+			d->state = ARDOP_RX_SEARCHING_FOR_LEADER;
+			clear_mixed(d);
+		}
+	}
+
+	/* --- Acquire frame type --- */
+	if (d->state == ARDOP_RX_ACQUIRE_FRAME_TYPE) {
+		int ft = acquire_frame_type(d, now_samples);
+		const ardop_frame_spec *spec;
+
+		if (ft == -2)
+			return nev;  /* insufficient samples */
+		if (ft == -1) {
+			d->state = ARDOP_RX_SEARCHING_FOR_LEADER;
+			clear_mixed(d);
+			return nev;
+		}
+
+		compact_mixed(d);
+		spec = ardop_frame_spec_for((uint8_t)ft);
+		if (spec == NULL) {
+			d->state = ARDOP_RX_SEARCHING_FOR_LEADER;
+			clear_mixed(d);
+			return nev;
+		}
+
+		d->frame_type = (uint8_t)ft;
+
+		if (is_short_control_frame(d->frame_type)) {
+			/* No data follows; the frame is complete. */
+			ardop_event ev = {0};
+
+			d->state = ARDOP_RX_SEARCHING_FOR_LEADER;
+			clear_mixed(d);
+			ev.kind = ARDOP_EV_FRAME_DECODED;
+			ev.frame_type = d->frame_type;
+			emit(events, &nev, max_events, &ev);
+			return nev;
+		}
+
+		/* Data-bearing frame: set up the streaming demod. */
+		d->frame_num_car = spec->carriers;
+		d->frame_baud = spec->baud;
+		d->frame_data_len = spec->data_bytes_per_carrier;
+		d->frame_rs_len = spec->rs_bytes_per_carrier;
+		d->frame_mod = spec->modulation;
+		d->frame_samp_per_sym = 12000 / spec->baud;
+
+		/* Bytes to demodulate: data frames add a length byte + 2 CRC. */
+		if (ardop_frame_is_data(d->frame_type))
+			d->symbols_left = d->frame_data_len + d->frame_rs_len + 3;
+		else
+			d->symbols_left = d->frame_data_len + d->frame_rs_len;
+		d->char_index = 0;
+		d->phases_len = 0;
+
+		if (d->frame_mod == ARDOP_MOD_4PSK)
+			ardop_demod_psk_init(d, d->frame_num_car, 4);
+		else if (d->frame_mod == ARDOP_MOD_8PSK)
+			ardop_demod_psk_init(d, d->frame_num_car, 8);
+		else if (d->frame_mod == ARDOP_MOD_16QAM)
+			ardop_demod_psk_init(d, d->frame_num_car, 8);
+
+		d->state = ARDOP_RX_ACQUIRE_FRAME;
+	}
+
+	/* --- Acquire frame: stream the data (single-carrier 4FSK) --- */
+	if (d->state == ARDOP_RX_ACQUIRE_FRAME
+	    && d->frame_mod == ARDOP_MOD_4FSK && d->frame_num_car == 1) {
+		int start = 0;
+
+		while (d->state == ARDOP_RX_ACQUIRE_FRAME) {
+			int32_t tm[ARDOP_4FSK_CHAR_TONE_MAGS];
+			int used = d->frame_samp_per_sym * 4;
+
+			if (d->filtered_mixed_len < d->frame_samp_per_sym * 4.5) {
+				/* Not enough for another byte; keep the tail. */
+				if (d->filtered_mixed_len > 0)
+					memmove(d->filtered_mixed,
+						&d->filtered_mixed[start],
+						(size_t)d->filtered_mixed_len
+						* sizeof(int16_t));
+				return nev;
+			}
+
+			d->frame_data[0][d->char_index] = ardop_demod_4fsk_char(
+				d, start, 1500, d->frame_baud,
+				d->frame_samp_per_sym, tm);
+			d->char_index++;
+			d->symbols_left--;
+			start += used;
+			d->filtered_mixed_len -= used;
+
+			if (d->symbols_left == 0) {
+				d->state = ARDOP_RX_SEARCHING_FOR_LEADER;
+				clear_mixed(d);
+				deliver_frame(d, events, &nev, max_events);
+			}
+		}
+	}
+
+	return nev;
 }

@@ -1109,6 +1109,97 @@ static void test_qam_decode_matches_legacy(void **state)
 	}
 }
 
+/*
+ * The capstone: a full core TX -> RX round trip through the streaming push FSM.
+ * Hand-build an encoded 4FSK.200.50 data frame ([ft, ft^sid] + [len][data][CRC]
+ * [RS]) around a known payload, modulate it with the core modulator, then push
+ * the samples in chunks through ardop_demod_push and require it to emit
+ * FRAME_DECODED with exactly that payload -- the whole receiver, assembled.
+ */
+static void test_push_decodes_modulated_4fsk_frame(void **state)
+{
+	(void)state;
+
+	assert_true(ardop_rs_init(&g_rs, kRSLens, NUM_RSLENS));
+
+	const uint8_t ft = 0x48;   /* 4FSK.200.50S.E: 1 car, 50 baud */
+	const int data_len = 16, rs_len = 4;
+
+	/* Known payload, and the per-carrier RS block around it. */
+	uint32_t rng = 0x0DDBA115u;
+	uint8_t payload[16];
+	for (int i = 0; i < data_len; i++)
+		payload[i] = (uint8_t)xorshift32(&rng);
+
+	uint8_t block[256];
+	block[0] = (uint8_t)data_len;
+	for (int i = 0; i < data_len; i++)
+		block[1 + i] = payload[i];
+	uint8_t trailer[2];
+	ardop_crc16_trailer(block, (size_t)(data_len + 1), ft, trailer);
+	block[data_len + 1] = trailer[0];
+	block[data_len + 2] = trailer[1];
+	assert_int_equal(ardop_rs_append(&g_rs, block, data_len + 3, rs_len), 0);
+	int block_len = data_len + rs_len + 3;
+
+	uint8_t encoded[64];
+	encoded[0] = ft;
+	encoded[1] = ft ^ 0;   /* session id 0 */
+	memcpy(&encoded[2], block, (size_t)block_len);
+	size_t enc_len = (size_t)(2 + block_len);
+
+	/* Modulate the frame. */
+	static int16_t frame[ARDOP_MOD_MAX_SAMPLES];
+	ardop_mod mm;
+	ardop_mod_init(&mm, 30);
+	assert_true(ardop_mod_begin(&mm, ft, encoded, enc_len, 240, frame,
+				    ARDOP_MOD_MAX_SAMPLES));
+	size_t total = ardop_mod_pull(&mm, frame, ARDOP_MOD_MAX_SAMPLES);
+	assert_true(total > 3000);
+
+	/* Receive it through the push FSM. */
+	static ardop_demod d;
+	ardop_demod_init(&d, 100, 5);
+	d.rs = &g_rs;
+	d.ft_ctx.valid_types = bytValidFrameTypesALL;
+	d.ft_ctx.valid_len = bytValidFrameTypesLengthALL;
+	d.ft_ctx.session_id = 0;
+	d.ft_ctx.pending = false;
+	d.ft_ctx.arq_connected = true;   /* accepts the data frame's own type */
+	d.ft_ctx.last_arq_session_id = 0;
+
+	bool got_leader = false, got_decoded = false;
+	uint8_t got_type = 0;
+	int got_len = -1;
+	uint8_t got_data[256];
+	uint64_t now = 1000000ull;   /* past the full-search gate */
+
+	for (size_t off = 0; off < total; off += 1200) {
+		size_t chunk = total - off < 1200 ? total - off : 1200;
+		ardop_event evs[8];
+		size_t ne = ardop_demod_push(&d, &frame[off], chunk, now, evs, 8);
+		now += chunk;
+		for (size_t e = 0; e < ne; e++) {
+			if (evs[e].kind == ARDOP_EV_LEADER_DETECTED)
+				got_leader = true;
+			else if (evs[e].kind == ARDOP_EV_FRAME_DECODED) {
+				got_decoded = true;
+				got_type = evs[e].frame_type;
+				got_len = evs[e].data_len;
+				for (int i = 0; i < got_len; i++)
+					got_data[i] = evs[e].data[i];
+			}
+		}
+	}
+
+	assert_true(got_leader);
+	assert_true(got_decoded);
+	assert_int_equal(got_type, ft);
+	assert_int_equal(got_len, data_len);
+	for (int i = 0; i < data_len; i++)
+		assert_int_equal(got_data[i], payload[i]);
+}
+
 int main(void)
 {
 	const struct CMUnitTest tests[] = {
@@ -1129,6 +1220,7 @@ int main(void)
 		cmocka_unit_test(test_psk_decode_matches_legacy),
 		cmocka_unit_test(test_qam_matches_legacy),
 		cmocka_unit_test(test_qam_decode_matches_legacy),
+		cmocka_unit_test(test_push_decodes_modulated_4fsk_frame),
 	};
 
 	ardop_test_setup();
