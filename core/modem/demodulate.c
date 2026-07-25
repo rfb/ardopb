@@ -692,3 +692,50 @@ int ardop_frametype_minimal_distance(const int32_t *mags,
 
 	return -1;  /* poor-quality decode; don't use */
 }
+
+uint8_t ardop_demod_4fsk_char(const ardop_demod *d, int start, int center_freq,
+			      int baud, int samp_per_sym, int32_t *tone_mags)
+{
+	float real, imag, mag[4];
+	/* Highest frequency first: the sideband is reversed, so this is the
+	 * lowest tone as sent. Bins are in units of the baud rate. */
+	float search_freq = (float)center_freq + 1.5f * (float)baud;
+	uint8_t byte = 0;
+
+	for (int j = 0; j < 4; j++) {
+		ardop_goertzel(d->filtered_mixed, start, samp_per_sym,
+			       search_freq / (float)baud, &real, &imag);
+		mag[0] = powf(real, 2) + powf(imag, 2);
+		ardop_goertzel(d->filtered_mixed, start, samp_per_sym,
+			       (search_freq - (float)baud) / (float)baud,
+			       &real, &imag);
+		mag[1] = powf(real, 2) + powf(imag, 2);
+		ardop_goertzel(d->filtered_mixed, start, samp_per_sym,
+			       (search_freq - (float)(2 * baud)) / (float)baud,
+			       &real, &imag);
+		mag[2] = powf(real, 2) + powf(imag, 2);
+		ardop_goertzel(d->filtered_mixed, start, samp_per_sym,
+			       (search_freq - (float)(3 * baud)) / (float)baud,
+			       &real, &imag);
+		mag[3] = powf(real, 2) + powf(imag, 2);
+
+		uint8_t sym;
+		if (mag[0] > mag[1] && mag[0] > mag[2] && mag[0] > mag[3])
+			sym = 0;
+		else if (mag[1] > mag[0] && mag[1] > mag[2] && mag[1] > mag[3])
+			sym = 1;
+		else if (mag[2] > mag[0] && mag[2] > mag[1] && mag[2] > mag[3])
+			sym = 2;
+		else
+			sym = 3;
+
+		byte = (uint8_t)((byte << 2) + sym);
+		tone_mags[4 * j + 0] = (int32_t)mag[0];
+		tone_mags[4 * j + 1] = (int32_t)mag[1];
+		tone_mags[4 * j + 2] = (int32_t)mag[2];
+		tone_mags[4 * j + 3] = (int32_t)mag[3];
+		start += samp_per_sym;
+	}
+
+	return byte;
+}

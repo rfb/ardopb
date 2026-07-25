@@ -62,6 +62,19 @@ float ComputeDecodeDistance(int intTonePtr, int *intToneMags,
 extern int UseSDFT;
 
 /*
+ * Oracle for stage 5 (4FSK): Demod1Car4FSKChar demodulates four 4FSK symbols
+ * into Decoded[charIndex] and writes 16 tone mags at intToneMags[intToneMagsIndex].
+ * The carrier params come from the globals below.
+ */
+void Demod1Car4FSKChar(int Start, unsigned char *Decoded);
+extern int intCenterFreq;
+extern int intBaud;
+extern int intSampPerSym;
+extern int intToneMagsIndex;
+extern int charIndex;
+extern int intToneMags[];
+
+/*
  * Oracle for stage 4b: the minimal-distance acceptance decision. It reads the
  * connection state from globals (ProtocolState selects the valid-types list;
  * blnPending/blnARQConnected/bytLastARQSessionID pick the branch) and, on a
@@ -627,6 +640,74 @@ static void test_mindist_matches_legacy_noise(void **state)
 	}
 }
 
+/*
+ * 4FSK character demod on real baseband: the frame-type field is itself 4FSK
+ * 50-baud, so demodulating it with the char demodulator must match
+ * Demod1Car4FSKChar bit-for-bit -- the byte and all 16 tone mags -- at every
+ * offset. And the first character over the field is the frame's own first
+ * frame-type byte (BREAK, 0x23), a real join into the symbol demodulator.
+ */
+static void test_4fsk_char_matches_legacy(void **state)
+{
+	(void)state;
+
+	static int16_t frame[ARDOP_MOD_MAX_SAMPLES];
+	ardop_mod m;
+	ardop_mod_init(&m, 30);
+	const uint8_t enc[2] = { 0x23, 0x23 };
+	assert_true(ardop_mod_begin(&m, 0x23, enc, sizeof(enc), 120, frame,
+				    ARDOP_MOD_MAX_SAMPLES));
+	size_t nn = ardop_mod_pull(&m, frame, ARDOP_MOD_MAX_SAMPLES);
+	int total = (int)nn < 4900 ? (int)nn : 4900;
+
+	ardop_demod d;
+	ardop_demod_init(&d, 100, 5);
+	for (int off = 0; off < total; off += 1200) {
+		int len = total - off < 1200 ? total - off : 1200;
+		ardop_demod_mix_filter(&d, &frame[off], len, 0.0f);
+	}
+	d.mfs_read_ptr = 30;
+	assert_true(ardop_demod_symbol_framing(&d));
+	assert_true(ardop_demod_frame_sync(&d));  /* at the frame-type field */
+
+	intFilteredMixedSamplesLength = d.filtered_mixed_len;
+	for (int i = 0; i < d.filtered_mixed_len; i++)
+		intFilteredMixedSamples[i] = d.filtered_mixed[i];
+
+	int checked = 0;
+	for (int c = 0; c < 4; c++) {
+		int start = d.mfs_read_ptr + c * 4 * 240;
+		if (d.filtered_mixed_len - start < 4 * 240)
+			break;
+
+		intCenterFreq = 1500;
+		intBaud = 50;
+		intSampPerSym = 240;
+		intToneMagsIndex = 0;
+		charIndex = 0;
+		unsigned char odec[8] = {0};
+		Demod1Car4FSKChar(start, odec);
+		uint8_t obyte = odec[0];
+
+		int32_t pmags[ARDOP_4FSK_CHAR_TONE_MAGS];
+		uint8_t pbyte = ardop_demod_4fsk_char(&d, start, 1500, 50, 240,
+						      pmags);
+
+		if (pbyte != obyte)
+			fail_msg("char %d byte: legacy %02x, port %02x", c,
+				 obyte, pbyte);
+		for (int i = 0; i < ARDOP_4FSK_CHAR_TONE_MAGS; i++)
+			if (pmags[i] != intToneMags[i])
+				fail_msg("char %d mag %d: legacy %d, port %d", c,
+					 i, intToneMags[i], pmags[i]);
+
+		if (c == 0)
+			assert_int_equal(pbyte, 0x23);  /* BREAK's first byte */
+		checked++;
+	}
+	assert_true(checked >= 1);
+}
+
 int main(void)
 {
 	const struct CMUnitTest tests[] = {
@@ -641,6 +722,7 @@ int main(void)
 		cmocka_unit_test(test_decode_distance_matches_legacy),
 		cmocka_unit_test(test_mindist_matches_legacy_synth),
 		cmocka_unit_test(test_mindist_matches_legacy_noise),
+		cmocka_unit_test(test_4fsk_char_matches_legacy),
 	};
 
 	ardop_test_setup();

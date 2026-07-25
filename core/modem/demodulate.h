@@ -229,4 +229,27 @@ int ardop_frametype_minimal_distance(const int32_t *mags,
 				     const ardop_frametype_decode_ctx *ctx,
 				     bool *set_last_good);
 
+/** One 4FSK character is four 2-bit symbols; each yields four tone mags. */
+#define ARDOP_4FSK_CHAR_TONE_MAGS 16
+
+/**
+ * @brief Demodulate one 4FSK character: four symbols into one byte (stage 5).
+ *
+ * Ported from `Demod1Car4FSKChar`. For each of the four 4FSK symbols it runs a
+ * Goertzel at the four tones (highest first, since the sideband is reversed),
+ * takes the strongest as the 2-bit symbol, and packs the four symbols MSB-first
+ * into the returned byte. The 16 tone magnitudes (four per symbol) are written
+ * to @p tone_mags for the constellation / Memory-ARQ tracking.
+ *
+ * @param[in]  d             Receiver; reads filtered_mixed.
+ * @param[in]  start         Sample offset of the first symbol.
+ * @param[in]  center_freq   Carrier centre frequency, Hz (nominally 1500).
+ * @param[in]  baud          Symbol rate (50/100/600).
+ * @param[in]  samp_per_sym  Samples per symbol (12000/baud).
+ * @param[out] tone_mags     ARDOP_4FSK_CHAR_TONE_MAGS magnitudes.
+ * @return The demodulated byte.
+ */
+uint8_t ardop_demod_4fsk_char(const ardop_demod *d, int start, int center_freq,
+			      int baud, int samp_per_sym, int32_t *tone_mags);
+
 #endif /* ARDOP_MODEM_DEMODULATE_H_ */
