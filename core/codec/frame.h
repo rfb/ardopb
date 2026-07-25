@@ -142,6 +142,20 @@ static inline uint16_t ardop_frame_rs_bytes(const ardop_frame_spec *spec)
 }
 
 /**
+ * @brief The 2-bit parity symbol for a frame type.
+ *
+ * A frame type is sent as four 2-bit 4FSK symbols (its four dibits) followed by
+ * a fifth parity symbol, so the receiver can score a candidate type against the
+ * received tones. The parity is the XOR of the four dibits, seeded with 1.
+ * Ported from `ComputeTypeParity`; used by both the modulator (to send the
+ * parity symbol) and the frame-type decoder (to score candidates).
+ *
+ * @param frame_type The frame type byte.
+ * @return The parity symbol, 0..3.
+ */
+uint8_t ardop_frame_type_parity(uint8_t frame_type);
+
+/**
  * @brief Name of a modulation scheme, e.g. "16QAM".
  *
  * @return A static string, or "?" if the value is not a valid enumerator.

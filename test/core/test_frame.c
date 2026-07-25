@@ -21,6 +21,7 @@
 int FrameInfo(unsigned char frame_type, int *odd, int *num_car, char *mod,
 	      int *baud, int *data_len, int *rs_len, unsigned char *qual_thresh,
 	      char *type_name);
+unsigned char ComputeTypeParity(unsigned char frame_type);
 
 /*
  * Every frame type byte must be classified the same way by the new table and
@@ -263,6 +264,16 @@ static void test_modulation_names(void **state)
 	assert_string_equal(ardop_modulation_name(ARDOP_MOD_16QAM), "16QAM");
 }
 
+/* The parity symbol must match the original for every one of the 256 bytes. */
+static void test_type_parity_matches_legacy(void **state)
+{
+	(void)state;
+
+	for (int t = 0; t < 256; t++)
+		assert_int_equal(ardop_frame_type_parity((uint8_t)t),
+				 ComputeTypeParity((unsigned char)t));
+}
+
 int main(void)
 {
 	const struct CMUnitTest tests[] = {
@@ -272,6 +283,7 @@ int main(void)
 		cmocka_unit_test(test_table_invariants),
 		cmocka_unit_test(test_even_odd_pairs_match),
 		cmocka_unit_test(test_modulation_names),
+		cmocka_unit_test(test_type_parity_matches_legacy),
 	};
 
 	ardop_test_setup();

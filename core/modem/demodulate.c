@@ -3,6 +3,7 @@
 #include <math.h>
 #include <string.h>
 
+#include "codec/frame.h"
 #include "modem/goertzel.h"
 #include "modem/templates.h"
 
@@ -517,4 +518,72 @@ bool ardop_demod_frame_sync(ardop_demod *d)
 	/* Back up two symbols so the next call resumes cleanly. */
 	d->mfs_read_ptr = local_ptr - 480;
 	return false;
+}
+
+bool ardop_demod_frametype_tonemags(const ardop_demod *d, int ptr, int32_t *mags)
+{
+	float real, imag;
+
+	if ((d->filtered_mixed_len - ptr) < 2400)
+		return false;
+
+	for (int i = 0; i < 10; i++) {
+		/*
+		 * The four 50-baud tones. Each magnitude is |Goertzel|^2, but
+		 * with an inherited asymmetry preserved bit-for-bit: the real
+		 * part's square is truncated to int *before* the imaginary
+		 * part's square is added (the original casts only the first
+		 * powf). It is RX-local -- see analysis/12.
+		 */
+		ardop_goertzel(d->filtered_mixed, ptr, 240, 1575 / 50.0f,
+			       &real, &imag);
+		mags[4 * i] = (int32_t)((float)(int)powf(real, 2)
+					+ powf(imag, 2));
+		ardop_goertzel(d->filtered_mixed, ptr, 240, 1525 / 50.0f,
+			       &real, &imag);
+		mags[1 + 4 * i] = (int32_t)((float)(int)powf(real, 2)
+					    + powf(imag, 2));
+		ardop_goertzel(d->filtered_mixed, ptr, 240, 1475 / 50.0f,
+			       &real, &imag);
+		mags[2 + 4 * i] = (int32_t)((float)(int)powf(real, 2)
+					    + powf(imag, 2));
+		ardop_goertzel(d->filtered_mixed, ptr, 240, 1425 / 50.0f,
+			       &real, &imag);
+		mags[3 + 4 * i] = (int32_t)((float)(int)powf(real, 2)
+					    + powf(imag, 2));
+		ptr += 240;
+	}
+
+	return true;
+}
+
+float ardop_frametype_decode_distance(const int32_t *mags, int tone_ptr,
+				      uint8_t frame_type, uint8_t id)
+{
+	float distance = 0;
+	uint8_t mask = 0xC0;
+
+	for (int j = 0; j <= 4; j++) {  /* over 5 symbols */
+		int tone_sum = 0;
+		int tone_index;
+
+		for (int k = 0; k <= 3; k++)
+			tone_sum += mags[tone_ptr + (4 * j) + k];
+		if (tone_sum == 0)
+			tone_sum = 1;  /* guard against divide-by-zero */
+
+		/* The first four symbols carry the type's dibits (XORed with
+		 * the decode key); the fifth is the parity symbol. */
+		if (j < 4)
+			tone_index = ((frame_type ^ id) & mask) >> (6 - 2 * j);
+		else
+			tone_index = ardop_frame_type_parity(frame_type);
+
+		distance += 1.0f - (1.0f * (float)mags[tone_ptr + (4 * j)
+						       + tone_index])
+				   / (1.0f * (float)tone_sum);
+		mask = (uint8_t)(mask >> 2);
+	}
+
+	return distance / 5;  /* normalise back to 0..1 */
 }

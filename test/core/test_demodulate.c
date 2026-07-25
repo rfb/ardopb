@@ -50,6 +50,16 @@ int AcquireFrameSyncRSB(void);
 extern int intMFSReadPtr;
 extern int intLeaderRcvdMs;
 
+/*
+ * Oracle for stage 4: the frame-type tone demod and the per-candidate decode
+ * distance. UseSDFT is forced off so DemodFrameType4FSK takes the Goertzel path
+ * the port mirrors.
+ */
+int DemodFrameType4FSK(int intPtr, short *intSamples, int *intToneMags);
+float ComputeDecodeDistance(int intTonePtr, int *intToneMags,
+			    unsigned char bytFrameType, unsigned char bytID);
+extern int UseSDFT;
+
 /* Full-search branch: Now - lastGoodDecode must exceed 20000 ms. */
 #define NOW_MS 1000000
 #define NOW_SAMPLES ((uint64_t)NOW_MS * 12)
@@ -377,6 +387,95 @@ static void test_sync_matches_legacy_on_noise(void **state)
 	}
 }
 
+/*
+ * Frame-type tone magnitudes on the modulator's own frame: advance through
+ * stages 1-3 to the frame-type field, then require the port's 40 magnitudes to
+ * match DemodFrameType4FSK bit-for-bit -- and, as a real detection check, that
+ * the frame's own type (BREAK, 0x23) scores a small decode distance.
+ */
+static void test_frametype_matches_legacy_on_frame(void **state)
+{
+	(void)state;
+
+	/*
+	 * A short (120 ms) leader keeps the whole frame-type field inside the
+	 * 5000-sample baseband buffer. The live pipeline instead compacts the
+	 * buffer as the read pointer advances; that is stage 6's job, so here we
+	 * just keep the leader short enough not to need it.
+	 */
+	static int16_t frame[ARDOP_MOD_MAX_SAMPLES];
+	ardop_mod m;
+	ardop_mod_init(&m, 30);
+	const uint8_t enc[2] = { 0x23, 0x23 };
+	assert_true(ardop_mod_begin(&m, 0x23, enc, sizeof(enc), 120, frame,
+				    ARDOP_MOD_MAX_SAMPLES));
+	size_t nn = ardop_mod_pull(&m, frame, ARDOP_MOD_MAX_SAMPLES);
+	int total = (int)nn < 4900 ? (int)nn : 4900;
+
+	ardop_demod d;
+	ardop_demod_init(&d, 100, 5);
+	for (int off = 0; off < total; off += 1200) {
+		int len = total - off < 1200 ? total - off : 1200;
+		ardop_demod_mix_filter(&d, &frame[off], len, 0.0f);
+	}
+	d.mfs_read_ptr = 30;
+	assert_true(ardop_demod_symbol_framing(&d));
+	assert_true(ardop_demod_frame_sync(&d));  /* now at frame-type field */
+
+	int ptr = d.mfs_read_ptr;
+	assert_true(d.filtered_mixed_len - ptr >= 2400);
+
+	UseSDFT = 0;
+	intFilteredMixedSamplesLength = d.filtered_mixed_len;
+	for (int i = 0; i < d.filtered_mixed_len; i++)
+		intFilteredMixedSamples[i] = d.filtered_mixed[i];
+
+	int omags[ARDOP_FRAMETYPE_TONE_MAGS];
+	assert_true(DemodFrameType4FSK(ptr, intFilteredMixedSamples, omags));
+
+	int32_t pmags[ARDOP_FRAMETYPE_TONE_MAGS];
+	assert_true(ardop_demod_frametype_tonemags(&d, ptr, pmags));
+
+	for (int i = 0; i < ARDOP_FRAMETYPE_TONE_MAGS; i++)
+		if (pmags[i] != omags[i])
+			fail_msg("mag %d: legacy %d, port %d", i, omags[i],
+				 pmags[i]);
+
+	/* The real frame's own type scores low, and both agree exactly. */
+	float od = ComputeDecodeDistance(0, omags, 0x23, 0);
+	float pd = ardop_frametype_decode_distance(pmags, 0, 0x23, 0);
+	assert_true(feq(od, pd));
+	assert_true(pd < 0.3f);
+}
+
+/* The decode distance must match ComputeDecodeDistance for arbitrary tones. */
+static void test_decode_distance_matches_legacy(void **state)
+{
+	(void)state;
+
+	uint32_t rng = 0xC0FFEE11u;
+	for (int t = 0; t < 2000; t++) {
+		int omags[ARDOP_FRAMETYPE_TONE_MAGS];
+		int32_t pmags[ARDOP_FRAMETYPE_TONE_MAGS];
+		for (int i = 0; i < ARDOP_FRAMETYPE_TONE_MAGS; i++) {
+			int v = (int)(xorshift32(&rng) % 100000u);
+			omags[i] = v;
+			pmags[i] = v;
+		}
+		uint8_t type = (uint8_t)xorshift32(&rng);
+		uint8_t id = (uint8_t)xorshift32(&rng);
+		int tone_ptr = (xorshift32(&rng) & 1u) ? 20 : 0;
+
+		float od = ComputeDecodeDistance(tone_ptr, omags, type, id);
+		float pd = ardop_frametype_decode_distance(pmags, tone_ptr,
+							   type, id);
+		if (!feq(od, pd))
+			fail_msg("distance t=%d type=%x id=%x ptr=%d: "
+				 "legacy %.9g, port %.9g", t, type, id,
+				 tone_ptr, (double)od, (double)pd);
+	}
+}
+
 int main(void)
 {
 	const struct CMUnitTest tests[] = {
@@ -387,6 +486,8 @@ int main(void)
 		cmocka_unit_test(test_mix_matches_legacy_on_leader),
 		cmocka_unit_test(test_sync_matches_legacy_on_frame),
 		cmocka_unit_test(test_sync_matches_legacy_on_noise),
+		cmocka_unit_test(test_frametype_matches_legacy_on_frame),
+		cmocka_unit_test(test_decode_distance_matches_legacy),
 	};
 
 	ardop_test_setup();

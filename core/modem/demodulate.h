@@ -156,4 +156,40 @@ bool ardop_demod_symbol_framing(ardop_demod *d);
  */
 bool ardop_demod_frame_sync(ardop_demod *d);
 
+/** Tone magnitudes for a frame type: 10 symbols x 4 tones = 40 entries. */
+#define ARDOP_FRAMETYPE_TONE_MAGS 40
+
+/**
+ * @brief Measure the 4FSK tone magnitudes of the frame-type field (stage 4).
+ *
+ * Ported from the non-SDFT path of `DemodFrameType4FSK`. Runs a Goertzel at each
+ * of the four 50-baud tones (1425/1475/1525/1575 Hz) over each of the 10
+ * frame-type symbols starting at @p ptr, writing 40 magnitudes to @p mags in
+ * symbol-major, tone-minor order. These feed ardop_frametype_decode_distance().
+ *
+ * @param[in]  d    Receiver; reads filtered_mixed.
+ * @param[in]  ptr  Sample offset of the first frame-type symbol.
+ * @param[out] mags ARDOP_FRAMETYPE_TONE_MAGS magnitudes.
+ * @return true if enough baseband is buffered (>= 2400 samples from @p ptr).
+ */
+bool ardop_demod_frametype_tonemags(const ardop_demod *d, int ptr,
+				    int32_t *mags);
+
+/**
+ * @brief Distance of one frame-type byte from a candidate type (stage 4).
+ *
+ * Ported from `ComputeDecodeDistance`. Scores five symbols (four dibits of the
+ * candidate @p frame_type XORed with the decode key @p id, plus the parity
+ * symbol) against the measured tones, returning a normalised 0..1 distance --
+ * lower is a better match. The caller minimises this over the valid frame types.
+ *
+ * @param mags       Tone magnitudes from ardop_demod_frametype_tonemags().
+ * @param tone_ptr   0 for the first frame-type byte, 20 for the second.
+ * @param frame_type Candidate frame type byte.
+ * @param id         Decode key XORed into the byte (session id, or 0 / 0xFF).
+ * @return Normalised distance in [0, 1].
+ */
+float ardop_frametype_decode_distance(const int32_t *mags, int tone_ptr,
+				      uint8_t frame_type, uint8_t id);
+
 #endif /* ARDOP_MODEM_DEMODULATE_H_ */

@@ -104,7 +104,26 @@ establishes symbol framing.
   interop. A candidate for a receiver-quality improvement even ahead of a formal
   `improved` mode — to be measured against the golden/degraded WAVs.
 
-### 4. Leader-length `ceil()` over integer division — benign
+### 4. Frame-type tone magnitude truncates only the real part — RX-local
+
+In `DemodFrameType4FSK` (`SoundInput.c:2073`), each 4FSK tone magnitude is
+`intToneMags[...] = (int)powf(dblReal, 2) + powf(dblImag, 2)`. The cast binds to
+the first term only, so the real part's square is truncated to `int` *before*
+the (still-float) imaginary square is added, and the sum is truncated again on
+store. The magnitude is therefore `trunc(trunc(re²) + im²)` rather than
+`trunc(re² + im²)` — an asymmetry with no reason behind it, almost certainly a
+missing pair of parentheses. It perturbs the tone magnitudes that feed the
+minimal-distance frame-type decoder by up to ~1 count.
+
+- **Handled in `core/` by** reproducing the asymmetric truncation exactly in
+  `core/modem/demodulate.c`'s `ardop_demod_frametype_tonemags`
+  (`(int32_t)((float)(int)powf(real,2) + powf(imag,2))`), with a comment.
+- **`improved` opportunity** — compute the magnitude symmetrically in float.
+  **RX-local**: tone magnitudes only affect this receiver's frame-type scoring,
+  never the transmitted signal, so it is fixable unilaterally. Marginal effect;
+  bundle it with any `improved`-mode receiver rework.
+
+### 5. Leader-length `ceil()` over integer division — benign
 
 In `AcquireFrameSyncRSB` (`SoundInput.c:2027`), the received leader length is
 `intLeaderRcvdMs = (int)ceil((intLocalPtr - 30) / 12)`. The division is

@@ -147,7 +147,7 @@ participate in the program.
 
 | Layer | Module | State |
 |---|---|---|
-| `codec` | `frame` — frame type table | **done**, all 256 types proven equivalent to `FrameInfo()` |
+| `codec` | `frame` — frame type table | **done**, all 256 types proven equivalent to `FrameInfo()`; frame-type parity symbol proven equivalent to `ComputeTypeParity()` |
 | `codec` | `crc` — CRC-16 and CRC-8 | **done**, proven equivalent to `GenCRC16()`/`GenCRC8()` over a random corpus |
 | `codec` | `packed6` — 6-bit callsign/grid packing | **done**, proven equivalent to the original `Packed6` over a random corpus |
 | `codec` | `rs` — Reed-Solomon FEC | **done**, 5 globals moved into a caller-owned context; tables and encode/decode proven equivalent to `lib/rockliff/rrs` |
@@ -156,7 +156,7 @@ participate in the program.
 | **`codec`** | **layer complete** | frame, crc, packed6, rs, stationid, locator |
 | `modem` | `modulate` — TX (all modulations) | **done**, every sample of the whole golden corpus (22 control + 108 data cases: 4FSK 50/100/600, 4PSK/8PSK/16QAM at 1–8 carriers) proven bit-identical to ardopcf |
 | `modem` | `goertzel` — single-bin DFT + peak locator | **done**, the RX DSP foundation; proven bit-identical to the `GoertzelRealImag*`/`SpectralPeakLocator` originals |
-| `modem` | `demodulate` — RX pipeline (stages 1–3) | in progress — leader search, downmix/2 kHz filter, and symbol + frame sync done, each bit-identical to its `SoundInput.c` original (`SearchFor2ToneLeader3`, `MixNCOFilter`/`FSMixFilter2000Hz`, `Acquire2ToneLeaderSymbolFraming`/`AcquireFrameSyncRSB`); the modulator's own frame is downmixed and both sync searches lock onto its sync symbol (TX→RX join through stage 3); frame-type → demod → decode next ([analysis/11](../analysis/11-demod-design.md)) |
+| `modem` | `demodulate` — RX pipeline (stages 1–3, 4 partial) | in progress — leader search, downmix/2 kHz filter, symbol + frame sync, and the frame-type tone demod + per-candidate decode distance done, each bit-identical to its `SoundInput.c` original (`SearchFor2ToneLeader3`, `MixNCOFilter`/`FSMixFilter2000Hz`, `Acquire2ToneLeaderSymbolFraming`/`AcquireFrameSyncRSB`, `DemodFrameType4FSK`/`ComputeDecodeDistance`); the modulator's own frame is downmixed, both sync searches lock onto its sync symbol, and its frame-type field scores a small decode distance for its own type (TX→RX join through stage 4a); frame-type acceptance policy → per-modulation demod → RS decode next ([analysis/11](../analysis/11-demod-design.md)) |
 | `link` | — | not started |
 
 The carrier-waveform templates (`int50BaudTwoToneLeaderTemplate` etc.) now live

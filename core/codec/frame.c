@@ -130,6 +130,20 @@ const ardop_frame_spec *ardop_frame_spec_for(uint8_t frame_type)
 	return spec->name != NULL ? spec : NULL;
 }
 
+uint8_t ardop_frame_type_parity(uint8_t frame_type)
+{
+	uint8_t mask = 0xC0;
+	uint8_t parity_sum = 1;
+
+	for (int k = 0; k < 4; k++) {
+		uint8_t sym = (uint8_t)((mask & frame_type) >> (2 * (3 - k)));
+		parity_sum = (uint8_t)(parity_sum ^ sym);
+		mask = (uint8_t)(mask >> 2);
+	}
+
+	return (uint8_t)(parity_sum & 0x3u);
+}
+
 const char *ardop_modulation_name(ardop_modulation modulation)
 {
 	switch (modulation) {
