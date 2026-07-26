@@ -1117,7 +1117,7 @@ static void test_qam_decode_matches_legacy(void **state)
  * payload -- the whole receiver, assembled, for one modulation.
  */
 static void expect_push_roundtrip(uint8_t ft, int num_car, int data_len,
-				  int rs_len)
+				  int rs_len, int nerr)
 {
 	assert_true(ardop_rs_init(&g_rs, kRSLens, NUM_RSLENS));
 
@@ -1143,6 +1143,14 @@ static void expect_push_roundtrip(uint8_t ft, int num_car, int data_len,
 		block[data_len + 2] = trailer[1];
 		assert_int_equal(ardop_rs_append(&g_rs, block, data_len + 3,
 						 rs_len), 0);
+
+		/* Corrupt up to nerr bytes within the RS budget (rs_len/2); the
+		 * receiver's in-pipeline RS correction must repair them. */
+		for (int e = 0; e < nerr; e++) {
+			int pos = (int)(xorshift32(&rng) % (uint32_t)block_len);
+			block[pos] = (uint8_t)(block[pos]
+					       ^ (xorshift32(&rng) | 1u));
+		}
 	}
 	size_t enc_len = (size_t)(2 + num_car * block_len);
 
@@ -1212,13 +1220,20 @@ static void test_push_roundtrip(void **state)
 {
 	(void)state;
 
-	expect_push_roundtrip(0x48, 1, 16, 4);    /* 4FSK.200.50S:   1 car */
-	expect_push_roundtrip(0x42, 1, 16, 8);    /* 4PSK.200.100S:  1 car */
-	expect_push_roundtrip(0x44, 1, 108, 36);  /* 8PSK.200.100:   1 car */
-	expect_push_roundtrip(0x50, 2, 64, 32);   /* 4PSK.500.100:   2 car */
-	expect_push_roundtrip(0x60, 4, 64, 32);   /* 4PSK.1000.100:  4 car */
-	expect_push_roundtrip(0x70, 8, 64, 32);   /* 4PSK.2000.100:  8 car */
-	expect_push_roundtrip(0x46, 1, 128, 64);  /* 16QAM.200.100:  1 car */
+	/* Clean channel: exact payload recovery. */
+	expect_push_roundtrip(0x48, 1, 16, 4, 0);    /* 4FSK.200.50S:   1 car */
+	expect_push_roundtrip(0x42, 1, 16, 8, 0);    /* 4PSK.200.100S:  1 car */
+	expect_push_roundtrip(0x44, 1, 108, 36, 0);  /* 8PSK.200.100:   1 car */
+	expect_push_roundtrip(0x50, 2, 64, 32, 0);   /* 4PSK.500.100:   2 car */
+	expect_push_roundtrip(0x60, 4, 64, 32, 0);   /* 4PSK.1000.100:  4 car */
+	expect_push_roundtrip(0x70, 8, 64, 32, 0);   /* 4PSK.2000.100:  8 car */
+	expect_push_roundtrip(0x46, 1, 128, 64, 0);  /* 16QAM.200.100:  1 car */
+
+	/* Byte errors within the RS budget (rs_len/2): the pipeline's RS
+	 * correction must still recover the exact payload. */
+	expect_push_roundtrip(0x48, 1, 16, 4, 2);    /* 4FSK: 2 of 2 */
+	expect_push_roundtrip(0x50, 2, 64, 32, 16);  /* 4PSK 2-car: 16 of 16 */
+	expect_push_roundtrip(0x46, 1, 128, 64, 32); /* 16QAM: 32 of 32 */
 }
 
 int main(void)
