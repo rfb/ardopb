@@ -122,6 +122,8 @@ extern float dblFreqBin[8];
  * of those and detects the timestamp write to compare against set_last_good.
  */
 int MinimalDistanceFrameType(int *intToneMags, unsigned char bytSessionID);
+float RxoComputeDecodeDistance(int *intToneMags, unsigned char bytFrameType);
+int RxoMinimalDistanceFrameType(int *intToneMags);
 extern int ProtocolState;   /* enum _ARDOPState; ISS == 2 */
 extern int blnPending;
 extern int blnARQConnected;
@@ -1116,8 +1118,57 @@ static void test_qam_decode_matches_legacy(void **state)
  * chunks through ardop_demod_push and require FRAME_DECODED with exactly that
  * payload -- the whole receiver, assembled, for one modulation.
  */
+/*
+ * RXO frame-type scoring: session-independent distance and the argmin decision
+ * must match RxoComputeDecodeDistance / RxoMinimalDistanceFrameType. Uses clean
+ * synthesised tones (so a valid type is accepted) and random tones (rejects).
+ */
+static void test_rxo_frametype_matches_legacy(void **state)
+{
+	(void)state;
+
+	uint32_t rng = 0x4EC0DE77u;
+	int lenALL = bytValidFrameTypesLengthALL;
+
+	for (int t = 0; t < 3000; t++) {
+		int32_t mags[ARDOP_FRAMETYPE_TONE_MAGS];
+		bool synth = (xorshift32(&rng) & 1u);
+
+		if (synth) {
+			uint8_t b1 = bytValidFrameTypesALL[xorshift32(&rng)
+							   % (uint32_t)lenALL];
+			uint8_t b2 = (uint8_t)xorshift32(&rng);
+			set_byte_tones(mags, 0, b1);
+			set_byte_tones(mags, 20, b2);
+		} else {
+			for (int i = 0; i < ARDOP_FRAMETYPE_TONE_MAGS; i++)
+				mags[i] = (int32_t)(xorshift32(&rng) % 100000u);
+		}
+
+		int omags[ARDOP_FRAMETYPE_TONE_MAGS];
+		for (int i = 0; i < ARDOP_FRAMETYPE_TONE_MAGS; i++)
+			omags[i] = mags[i];
+
+		/* Per-candidate distance. */
+		uint8_t cand = (uint8_t)xorshift32(&rng);
+		float od = RxoComputeDecodeDistance(omags, cand);
+		float pd = ardop_frametype_rxo_distance(mags, cand);
+		if (!feq(od, pd))
+			fail_msg("rxo dist cand %02x: legacy %.9g, port %.9g",
+				 cand, (double)od, (double)pd);
+
+		/* The argmin decision. */
+		int oret = RxoMinimalDistanceFrameType(omags);
+		int pret = ardop_frametype_rxo_minimal_distance(
+			mags, bytValidFrameTypesALL, lenALL);
+		if (oret != pret)
+			fail_msg("rxo type (synth=%d): legacy %d, port %d",
+				 synth, oret, pret);
+	}
+}
+
 static void expect_push_roundtrip(uint8_t ft, int num_car, int data_len,
-				  int rs_len, int nerr)
+				  int rs_len, int nerr, bool rxo)
 {
 	assert_true(ardop_rs_init(&g_rs, kRSLens, NUM_RSLENS));
 
@@ -1178,6 +1229,7 @@ static void expect_push_roundtrip(uint8_t ft, int num_car, int data_len,
 	d.ft_ctx.pending = false;
 	d.ft_ctx.arq_connected = true;   /* accepts the data frame's own type */
 	d.ft_ctx.last_arq_session_id = 0;
+	d.ft_ctx.rxo = rxo;
 
 	bool got_leader = false, got_decoded = false;
 	uint8_t got_type = 0;
@@ -1221,19 +1273,24 @@ static void test_push_roundtrip(void **state)
 	(void)state;
 
 	/* Clean channel: exact payload recovery. */
-	expect_push_roundtrip(0x48, 1, 16, 4, 0);    /* 4FSK.200.50S:   1 car */
-	expect_push_roundtrip(0x42, 1, 16, 8, 0);    /* 4PSK.200.100S:  1 car */
-	expect_push_roundtrip(0x44, 1, 108, 36, 0);  /* 8PSK.200.100:   1 car */
-	expect_push_roundtrip(0x50, 2, 64, 32, 0);   /* 4PSK.500.100:   2 car */
-	expect_push_roundtrip(0x60, 4, 64, 32, 0);   /* 4PSK.1000.100:  4 car */
-	expect_push_roundtrip(0x70, 8, 64, 32, 0);   /* 4PSK.2000.100:  8 car */
-	expect_push_roundtrip(0x46, 1, 128, 64, 0);  /* 16QAM.200.100:  1 car */
+	expect_push_roundtrip(0x48, 1, 16, 4, 0, false);   /* 4FSK.200.50S:  1 car */
+	expect_push_roundtrip(0x42, 1, 16, 8, 0, false);   /* 4PSK.200.100S: 1 car */
+	expect_push_roundtrip(0x44, 1, 108, 36, 0, false); /* 8PSK.200.100:  1 car */
+	expect_push_roundtrip(0x50, 2, 64, 32, 0, false);  /* 4PSK.500.100:  2 car */
+	expect_push_roundtrip(0x60, 4, 64, 32, 0, false);  /* 4PSK.1000.100: 4 car */
+	expect_push_roundtrip(0x70, 8, 64, 32, 0, false);  /* 4PSK.2000.100: 8 car */
+	expect_push_roundtrip(0x46, 1, 128, 64, 0, false); /* 16QAM.200.100: 1 car */
 
 	/* Byte errors within the RS budget (rs_len/2): the pipeline's RS
 	 * correction must still recover the exact payload. */
-	expect_push_roundtrip(0x48, 1, 16, 4, 2);    /* 4FSK: 2 of 2 */
-	expect_push_roundtrip(0x50, 2, 64, 32, 16);  /* 4PSK 2-car: 16 of 16 */
-	expect_push_roundtrip(0x46, 1, 128, 64, 32); /* 16QAM: 32 of 32 */
+	expect_push_roundtrip(0x48, 1, 16, 4, 2, false);   /* 4FSK: 2 of 2 */
+	expect_push_roundtrip(0x50, 2, 64, 32, 16, false); /* 4PSK 2-car: 16/16 */
+	expect_push_roundtrip(0x46, 1, 128, 64, 32, false);/* 16QAM: 32 of 32 */
+
+	/* Receive-only mode (as --decodewav): session-independent frame-type
+	 * decode still recovers the frame. */
+	expect_push_roundtrip(0x48, 1, 16, 4, 0, true);    /* 4FSK, RXO */
+	expect_push_roundtrip(0x50, 2, 64, 32, 0, true);   /* 4PSK 2-car, RXO */
 }
 
 int main(void)
@@ -1256,6 +1313,7 @@ int main(void)
 		cmocka_unit_test(test_psk_decode_matches_legacy),
 		cmocka_unit_test(test_qam_matches_legacy),
 		cmocka_unit_test(test_qam_decode_matches_legacy),
+		cmocka_unit_test(test_rxo_frametype_matches_legacy),
 		cmocka_unit_test(test_push_roundtrip),
 	};
 

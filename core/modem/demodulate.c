@@ -699,6 +699,59 @@ int ardop_frametype_minimal_distance(const int32_t *mags,
 	return -1;  /* poor-quality decode; don't use */
 }
 
+float ardop_frametype_rxo_distance(const int32_t *mags, uint8_t frame_type)
+{
+	float distance = 0;
+	uint8_t mask = 0xC0;
+
+	for (int j = 0; j < 10; j++) {
+		int tone_sum = 0;
+		int tone_index;
+
+		/* Skip the second byte's dibits (symbols 5-8): they depend on
+		 * the session id, which RXO mode does not know. */
+		if (j > 4 && j != 9)
+			continue;
+
+		for (int k = 0; k < 4; k++)
+			tone_sum += mags[(4 * j) + k];
+		if (tone_sum == 0)
+			tone_sum = 1;
+
+		if (j < 4)
+			tone_index = (frame_type & mask) >> (6 - 2 * j);
+		else
+			tone_index = ardop_frame_type_parity(frame_type);
+
+		distance += 1.0f - (1.0f * (float)mags[(4 * j) + tone_index])
+				   / (1.0f * (float)tone_sum);
+		mask = (uint8_t)(mask >> 2);
+	}
+
+	return distance / 6;  /* six symbols contribute */
+}
+
+int ardop_frametype_rxo_minimal_distance(const int32_t *mags,
+					 const uint8_t *valid_types,
+					 int valid_len)
+{
+	float min_dist = 5;
+	int iat = 0;
+
+	for (int i = 0; i < valid_len; i++) {
+		float d = ardop_frametype_rxo_distance(mags, valid_types[i]);
+
+		if (d < min_dist) {
+			min_dist = d;
+			iat = valid_types[i];
+		}
+	}
+
+	if (min_dist < 0.3)
+		return iat;  /* good independent of session id */
+	return -1;
+}
+
 uint8_t ardop_demod_4fsk_char(const ardop_demod *d, int start, int center_freq,
 			      int baud, int samp_per_sym, int32_t *tone_mags)
 {
@@ -1090,9 +1143,17 @@ static int acquire_frame_type(ardop_demod *d, uint64_t now)
 	if (!ardop_demod_frametype_tonemags(d, d->mfs_read_ptr, mags))
 		return -1;
 
-	type = ardop_frametype_minimal_distance(mags, &d->ft_ctx, &set_last_good);
-	if (set_last_good)
-		d->last_good_frametype_decode = now;
+	if (d->ft_ctx.rxo) {
+		/* Receive-only: session-independent decode, no tuning-timestamp
+		 * side effect. */
+		type = ardop_frametype_rxo_minimal_distance(
+			mags, d->ft_ctx.valid_types, d->ft_ctx.valid_len);
+	} else {
+		type = ardop_frametype_minimal_distance(mags, &d->ft_ctx,
+							&set_last_good);
+		if (set_last_good)
+			d->last_good_frametype_decode = now;
+	}
 
 	d->mfs_read_ptr += 240 * 10;  /* advance to the first data symbol */
 	return type;

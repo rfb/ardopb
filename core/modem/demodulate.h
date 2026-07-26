@@ -85,6 +85,8 @@ typedef struct {
 	bool pending;               /**< ARQ connection pending (blnPending). */
 	bool arq_connected;         /**< ARQ session up (blnARQConnected). */
 	uint8_t last_arq_session_id;/**< Prior session id (bytLastARQSessionID). */
+	bool rxo;                   /**< Receive-only mode: session-independent
+	                             *   frame-type decode (as `--decodewav`). */
 } ardop_frametype_decode_ctx;
 
 /**
@@ -307,6 +309,31 @@ float ardop_frametype_decode_distance(const int32_t *mags, int tone_ptr,
 int ardop_frametype_minimal_distance(const int32_t *mags,
 				     const ardop_frametype_decode_ctx *ctx,
 				     bool *set_last_good);
+
+/**
+ * @brief Session-independent distance of a frame type (RXO mode).
+ *
+ * Ported from `RxoComputeDecodeDistance`. Scores only the tones that do not
+ * depend on the session id: the first byte's four dibits and parity, plus the
+ * second byte's parity (a second copy of the same frame-type parity). The
+ * second byte's dibits are skipped. Normalised over the six symbols used.
+ */
+float ardop_frametype_rxo_distance(const int32_t *mags, uint8_t frame_type);
+
+/**
+ * @brief Decide the frame type without a session id (RXO mode).
+ *
+ * Ported from `RxoMinimalDistanceFrameType`. Minimises
+ * ardop_frametype_rxo_distance() over the valid types and accepts if the
+ * distance is below 0.3. Used by `--decodewav` / receive-only decoding, where
+ * no connection state is available. Session-id grouping (RxoDecodeSessionID) is
+ * a separate concern and does not affect the returned type.
+ *
+ * @return frame type 0..255, or -1 on a poor decode.
+ */
+int ardop_frametype_rxo_minimal_distance(const int32_t *mags,
+					 const uint8_t *valid_types,
+					 int valid_len);
 
 /** One 4FSK character is four 2-bit symbols; each yields four tone mags. */
 #define ARDOP_4FSK_CHAR_TONE_MAGS 16
