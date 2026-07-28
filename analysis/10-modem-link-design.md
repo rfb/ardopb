@@ -184,14 +184,44 @@ nominal rate as `SoundFlush()` does today (`ALSASound.c:1789`).
 
 ## 5. link — the FSM steps, and returns actions
 
+The machine has **three** input sources, not two: demod events, timer expiry, and
+**host commands** (connect, disconnect, data-to-send, FEC send, …). The original
+sketch modelled only the first two (`ev` and `ev == NULL`). All three mutate the
+same state, so their relative order matters; the settled shape (decision 6, §8)
+is a single tagged input so there is one ordered stream and one entry point.
+
 ```c
 typedef struct ardop_link ardop_link;
 
-/* Advance the machine by one event (or NULL to service timers only) as of
- * t_samples. Writes any resulting actions into `actions`; returns the count.
- * Pure: same state + same input => same output. Never performs I/O. */
+/* What the operator asks for. Config (MYCALL, grid, default bandwidth, LISTEN)
+ * is set directly on ardop_link and is not an input; only transition-driving
+ * commands are. Payload bytes are copied into the link's own TX queue. */
+typedef enum {
+    ARDOP_CMD_CONNECT, ARDOP_CMD_DISCONNECT, ARDOP_CMD_ABORT,
+    ARDOP_CMD_SEND_DATA, ARDOP_CMD_SET_MODE, ARDOP_CMD_FEC_SEND,
+    ARDOP_CMD_SEND_ID,
+} ardop_host_cmd_kind;
+
+typedef struct {
+    ardop_host_cmd_kind kind;
+    ardop_stationid     target;      /* CONNECT               */
+    ardop_arq_bandwidth bandwidth;   /* CONNECT               */
+    const uint8_t      *data;        /* SEND_DATA (copied in) */
+    size_t              data_len;
+    int                 arg;         /* SET_MODE / bool flags */
+} ardop_host_cmd;
+
+/* One input: a demod event, a host command, or nothing (timer service only). */
+typedef struct {
+    enum { ARDOP_IN_NONE, ARDOP_IN_RX, ARDOP_IN_HOST } kind;
+    union { ardop_event rx; ardop_host_cmd host; } as;
+} ardop_link_input;
+
+/* Advance the machine by one input as of t_samples. Writes any resulting
+ * actions into `actions`; returns the count. Pure: same state + same input =>
+ * same output. Never performs I/O. */
 size_t ardop_link_step(ardop_link *l,
-                       const ardop_event *ev,     /* may be NULL */
+                       const ardop_link_input *in,
                        uint64_t t_samples,
                        ardop_action *actions, size_t max_actions);
 ```
@@ -200,7 +230,9 @@ This is the [02](02-protocol-fsm.md) machine — session establishment, bandwidt
 negotiation, ACK/NAK quality, IRS/ISS turnover, gear-shifting, FEC and RXO — with
 the `Mod*AndPlay` calls in `ProcessRcvdARQFrame()` replaced by returned
 `ARDOP_ACT_SEND_FRAME` actions and its wall-clock timers replaced by
-`ARDOP_ACT_SET_TIMER` deadlines the shell fires back as `ev == NULL` steps.
+`ARDOP_ACT_SET_TIMER` deadlines the shell fires back as `ARDOP_IN_NONE` steps.
+Host commands that used to reach into the protocol from `HostInterface.c` become
+`ARDOP_IN_HOST` inputs on the same stream.
 
 **Why this is the testable prize.** A pure step function with explicit state can
 be driven with no audio at all: feed it a scripted event sequence and assert the
@@ -292,6 +324,17 @@ it and is better answered against the retransmit code than in the abstract.
    spectral DSP over the RX samples (`BusyDetect.c`), so it belongs with the
    demodulator; its output is a protocol input, which is what an event is for. The
    link consumes it and decides whether to defer a transmit.
+6. **Host input — one unified `ardop_link_input`, not a second entry point**
+   (settled during the leaf port, once the host command surface was concrete).
+   The FSM has three input sources — demod events, timers, and host commands —
+   and all three mutate the same state, so ordering matters. A single tagged
+   input (`ARDOP_IN_RX` / `ARDOP_IN_HOST` / `ARDOP_IN_NONE`) gives one ordered
+   stream through one `ardop_link_step`, rather than a parallel
+   `ardop_link_command` the shell would have to interleave correctly. It is the
+   honest extension of decision-1's "events as data": a host command is just
+   another input datum. Pure config (callsigns, grid, default bandwidth, LISTEN)
+   is set directly on `ardop_link` and is not routed through the step — it drives
+   no transition. See §5 for the types.
 
 ---
 
