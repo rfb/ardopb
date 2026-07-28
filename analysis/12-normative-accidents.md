@@ -137,6 +137,36 @@ within tolerance.
 - **`improved` opportunity** — trivial (`round((local_ptr - 30) / 12.0)`), but
   the effect is sub-millisecond. Recorded for completeness; not worth a mode.
 
+### 6. Busy detector's rolling average is dead — RX-local
+
+`BusyDetect3` (`SoundInput.c` → `BusyDetect.c:60,71,86`) means to keep a slow
+rolling average of the signal-to-noise ratio: `dblAvgStoNNarrow = (1 - alpha) *
+dblAvgStoNNarrow + alpha * ratio`. But `dblAvgStoNNarrow` is a function-local
+re-initialised to `0` every call — the persistent `dblAvgStoNSlowNarrow` /
+`dblAvgStoNFastNarrow` / `...Wide` globals it presumably meant to use are
+declared (`BusyDetect.c:20-23`) and never read or written anywhere. So the
+`(1 - alpha) * dblAvgStoNNarrow` term is always `(1 - alpha) * 0`, and the
+"average" collapses to a plain `alpha` (0.2) gain on the current ratio — except
+on the first call after a bandwidth change, which takes the other branch and
+uses the *full* ratio. The result is a 5x sensitivity step between the first
+post-change call and every call after it, and no temporal smoothing at all.
+
+- **Category.** **RX-local**: busy detection only gates whether *this* station
+  decides to transmit; it never touches the waveform. Two stations can run
+  different busy logic and still interoperate.
+- **Handled in `core/` by** reproducing it exactly (`core/modem/busy.c`,
+  `ardop_busy_detect`): `ston_narrow`/`ston_wide` are locals zeroed each call,
+  with a comment marking the preserved accident. `test/core/test_busy.c` pins
+  20 000 randomised steps to `BusyDetect3` bit-for-bit, so the behaviour cannot
+  drift while it is preserved.
+- **`improved` opportunity** — give the average real persistence (store
+  `ston_narrow`/`ston_wide` in the detector state across calls). That would add
+  the intended temporal smoothing and remove the 5x first-call step, plausibly
+  reducing both nuisance trips and missed detections. The thresholds (the `3`
+  and `5` constants) were calibrated against the accidental 0.2 gain, so they
+  would need re-tuning together with the fix — a good candidate for `improved`
+  mode once there is a way to measure busy-detector quality.
+
 ---
 
 ## How to add to this catalog
