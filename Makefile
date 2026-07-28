@@ -114,6 +114,7 @@ CORE_OBJS = \
 	core/modem/demodulate.o \
 	core/modem/goertzel.o \
 	core/modem/modulate.o \
+	core/link/session.o \
 
 CORE_TESTS = \
 	test/core/test_crc \
@@ -126,6 +127,7 @@ CORE_TESTS = \
 	test/core/test_demodulate \
 	test/core/test_modulate \
 	test/core/test_busy \
+	test/core/test_session \
 
 # define newline for use with foreach to run tests
 define newline
