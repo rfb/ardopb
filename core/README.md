@@ -160,6 +160,7 @@ participate in the program.
 | `modem` | `busy` — channel-busy detector | **done**, ported from `BusyDetect3`; caller-owned state, ms clock and bandwidth/sensitivity passed in. `test/core/test_busy.c` pins 20 000 randomised steps bit-for-bit to the original, including the hysteresis bookkeeping. Preserves the dead rolling-average accident ([analysis/12](../analysis/12-normative-accidents.md) #6) |
 | **`modem`** | **layer complete** | modulate, goertzel, demodulate, busy |
 | `link` | `session` — ARQ session ID | **done**, the first link leaf; ported from `GenerateSessionID` (CRC-8 of the two callsigns, 0xFF→0 remap). `test/core/test_session.c` proves it against the original over 200 000 random callsign pairs. Following the codec/modem order, the pure leaves land first; the stateful FSM ([analysis/10](../analysis/10-modem-link-design.md) `ardop_link_step`) composes them |
+| `link` | `quality` — ACK/NAK decode quality | **done**, ported from `EncodeDATAACK`/`EncodeDATANAK` and the `38 + 2·(type&0x1F)` decode; the quality a receiver reports rides in the ACK/NAK frame-type byte. `test/core/test_quality.c` matches the encoders over the whole input range (preserving that the NAK path, unlike the ACK, does not clamp `q > 100`) |
 | `link` | FSM + negotiation | not started — see [analysis/02](../analysis/02-protocol-fsm.md) (the ~60-transition table) and [analysis/10](../analysis/10-modem-link-design.md) (the event/action contract) |
 
 The carrier-waveform templates (`int50BaudTwoToneLeaderTemplate` etc.) now live
