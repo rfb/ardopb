@@ -32,6 +32,38 @@
 /** @brief Highest frame type byte carrying a DataACK. */
 #define ARDOP_FRAME_DATA_ACK_MAX 0xFFu
 
+/*
+ * Named control frame types. These are the fixed protocol byte values from the
+ * frame-type table (transcribed from ARDOPC.h); they are the canonical home for
+ * constants other layers were otherwise redefining locally. The ConReq/ConAck
+ * families run in bandwidth order (200, 500, 1000, 2000).
+ */
+#define ARDOP_FT_BREAK        0x23u  /**< Link-turnover request. */
+#define ARDOP_FT_IDLE         0x24u  /**< Keep-alive from an idle ISS. */
+#define ARDOP_FT_DISC         0x29u  /**< Disconnect. */
+#define ARDOP_FT_END          0x2Cu  /**< End (reply to DISC). */
+#define ARDOP_FT_CON_REJ_BUSY 0x2Du  /**< Connect rejected: channel busy. */
+#define ARDOP_FT_CON_REJ_BW   0x2Eu  /**< Connect rejected: bandwidth. */
+#define ARDOP_FT_ID           0x30u  /**< Station ID frame. */
+#define ARDOP_FT_CON_REQ_MIN  0x31u  /**< Lowest ConReq (ConReq200M). */
+#define ARDOP_FT_CON_REQ_200M 0x31u  /**< Connect request, 200 Hz, max. */
+#define ARDOP_FT_CON_REQ_500M 0x32u
+#define ARDOP_FT_CON_REQ_1000M 0x33u
+#define ARDOP_FT_CON_REQ_2000M 0x34u
+#define ARDOP_FT_CON_REQ_200F 0x35u  /**< Connect request, 200 Hz, forced. */
+#define ARDOP_FT_CON_REQ_500F 0x36u
+#define ARDOP_FT_CON_REQ_1000F 0x37u
+#define ARDOP_FT_CON_REQ_2000F 0x38u
+#define ARDOP_FT_CON_REQ_MAX  0x38u  /**< Highest ConReq (ConReq2000F). */
+#define ARDOP_FT_CON_ACK_MIN  0x39u  /**< Lowest ConAck (ConAck200). */
+#define ARDOP_FT_CON_ACK_200  0x39u  /**< Connect ack establishing 200 Hz. */
+#define ARDOP_FT_CON_ACK_500  0x3Au
+#define ARDOP_FT_CON_ACK_1000 0x3Bu
+#define ARDOP_FT_CON_ACK_2000 0x3Cu
+#define ARDOP_FT_CON_ACK_MAX  0x3Cu  /**< Highest ConAck (ConAck2000). */
+#define ARDOP_FT_PING_ACK     0x3Du  /**< Ping reply. */
+#define ARDOP_FT_PING         0x3Eu  /**< Ping. */
+
 /**
  * @brief Modulation scheme used to carry a frame.
  *

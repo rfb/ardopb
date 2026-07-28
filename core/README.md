@@ -161,7 +161,8 @@ participate in the program.
 | **`modem`** | **layer complete** | modulate, goertzel, demodulate, busy |
 | `link` | `session` — ARQ session ID | **done**, the first link leaf; ported from `GenerateSessionID` (CRC-8 of the two callsigns, 0xFF→0 remap). `test/core/test_session.c` proves it against the original over 200 000 random callsign pairs. Following the codec/modem order, the pure leaves land first; the stateful FSM ([analysis/10](../analysis/10-modem-link-design.md) `ardop_link_step`) composes them |
 | `link` | `quality` — ACK/NAK decode quality | **done**, ported from `EncodeDATAACK`/`EncodeDATANAK` and the `38 + 2·(type&0x1F)` decode; the quality a receiver reports rides in the ACK/NAK frame-type byte. `test/core/test_quality.c` matches the encoders over the whole input range (preserving that the NAK path, unlike the ACK, does not clamp `q > 100`) |
-| `link` | FSM + negotiation | not started — see [analysis/02](../analysis/02-protocol-fsm.md) (the ~60-transition table) and [analysis/10](../analysis/10-modem-link-design.md) (the event/action contract) |
+| `link` | `bandwidth` — session BW negotiation | **done**, ported from `IRSNegotiateBW`; reconciles a received ConReq (width + max/forced) against this station's setting into a ConAck at the agreed width, or ConRejBW. `test/core/test_bandwidth.c` matches the original over all 9 settings × 256 type bytes. Added the canonical named control frame-type constants (`ARDOP_FT_*`) to [`codec/frame.h`](codec/frame.h), their proper home |
+| `link` | FSM | not started — see [analysis/02](../analysis/02-protocol-fsm.md) (the ~60-transition table) and [analysis/10](../analysis/10-modem-link-design.md) (the event/action contract) |
 
 The carrier-waveform templates (`int50BaudTwoToneLeaderTemplate` etc.) now live
 in `core/modem/templates.c`, declared by `modem/templates.h`. They were
