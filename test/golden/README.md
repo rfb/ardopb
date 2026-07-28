@@ -27,7 +27,9 @@ Both need only `python3`. No libraries, no audio hardware, ~6 seconds.
 | `audio/*.wav.gz` | 17 frozen recordings, gzipped. Real audio for a subset of cases, including degraded copies. |
 | `ardop_golden.py` | Shared machinery: the case matrix, the ardopcf drivers, the output parser. |
 | `gen_golden.py` | Writes the corpus. |
-| `test_golden.py` | Checks a build against the corpus. Never writes to it. |
+| `test_golden.py` | Checks the inherited `ardopcf` build against the corpus. Never writes to it. |
+| `core_decode_wav.c` | Decodes a WAV through the **rebuilt core** (`ardop_demod_push`, receive-only). Links only `core/`. |
+| `test_golden_core.py` | Checks the core demodulator against the frozen recordings. Never writes to the corpus. |
 
 Generation and checking are separate scripts on purpose. A checker that can
 quietly rewrite its own expectations is not a checker.
@@ -75,6 +77,31 @@ Not every recorded number deserves to fail a build, so checks are tiered.
 - Every committed audio file must hash to what the manifest says, so a
   corrupted or partial checkout is reported as such instead of surfacing as a
   hundred mysterious decode failures.
+
+### The core conformance check (`make golden-core`)
+
+`test_golden_core.py` runs the same frozen recordings through the rebuilt
+demodulator instead of the inherited one, via the `core_decode_wav` harness.
+This is the definitive external oracle for `core/modem/demodulate.c`: real,
+recorded ardopcf audio — not the core's own modulator output — decoded by
+`core/` alone, including the noise-degraded copies.
+
+Its rule is deliberately asymmetric. A *wrong* decode (wrong frame type or
+wrong payload) is always a failure. A *miss* is judged by context: tolerated
+below the strict SNR floor (where the inherited decoder misses too), and an
+expected gap for the frame types the core does not yet decode (`IDFrame` /
+`ConReq` content decode, and the 600-baud 3-part frame), which the driver
+lists explicitly rather than hiding. The ground truth for every variant is its
+clean `decode` payload, so a degraded copy that decodes to anything else is
+caught.
+
+Getting the right bytes where the inherited *standard* decoder gave up is not
+a violation — the core's DSP and RS are proven bit-identical to the standard
+reference functions, so a threshold frame the inherited SDFT decoder also
+recovers, matched byte-for-byte, is within tolerance. One recorded case
+(`16QAM.2000.100.E` at 20 dB) is exactly this: the standard decoder records a
+`data` failure, the SDFT decoder recovers it, and the core recovers the same
+bytes.
 
 ### Why bit-exact TX matters
 

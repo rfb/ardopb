@@ -39,7 +39,7 @@
 #		sudo apt install mingw-w64
 #		make CC_NATIVE=gcc CC=i686-w64-mingw32-gcc-posix WIN32=1
 
-.PHONY: all buildtest test golden golden-regen core check-pure check-headers test-core
+.PHONY: all buildtest test golden golden-regen golden-core core check-pure check-headers test-core
 
 # list all object files and their directories
 # keep sorted by filename
@@ -284,6 +284,18 @@ golden: all
 # means the modulated audio changed.
 golden-regen: all
 	cd test/golden && ./gen_golden.py
+
+# `make golden-core` runs the frozen recordings through the *rebuilt* core
+# demodulator (ardop_demod_push, receive-only) and checks each against the
+# manifest's decode result.  This is the definitive external oracle for the
+# core RX chain: real ardopcf-generated audio, including noise-degraded copies,
+# decoded by core/ alone.  core_decode_wav links only core objects.
+test/golden/core_decode_wav: test/golden/core_decode_wav.c $(CORE_OBJS) core/modem/templates.o
+	$(CC) $(CORE_CPPFLAGS) $(CFLAGS) $(CORE_CFLAGS) \
+		$< $(CORE_OBJS) core/modem/templates.o -lm -o $@
+
+golden-core: test/golden/core_decode_wav
+	cd test/golden && ./test_golden_core.py
 
 # rule to make test-case executables from their sources
 test/ardop/test_%: test/ardop/test_%.c $(OBJS) $(TEST_OBJS_COMMON)
