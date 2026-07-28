@@ -90,8 +90,8 @@ Its rule is deliberately asymmetric. A *wrong* decode (wrong frame type or
 wrong payload) is always a failure. A *miss* is judged by context: tolerated
 below the strict SNR floor (where the inherited decoder misses too), and an
 expected gap for the frame types the core does not yet decode (`IDFrame` /
-`ConReq` content decode, and the 600-baud 3-part frame), which the driver
-lists explicitly rather than hiding. The ground truth for every variant is its
+`ConReq` content decode), which the driver lists explicitly rather than
+hiding. The ground truth for every variant is its
 clean `decode` payload, so a degraded copy that decodes to anything else is
 caught.
 

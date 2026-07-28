@@ -1280,12 +1280,20 @@ static void test_push_roundtrip(void **state)
 	expect_push_roundtrip(0x60, 4, 64, 32, 0, false);  /* 4PSK.1000.100: 4 car */
 	expect_push_roundtrip(0x70, 8, 64, 32, 0, false);  /* 4PSK.2000.100: 8 car */
 	expect_push_roundtrip(0x46, 1, 128, 64, 0, false); /* 16QAM.200.100: 1 car */
+	expect_push_roundtrip(0x7A, 3, 200, 50, 0, false); /* 4FSK.2000.600: 3-part */
 
 	/* Byte errors within the RS budget (rs_len/2): the pipeline's RS
 	 * correction must still recover the exact payload. */
 	expect_push_roundtrip(0x48, 1, 16, 4, 2, false);   /* 4FSK: 2 of 2 */
 	expect_push_roundtrip(0x50, 2, 64, 32, 16, false); /* 4PSK 2-car: 16/16 */
 	expect_push_roundtrip(0x46, 1, 128, 64, 32, false);/* 16QAM: 32 of 32 */
+	/* 4FSK.2000.600: each of the three parts is RS-corrected independently.
+	 * The error count stays well under the per-part budget (rs_len/2 = 25)
+	 * because injecting byte errors into the *modulated* 600-baud signal
+	 * spreads them via inter-symbol interference, so a near-budget injection
+	 * decodes to more than 25 received errors. Byte-exactness of the full
+	 * 3-part decode on real audio is proven by make golden-core. */
+	expect_push_roundtrip(0x7A, 3, 200, 50, 4, false); /* 600 3-part: 4/part */
 
 	/* Receive-only mode (as --decodewav): session-independent frame-type
 	 * decode still recovers the frame. */

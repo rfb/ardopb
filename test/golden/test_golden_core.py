@@ -51,8 +51,6 @@ KNOWN_GAPS = {
     "ConReq2000M":
         "content decode (Decode4FSKConReq: two Packed6 + host formatting)"
         " not ported",
-    "4FSK.2000.600.E":
-        "600-baud 3-part frame (three sub-blocks per carrier) not ported",
 }
 
 

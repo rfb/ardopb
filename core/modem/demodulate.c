@@ -1415,11 +1415,27 @@ size_t ardop_demod_push(ardop_demod *d, const int16_t *samples, size_t n,
 		d->frame_mod = spec->modulation;
 		d->frame_samp_per_sym = 12000 / spec->baud;
 
+		/* 4FSK.2000.600 (0x7A/0x7B) is one long 4FSK carrier whose 759 bytes
+		 * are three independent [len][data(200)][crc][rs(50)] sub-blocks,
+		 * RS-corrected separately. Model it as three sequential sub-carriers:
+		 * the delivery path then decodes each part exactly as DecodeFrame's
+		 * 0x7A/0x7B branch does. The 0x7C/0x7D "short" 600 frame is a normal
+		 * single 200-byte carrier and takes the ordinary path. */
+		d->frame_600 = (d->frame_mod == ARDOP_MOD_4FSK
+				&& d->frame_data_len == 600);
+		if (d->frame_600) {
+			d->frame_num_car = 3;
+			d->frame_data_len = 200;
+			d->frame_rs_len = 50;
+		}
+
 		/* Bytes to demodulate: data frames add a length byte + 2 CRC. */
 		if (ardop_frame_is_data(d->frame_type))
 			d->symbols_left = d->frame_data_len + d->frame_rs_len + 3;
 		else
 			d->symbols_left = d->frame_data_len + d->frame_rs_len;
+		if (d->frame_600)
+			d->symbols_left *= 3;   /* three sequential sub-blocks */
 		d->char_index = 0;
 		d->phases_len = 0;
 		d->psk_init_done = false;
@@ -1436,14 +1452,19 @@ size_t ardop_demod_push(ardop_demod *d, const int16_t *samples, size_t n,
 		d->state = ARDOP_RX_ACQUIRE_FRAME;
 	}
 
-	/* --- Acquire frame: stream the data (single-carrier 4FSK) --- */
+	/* --- Acquire frame: stream the data (single-carrier 4FSK) ---
+	 * The 4FSK.2000.600 frame is also a single 4FSK carrier here, streamed
+	 * sequentially; only its bytes route into three sub-blocks (frame_600). */
 	if (d->state == ARDOP_RX_ACQUIRE_FRAME
-	    && d->frame_mod == ARDOP_MOD_4FSK && d->frame_num_car == 1) {
+	    && d->frame_mod == ARDOP_MOD_4FSK
+	    && (d->frame_num_car == 1 || d->frame_600)) {
 		int start = 0;
+		int per_part = d->frame_data_len + d->frame_rs_len + 3;
 
 		while (d->state == ARDOP_RX_ACQUIRE_FRAME) {
 			int32_t tm[ARDOP_4FSK_CHAR_TONE_MAGS];
 			int used = d->frame_samp_per_sym * 4;
+			int part = 0, off = d->char_index;
 
 			if (d->filtered_mixed_len < d->frame_samp_per_sym * 4.5) {
 				/* Not enough for another byte; keep the tail. */
@@ -1455,7 +1476,11 @@ size_t ardop_demod_push(ardop_demod *d, const int16_t *samples, size_t n,
 				return nev;
 			}
 
-			d->frame_data[0][d->char_index] = ardop_demod_4fsk_char(
+			if (d->frame_600) {
+				part = d->char_index / per_part;
+				off = d->char_index % per_part;
+			}
+			d->frame_data[part][off] = ardop_demod_4fsk_char(
 				d, start, 1500, d->frame_baud,
 				d->frame_samp_per_sym, tm);
 			d->char_index++;

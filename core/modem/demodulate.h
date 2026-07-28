@@ -170,6 +170,10 @@ typedef struct {
 	int frame_rs_len;            /**< Per-carrier RS parity length. */
 	ardop_modulation frame_mod;  /**< Modulation of the current frame. */
 	int frame_samp_per_sym;      /**< Samples per data symbol (12000/baud). */
+	bool frame_600;              /**< 4FSK.2000.600 (0x7A/0x7B): one long 4FSK
+	                              *   carrier of three sequential [len][data]
+	                              *   [crc][rs] sub-blocks, RS-decoded as three
+	                              *   "carriers". See ProcessNewSamples/DecodeFrame. */
 	int symbols_left;            /**< Bytes still to demodulate (all carriers). */
 	int char_index;              /**< Next byte index within a carrier block. */
 	bool psk_init_done;          /**< PSK/QAM training symbol consumed this frame. */
