@@ -26,3 +26,35 @@ uint8_t ardop_session_id(const char *calling, const char *target)
 		return 0;
 	return id;
 }
+
+bool ardop_call_to_me(const ardop_stationid *caller,
+		      const ardop_stationid *target,
+		      const ardop_stationid *mycall,
+		      const ardop_stationid *auxcalls, size_t n_aux,
+		      uint8_t *session_id)
+{
+	if (ardop_stationid_eq(target, mycall)) {
+		*session_id = ardop_session_id(caller->str, mycall->str);
+		return true;
+	}
+
+	for (size_t i = 0; i < n_aux; i++) {
+		if (ardop_stationid_eq(target, &auxcalls[i])) {
+			*session_id = ardop_session_id(caller->str,
+						       auxcalls[i].str);
+			return true;
+		}
+	}
+
+	return false;
+}
+
+bool ardop_ping_to_me(const ardop_stationid *caller,
+		      const ardop_stationid *target,
+		      const ardop_stationid *mycall,
+		      const ardop_stationid *auxcalls, size_t n_aux)
+{
+	uint8_t ignored = 0;
+	return ardop_call_to_me(caller, target, mycall, auxcalls, n_aux,
+				&ignored);
+}

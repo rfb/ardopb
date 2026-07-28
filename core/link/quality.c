@@ -33,3 +33,14 @@ int ardop_quality_from_type(uint8_t frame_type)
 {
 	return 38 + 2 * (frame_type & 0x1F);
 }
+
+int ardop_quality_avg(int avg, int reported)
+{
+	/* A stored 0 means unseeded: take the first report verbatim. */
+	if (avg == 0)
+		return reported;
+
+	/* Exponential average with alpha = 0.5, computed in float exactly as
+	 * the original (int operands promote to float), + 0.5 then truncated. */
+	return (int)((float)avg * (1 - 0.5f) + (0.5f * (float)reported) + 0.5f);
+}

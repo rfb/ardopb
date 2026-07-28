@@ -57,4 +57,20 @@ ARDOP_MUSTUSE uint8_t ardop_quality_to_nak_type(int quality);
  */
 ARDOP_MUSTUSE int ardop_quality_from_type(uint8_t frame_type);
 
+/**
+ * @brief Fold a newly reported quality into the running average.
+ *
+ * Ported from `ComputeQualityAvg`, the exponential moving average the sender
+ * keeps over the qualities reported in ACK/NAK frames; gear-shifting reads it.
+ * A stored average of 0 means "unseeded", so the first report is taken as-is;
+ * otherwise the report is blended in with α = 0.5 and rounded (the original adds
+ * 0.5 before truncating to int). Pure: the caller holds the running value and
+ * passes it back each time, so no state lives here.
+ *
+ * @param avg      The current running average (0 = unseeded).
+ * @param reported The newly reported quality.
+ * @return The updated running average.
+ */
+ARDOP_MUSTUSE int ardop_quality_avg(int avg, int reported);
+
 #endif /* ARDOP_LINK_QUALITY_H_ */

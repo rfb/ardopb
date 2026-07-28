@@ -18,6 +18,10 @@ int EncodeDATAACK(int intQuality, unsigned char bytSessionID,
 int EncodeDATANAK(int intQuality, unsigned char bytSessionID,
 		  unsigned char *bytreturn);
 
+/* ComputeQualityAvg mutates the global intAvgQuality; the port is pure. */
+void ComputeQualityAvg(int intReportedQuality);
+extern int intAvgQuality;
+
 /*
  * The ACK and NAK type bytes must match EncodeDATAACK / EncodeDATANAK for every
  * quality, including out-of-range values: the ACK path clamps to 100, the NAK
@@ -65,11 +69,34 @@ static void test_quality_decode_and_roundtrip(void **state)
 			 38);
 }
 
+/*
+ * The running quality average must match ComputeQualityAvg for every
+ * (stored average, reported quality) pair over the plausible range -- including
+ * the unseeded (0) case that takes the report verbatim and the +0.5 rounding.
+ */
+static void test_quality_avg_matches_legacy(void **state)
+{
+	(void)state;
+
+	for (int avg = 0; avg <= 120; avg++) {
+		for (int reported = 0; reported <= 120; reported++) {
+			intAvgQuality = avg;
+			ComputeQualityAvg(reported);
+			if (ardop_quality_avg(avg, reported) != intAvgQuality)
+				fail_msg("avg %d + %d: port %d, legacy %d",
+					 avg, reported,
+					 ardop_quality_avg(avg, reported),
+					 intAvgQuality);
+		}
+	}
+}
+
 int main(void)
 {
 	const struct CMUnitTest tests[] = {
 		cmocka_unit_test(test_quality_encode_matches_legacy),
 		cmocka_unit_test(test_quality_decode_and_roundtrip),
+		cmocka_unit_test(test_quality_avg_matches_legacy),
 	};
 	return cmocka_run_group_tests(tests, NULL, NULL);
 }
