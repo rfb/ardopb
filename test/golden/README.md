@@ -103,6 +103,28 @@ recovers, matched byte-for-byte, is within tolerance. One recorded case
 `data` failure, the SDFT decoder recovers it, and the core recovers the same
 bytes.
 
+### The assembled-shell cutover checks (`make golden-shell`, `make golden-tx`)
+
+These prove the rebuilt **program** — not just isolated core functions —
+reproduces the corpus, the first cutover milestone (analysis/13 W3.1).
+
+- **`make golden-shell`** decodes every frozen recording through the assembled
+  shell: `shell_decode_wav` feeds each WAV to `ardop_runtime_rx` and rebuilds
+  each frame from the observation stream (`RX_FRAME` + `RX_DATA`), exercising the
+  runtime, the receive-only link step and the observer. It reuses
+  `test_golden_core.py`'s judging verbatim (via `GOLDEN_DECODE_BIN`) and passes
+  identically to `golden-core` — the shell wires the demodulator exactly as the
+  core does.
+
+- **`make golden-tx`** proves the shell's *transmit* audio is bit-identical.
+  `shell_tx_wav` re-encodes each data case (`ardop_encode_data_frame`) and
+  modulates it with the same drive level (30) and leader (240 ms) the runtime's
+  `start_tx` uses, writing a WAV in `--writetxwav` byte format; the SHA-256 must
+  equal the manifest `tx_sha256`. All 108 data cases match — every modulation
+  (4FSK / 4PSK / 8PSK / 16QAM), 1–8 carriers, 200–2000 Hz. Control-frame
+  encoders are not yet exposed standalone, so control cases are out of scope for
+  the TX check (they are still covered on the RX side).
+
 ### Why bit-exact TX matters
 
 While building this, the modulator was perturbed with a plausible refactoring

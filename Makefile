@@ -39,7 +39,7 @@
 #		sudo apt install mingw-w64
 #		make CC_NATIVE=gcc CC=i686-w64-mingw32-gcc-posix WIN32=1
 
-.PHONY: all buildtest test golden golden-regen golden-core golden-shell core check-pure check-headers check-standalone test-core ardopb
+.PHONY: all buildtest test golden golden-regen golden-core golden-shell golden-tx core check-pure check-headers check-standalone test-core ardopb
 
 # list all object files and their directories
 # keep sorted by filename
@@ -383,6 +383,17 @@ test/golden/shell_decode_wav: test/golden/shell_decode_wav.c $(CORE_OBJS) $(SHEL
 
 golden-shell: test/golden/shell_decode_wav
 	cd test/golden && GOLDEN_DECODE_BIN=./shell_decode_wav ./test_golden_core.py
+
+# `make golden-tx` proves the assembled program's TRANSMIT audio is bit-identical
+# to the frozen corpus: for every data case it re-modulates the frame (same
+# encoder, drive level and leader the shell's start_tx uses) and checks the WAV
+# SHA-256 against the manifest tx_sha256.  Links only core objects + templates.
+test/golden/shell_tx_wav: test/golden/shell_tx_wav.c $(CORE_OBJS) core/modem/templates.o
+	$(CC) $(CORE_CPPFLAGS) $(CFLAGS) $(CORE_CFLAGS) \
+		$< $(CORE_OBJS) core/modem/templates.o -lm -o $@
+
+golden-tx: test/golden/shell_tx_wav
+	cd test/golden && ./test_golden_tx.py
 
 # rule to make test-case executables from their sources
 test/ardop/test_%: test/ardop/test_%.c $(OBJS) $(TEST_OBJS_COMMON)
