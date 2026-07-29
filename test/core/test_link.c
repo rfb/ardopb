@@ -744,6 +744,118 @@ static void test_irs_data_disc(void **state)
 	assert_int_equal(l.last_session_id, session);
 }
 
+static uint8_t g_tx[4096];
+
+/* Drive a link to ISS_CON_ACK (connected, awaiting the IRS's DataACK), with a
+ * TX queue attached. */
+static void iss_to_con_ack(ardop_link *l)
+{
+	connect_as_iss(l);   /* -> ISS_CON_REQ, rs + mycall + 2000-max set */
+	l->tx_data = g_tx;
+	l->tx_cap = sizeof(g_tx);
+
+	ardop_link_input in = {0};
+	in.kind = ARDOP_IN_RX;
+	in.as.rx.kind = ARDOP_EV_FRAME_DECODED;
+	in.as.rx.frame_type = ARDOP_FT_CON_ACK_2000;
+	in.as.rx.leader_ms = 240;
+	ardop_action acts[8];
+	(void)ardop_link_step(l, &in, 200, acts, 8);
+	assert_int_equal(l->state, ARDOP_LINK_ISS_CON_ACK);
+}
+
+static ardop_link_input host_send(const uint8_t *data, size_t len)
+{
+	ardop_link_input in = {0};
+	in.kind = ARDOP_IN_HOST;
+	in.as.host.kind = ARDOP_CMD_SEND_DATA;
+	in.as.host.data = data;
+	in.as.host.data_len = len;
+	return in;
+}
+
+/* Host SEND_DATA appends to the queue and reports the new depth. */
+static void test_host_send_data_queues(void **state)
+{
+	(void)state;
+
+	ardop_link l;
+	iss_to_con_ack(&l);
+
+	const uint8_t data[] = {1, 2, 3, 4, 5};
+	ardop_link_input in = host_send(data, sizeof(data));
+	ardop_action acts[8];
+	size_t n = ardop_link_step(&l, &in, 300, acts, 8);
+
+	assert_int_equal(l.tx_len, 5);
+	const ardop_action *notify = find_action(acts, n, ARDOP_ACT_NOTIFY_HOST);
+	assert_non_null(notify);
+	assert_string_equal((const char *)notify->data, "BUFFER 5");
+}
+
+/*
+ * ISS awaiting the IRS DataACK, with data queued: on the DataACK, tell the host
+ * CONNECTED and send the first data frame at the most-robust mode for the
+ * bandwidth, even parity (last acked seeded odd). Mirrors the ISS ConAck+DataACK
+ * arm feeding the first GetNextFrameData send.
+ */
+static void test_iss_sends_first_data(void **state)
+{
+	(void)state;
+
+	ardop_link l;
+	iss_to_con_ack(&l);
+	uint8_t session = l.session_id;
+
+	/* Queue some payload. */
+	const uint8_t payload[] = {0xAA, 0xBB, 0xCC, 0xDD};
+	ardop_link_input q = host_send(payload, sizeof(payload));
+	ardop_action acts[8];
+	(void)ardop_link_step(&l, &q, 300, acts, 8);
+
+	/* The IRS's DataACK completes the handshake. */
+	ardop_link_input in = {0};
+	in.kind = ARDOP_IN_RX;
+	in.as.rx.kind = ARDOP_EV_FRAME_DECODED;
+	in.as.rx.frame_type = ardop_quality_to_ack_type(90);   /* a DataACK */
+	size_t n = ardop_link_step(&l, &in, 400, acts, 8);
+
+	const ardop_action *notify = find_action(acts, n, ARDOP_ACT_NOTIFY_HOST);
+	assert_non_null(notify);
+	assert_string_equal((const char *)notify->data, "CONNECTED W1ABC 2000");
+
+	const ardop_action *send = find_action(acts, n, ARDOP_ACT_SEND_FRAME);
+	assert_non_null(send);
+	/* 2000-Hz ladder, most robust first = 0x4C; even (base is even, seed odd). */
+	assert_int_equal(send->frame_type, 0x4C);
+	assert_int_equal(send->data[0], 0x4C);
+	assert_int_equal(send->data[1], 0x4C ^ session);
+	assert_true(send->data_len > 2);
+	assert_int_equal(l.state, ARDOP_LINK_ISS);
+	assert_int_equal(l.outstanding_len, sizeof(payload));
+}
+
+/* ISS DataACK with an empty queue: send IDLE, go IDLE. */
+static void test_iss_idle_when_empty(void **state)
+{
+	(void)state;
+
+	ardop_link l;
+	iss_to_con_ack(&l);
+
+	ardop_link_input in = {0};
+	in.kind = ARDOP_IN_RX;
+	in.as.rx.kind = ARDOP_EV_FRAME_DECODED;
+	in.as.rx.frame_type = ardop_quality_to_ack_type(90);
+	ardop_action acts[8];
+	size_t n = ardop_link_step(&l, &in, 400, acts, 8);
+
+	const ardop_action *send = find_action(acts, n, ARDOP_ACT_SEND_FRAME);
+	assert_non_null(send);
+	assert_int_equal(send->frame_type, ARDOP_FT_IDLE);
+	assert_int_equal(l.state, ARDOP_LINK_IDLE);
+}
+
 int main(void)
 {
 	const struct CMUnitTest tests[] = {
@@ -766,6 +878,9 @@ int main(void)
 		cmocka_unit_test(test_irs_data_deliver_and_dedup),
 		cmocka_unit_test(test_irs_data_nak),
 		cmocka_unit_test(test_irs_data_disc),
+		cmocka_unit_test(test_host_send_data_queues),
+		cmocka_unit_test(test_iss_sends_first_data),
+		cmocka_unit_test(test_iss_idle_when_empty),
 	};
 	return cmocka_run_group_tests(tests, NULL, NULL);
 }

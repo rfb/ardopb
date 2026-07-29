@@ -3,9 +3,11 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "codec/dataframe.h"
 #include "codec/frame.h"
 #include "codec/stationid.h"
 #include "link/bandwidth.h"
+#include "link/datamodes.h"
 #include "link/frames.h"
 #include "link/quality.h"
 #include "link/session.h"
@@ -78,6 +80,15 @@ static void notify_host(ardop_link *l, ardop_action *actions, size_t *n,
 	a.data = (const uint8_t *)l->out_host;
 	a.data_len = strlen(l->out_host);
 	emit(actions, n, max, &a);
+}
+
+/* Build a 2-byte control frame into out_frame and emit it as a SEND_FRAME. */
+static void send_control(ardop_link *l, ardop_action *actions, size_t *n,
+			 size_t max, uint8_t frame_type)
+{
+	size_t len = ardop_encode_control(frame_type, l->session_id,
+					  l->out_frame);
+	send_frame(l, actions, n, max, frame_type, len);
 }
 
 /* Tear the machine back down to a clean disconnected state, keeping the session
@@ -317,6 +328,88 @@ static size_t step_iss_conreq_rx(ardop_link *l, const ardop_event *ev,
 	return 0;   /* any other frame is ignored while awaiting the ConAck. */
 }
 
+/* --- ISS send ------------------------------------------------------------ */
+
+/*
+ * Build and send the next outbound frame: a data frame at the current gear-shift
+ * mode, or an IDLE keep-alive if the queue is empty. The data frame type toggles
+ * its even/odd bit against the last one acknowledged so a retransmission is
+ * distinguishable from the next frame (GetNextFrameData). It carries the queue's
+ * leading bytes up to the frame capacity; those bytes stay queued until acked.
+ */
+static void iss_send_next(ardop_link *l, ardop_action *actions, size_t *n,
+			  size_t max)
+{
+	if (l->tx_len == 0) {
+		send_control(l, actions, n, max, ARDOP_FT_IDLE);
+		l->state = ARDOP_LINK_IDLE;
+		return;
+	}
+
+	uint8_t base = l->modes[l->mode_ptr];
+	uint8_t ft = ((base & 1u) == (l->last_data_acked & 1u))
+			     ? (uint8_t)(base ^ 1u) : base;
+	l->last_data_sent = ft;
+
+	const ardop_frame_spec *spec = ardop_frame_spec_for(ft);
+	int cap = spec->carriers * spec->data_bytes_per_carrier;
+	int take = (int)l->tx_len < cap ? (int)l->tx_len : cap;
+
+	int len = ardop_encode_data_frame(l->rs, ft, l->session_id, l->tx_data,
+					  take, l->out_frame);
+	if (len <= 0)
+		return;
+	l->outstanding_len = take;
+	l->state = ARDOP_LINK_ISS;
+
+	ardop_action a = {0};
+	a.kind = ARDOP_ACT_SEND_FRAME;
+	a.frame_type = ft;
+	a.data = l->out_frame;
+	a.data_len = (size_t)len;
+	a.leader_ms = l->leader_ms;
+	emit(actions, n, max, &a);
+}
+
+/* --- ISS_CON_ACK: sent our ConAck, awaiting the IRS's DataACK ------------- */
+
+/*
+ * The final handshake message from the IRS's side: its DataACK confirms our
+ * ConAck was received, so the connection is established. Tell the host CONNECTED,
+ * initialise the gear-shift ladder for the session bandwidth, and send the first
+ * frame (data or IDLE). Ported from the ISS ConAck+DataACK arm of
+ * ProcessRcvdARQFrame.
+ */
+static size_t step_iss_conack_rx(ardop_link *l, const ardop_event *ev,
+				 uint64_t now, ardop_action *actions, size_t max)
+{
+	size_t n = 0;
+	(void)now;
+
+	if (ev->kind != ARDOP_EV_FRAME_DECODED)
+		return 0;
+
+	if (ev->frame_type >= ARDOP_FRAME_DATA_ACK_MIN) {
+		l->pending = false;
+		l->last_data_acked = 1;   /* odd -> first data frame is even. */
+		l->avg_quality = 0;
+		l->modes = ardop_data_modes(l->session_bw, l->fsk_only,
+					    l->tuning_range, l->use_600_modes,
+					    &l->modes_len);
+		l->mode_ptr = 0;
+
+		char msg[64];
+		snprintf(msg, sizeof(msg), "CONNECTED %s %d", l->remote.str,
+			 l->session_bw);
+		notify_host(l, actions, &n, max, msg);
+
+		iss_send_next(l, actions, &n, max);
+		return n;
+	}
+
+	return 0;
+}
+
 /* --- IRS_CON_ACK: sent our ConAck, awaiting the ISS's ConAck ------------- */
 
 /*
@@ -382,15 +475,6 @@ static void deliver_data(ardop_link *l, ardop_action *actions, size_t *n,
 	a.data = l->out_data;
 	a.data_len = (size_t)len;
 	emit(actions, n, max, &a);
-}
-
-/* Build a 2-byte control frame into out_frame and emit it as a SEND_FRAME. */
-static void send_control(ardop_link *l, ardop_action *actions, size_t *n,
-			 size_t max, uint8_t frame_type)
-{
-	size_t len = ardop_encode_control(frame_type, l->session_id,
-					  l->out_frame);
-	send_frame(l, actions, n, max, frame_type, len);
 }
 
 /*
@@ -511,15 +595,39 @@ static size_t step_host_connect(ardop_link *l, const ardop_host_cmd *cmd,
 	return n;
 }
 
+/*
+ * Host SEND_DATA: append payload to the outbound queue (AddDataToDataToSend) and
+ * report the new queue depth. The ISS drains it as transmit opportunities arise;
+ * this only enqueues. Bytes past the queue capacity are dropped.
+ */
+static size_t step_host_send_data(ardop_link *l, const ardop_host_cmd *cmd,
+				  ardop_action *actions, size_t max)
+{
+	size_t n = 0;
+
+	if (l->tx_data && cmd->data && l->tx_len < l->tx_cap) {
+		size_t room = l->tx_cap - l->tx_len;
+		size_t take = cmd->data_len < room ? cmd->data_len : room;
+		memcpy(l->tx_data + l->tx_len, cmd->data, take);
+		l->tx_len += take;
+	}
+
+	char msg[32];
+	snprintf(msg, sizeof(msg), "BUFFER %zu", l->tx_len);
+	notify_host(l, actions, &n, max, msg);
+	return n;
+}
+
 static size_t step_host(ardop_link *l, const ardop_host_cmd *cmd,
 			uint64_t now, ardop_action *actions, size_t max)
 {
 	switch (cmd->kind) {
 	case ARDOP_CMD_CONNECT:
 		return step_host_connect(l, cmd, now, actions, max);
+	case ARDOP_CMD_SEND_DATA:
+		return step_host_send_data(l, cmd, actions, max);
 	case ARDOP_CMD_DISCONNECT:
 	case ARDOP_CMD_ABORT:
-	case ARDOP_CMD_SEND_DATA:
 	case ARDOP_CMD_SET_MODE:
 	case ARDOP_CMD_FEC_SEND:
 	case ARDOP_CMD_SEND_ID:
@@ -540,6 +648,7 @@ void ardop_link_init(ardop_link *l)
 	l->reply_leader_ms = 240;  /* inherited intARQDefaultDlyMs default. */
 	l->last_data_to_host = -1;
 	l->last_acked_type = -1;
+	l->tuning_range = 100;   /* inherited default; selects the 2000 modes. */
 }
 
 size_t ardop_link_step(ardop_link *l, const ardop_link_input *in,
@@ -562,6 +671,8 @@ size_t ardop_link_step(ardop_link *l, const ardop_link_input *in,
 			return step_irs_data_rx(l, &in->as.rx, now_samples,
 						actions, max_actions);
 		case ARDOP_LINK_ISS_CON_ACK:
+			return step_iss_conack_rx(l, &in->as.rx, now_samples,
+						  actions, max_actions);
 		case ARDOP_LINK_ISS:
 		case ARDOP_LINK_IDLE:
 		case ARDOP_LINK_IRS_TO_ISS:

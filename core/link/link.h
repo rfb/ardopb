@@ -150,11 +150,16 @@ typedef struct {
 	size_t n_aux;
 	ardop_locator grid;         /**< Our grid square (for ID frames). */
 	const ardop_rs *rs;         /**< RS context for building/decoding frames. */
+	uint8_t *tx_data;           /**< Caller-owned outbound queue (bytDataToSend). */
+	size_t tx_cap;              /**< Capacity of @p tx_data. */
 	ardop_arq_bandwidth bw_setting; /**< Our bandwidth setting. */
 	uint16_t leader_ms;         /**< Leader length for transmissions. */
 	uint16_t reply_leader_ms;   /**< Leader for quick ARQ replies (intARQDefaultDlyMs). */
 	bool listening;             /**< Answer incoming connections. */
 	bool enable_ping_ack;       /**< Reply to pings addressed to us (EnablePingAck). */
+	bool fsk_only;              /**< Restrict data modes to 4FSK (FSKONLY). */
+	bool use_600_modes;         /**< 600-baud FM data modes in play (Use600Modes). */
+	int tuning_range;           /**< Tuning range, Hz; 0 selects the 2000 FM modes. */
 
 	/* --- machine state --- */
 	ardop_link_mode mode;       /**< ARQ / FEC / RXO. */
@@ -171,6 +176,15 @@ typedef struct {
 	                             *   (intLastARQDataFrameToHost); -1 = none. */
 	int last_acked_type;        /**< Type of the last data frame ACKed
 	                             *   (bytLastACKedDataFrameType); -1 = none. */
+
+	/* --- ISS send state --- */
+	size_t tx_len;              /**< Bytes queued in tx_data. */
+	const uint8_t *modes;       /**< Gear-shift mode ladder (bytFrameTypesForBW). */
+	size_t modes_len;           /**< Number of modes. */
+	int mode_ptr;               /**< Current mode index (intFrameTypePtr). */
+	uint8_t last_data_sent;     /**< Type of the outstanding data frame. */
+	uint8_t last_data_acked;    /**< Parity anchor for toggling (bytLastARQDataFrameAcked). */
+	int outstanding_len;        /**< Payload bytes in the outstanding frame. */
 
 	/* --- timers, as absolute sample deadlines (0 = inactive) --- */
 	uint64_t final_id_deadline; /**< tmrFinalID: when the closing ID may go. */
