@@ -79,6 +79,30 @@ static void notify_host(ardop_link *l, ardop_action *actions, size_t *n,
 	emit(actions, n, max, &a);
 }
 
+/* Tear the machine back down to a clean disconnected state, keeping the session
+ * id available (a late DISC can still be answered). */
+static void reset_to_disc(ardop_link *l)
+{
+	l->last_session_id = l->session_id;
+	l->state = ARDOP_LINK_DISC;
+	l->pending = false;
+	l->repeat_interval_ms = 0;
+	l->repeat_deadline = 0;
+	l->pending_deadline = 0;
+}
+
+/* The session width a ConAck frame type establishes. */
+static int conack_bandwidth(uint8_t frame_type)
+{
+	switch (frame_type) {
+	case ARDOP_FT_CON_ACK_200:  return 200;
+	case ARDOP_FT_CON_ACK_500:  return 500;
+	case ARDOP_FT_CON_ACK_1000: return 1000;
+	case ARDOP_FT_CON_ACK_2000: return 2000;
+	}
+	return 0;
+}
+
 /* --- DISC: not connected ------------------------------------------------- */
 
 /*
@@ -237,6 +261,61 @@ static size_t step_disc_rx(ardop_link *l, const ardop_event *ev,
 	return n;
 }
 
+/* --- ISS_CON_REQ: sent a ConReq, awaiting the ConAck --------------------- */
+
+/*
+ * Awaiting the IRS's ConAck. The session id is already correct (set when the
+ * ConReq went out), so a decode of a ConAck under it confirms our session --
+ * record the negotiated width, reply with our own ConAck carrying our received
+ * leader (the three-way handshake), and move to ISS. A ConRejBusy/ConRejBW
+ * aborts back to DISC. Ported from ProcessRcvdARQFrame's ISS/ISSConReq arm
+ * (rules 1.3, 1.4).
+ */
+static size_t step_iss_conreq_rx(ardop_link *l, const ardop_event *ev,
+				 uint64_t now, ardop_action *actions, size_t max)
+{
+	size_t n = 0;
+
+	if (ev->kind != ARDOP_EV_FRAME_DECODED)
+		return 0;
+
+	if (ev->frame_type >= ARDOP_FT_CON_ACK_MIN
+	    && ev->frame_type <= ARDOP_FT_CON_ACK_MAX) {
+		l->session_bw = conack_bandwidth(ev->frame_type);
+		l->pending = false;
+		l->state = ARDOP_LINK_ISS_CON_ACK;
+		l->repeat_interval_ms = CONREQ_REPEAT_MS;
+		l->repeat_deadline = now + ARDOP_MS_TO_SAMPLES(CONREQ_REPEAT_MS);
+
+		size_t len = ardop_encode_conack_timing(ev->frame_type,
+							ev->leader_ms,
+							l->session_id,
+							l->out_frame);
+		ardop_action a = {0};
+		a.kind = ARDOP_ACT_SEND_FRAME;
+		a.frame_type = ev->frame_type;
+		a.data = l->out_frame;
+		a.data_len = len;
+		a.leader_ms = l->leader_ms;
+		emit(actions, &n, max, &a);
+		set_timer(l, actions, &n, max, l->repeat_deadline);
+		return n;
+	}
+
+	if (ev->frame_type == ARDOP_FT_CON_REJ_BUSY
+	    || ev->frame_type == ARDOP_FT_CON_REJ_BW) {
+		char msg[64];
+		const char *why = ev->frame_type == ARDOP_FT_CON_REJ_BUSY
+					  ? "REJECTEDBUSY" : "REJECTEDBW";
+		snprintf(msg, sizeof(msg), "%s %s", why, l->remote.str);
+		notify_host(l, actions, &n, max, msg);
+		reset_to_disc(l);
+		return n;
+	}
+
+	return 0;   /* any other frame is ignored while awaiting the ConAck. */
+}
+
 /* --- host commands ------------------------------------------------------- */
 
 /*
@@ -336,6 +415,9 @@ size_t ardop_link_step(ardop_link *l, const ardop_link_input *in,
 			return step_disc_rx(l, &in->as.rx, now_samples,
 					     actions, max_actions);
 		case ARDOP_LINK_ISS_CON_REQ:
+			return step_iss_conreq_rx(l, &in->as.rx, now_samples,
+						  actions, max_actions);
+		case ARDOP_LINK_ISS_CON_ACK:
 		case ARDOP_LINK_ISS:
 		case ARDOP_LINK_IRS_CON_ACK:
 		case ARDOP_LINK_IRS_DATA:

@@ -48,6 +48,7 @@
 typedef enum {
 	ARDOP_LINK_DISC = 0,   /**< Not connected. */
 	ARDOP_LINK_ISS_CON_REQ,/**< Sent a ConReq, awaiting ConAck. */
+	ARDOP_LINK_ISS_CON_ACK,/**< Got the ConAck, replied, connection established. */
 	ARDOP_LINK_ISS,        /**< Connected, this station is sending (ISS). */
 	ARDOP_LINK_IRS_CON_ACK,/**< IRS, ConAck sent, awaiting first data. */
 	ARDOP_LINK_IRS_DATA,   /**< IRS, receiving data (steady state). */

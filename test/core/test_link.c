@@ -449,6 +449,110 @@ static void test_host_connect_ignored_when_busy(void **state)
 	assert_int_equal(l.state, ARDOP_LINK_ISS);
 }
 
+/* Drive a link from DISC through a CONNECT so it is ISS awaiting a ConAck. */
+static void connect_as_iss(ardop_link *l)
+{
+	assert_true(ardop_rs_init(&g_rs, kRSLens,
+				  (int)(sizeof kRSLens / sizeof kRSLens[0])));
+	ardop_link_init(l);
+	assert_int_equal(ardop_stationid_from_str("N0CALL", &l->mycall),
+			 ARDOP_STATIONID_OK);
+	l->bw_setting = ARDOP_ARQ_BW_2000_MAX;
+	l->rs = &g_rs;
+
+	ardop_link_input in = {0};
+	in.kind = ARDOP_IN_HOST;
+	in.as.host.kind = ARDOP_CMD_CONNECT;
+	assert_int_equal(ardop_stationid_from_str("W1ABC", &in.as.host.target),
+			 ARDOP_STATIONID_OK);
+	in.as.host.bandwidth = ARDOP_ARQ_BW_UNDEFINED;
+
+	ardop_action acts[8];
+	(void)ardop_link_step(l, &in, 100, acts, 8);
+	assert_int_equal(l->state, ARDOP_LINK_ISS_CON_REQ);
+}
+
+/*
+ * ISS awaiting ConAck + the IRS's ConAck: adopt the negotiated width, reply with
+ * our own ConAck carrying our received-leader timing (three-way handshake), and
+ * move to ISS_CON_ACK connected. Mirrors the ISS/ISSConReq ConAck arm (rule 1.4).
+ */
+static void test_iss_conreq_gets_conack(void **state)
+{
+	(void)state;
+
+	ardop_link l;
+	connect_as_iss(&l);
+	uint8_t session = l.session_id;
+
+	ardop_link_input in = {0};
+	in.kind = ARDOP_IN_RX;
+	in.as.rx.kind = ARDOP_EV_FRAME_DECODED;
+	in.as.rx.frame_type = ARDOP_FT_CON_ACK_2000;
+	in.as.rx.leader_ms = 250;
+
+	uint64_t now = 200;
+	ardop_action acts[8];
+	size_t n = ardop_link_step(&l, &in, now, acts, 8);
+
+	const ardop_action *send = find_action(acts, n, ARDOP_ACT_SEND_FRAME);
+	assert_non_null(send);
+	assert_int_equal(send->frame_type, ARDOP_FT_CON_ACK_2000);
+	assert_int_equal(send->data_len, 5);
+	assert_int_equal(send->data[0], ARDOP_FT_CON_ACK_2000);
+	assert_int_equal(send->data[1], ARDOP_FT_CON_ACK_2000 ^ session);
+	assert_int_equal(send->data[2], 25);   /* 250 ms / 10 */
+
+	assert_int_equal(l.state, ARDOP_LINK_ISS_CON_ACK);
+	assert_int_equal(l.session_bw, 2000);
+	assert_false(l.pending);
+}
+
+/* ISS awaiting ConAck + ConRejBusy: tell the host, abort to DISC. */
+static void test_iss_conreq_rejected_busy(void **state)
+{
+	(void)state;
+
+	ardop_link l;
+	connect_as_iss(&l);
+
+	ardop_link_input in = {0};
+	in.kind = ARDOP_IN_RX;
+	in.as.rx.kind = ARDOP_EV_FRAME_DECODED;
+	in.as.rx.frame_type = ARDOP_FT_CON_REJ_BUSY;
+
+	ardop_action acts[8];
+	size_t n = ardop_link_step(&l, &in, 200, acts, 8);
+
+	assert_null(find_action(acts, n, ARDOP_ACT_SEND_FRAME));
+	const ardop_action *notify = find_action(acts, n, ARDOP_ACT_NOTIFY_HOST);
+	assert_non_null(notify);
+	assert_string_equal((const char *)notify->data, "REJECTEDBUSY W1ABC");
+	assert_int_equal(l.state, ARDOP_LINK_DISC);
+}
+
+/* ISS awaiting ConAck + ConRejBW: tell the host, abort to DISC. */
+static void test_iss_conreq_rejected_bw(void **state)
+{
+	(void)state;
+
+	ardop_link l;
+	connect_as_iss(&l);
+
+	ardop_link_input in = {0};
+	in.kind = ARDOP_IN_RX;
+	in.as.rx.kind = ARDOP_EV_FRAME_DECODED;
+	in.as.rx.frame_type = ARDOP_FT_CON_REJ_BW;
+
+	ardop_action acts[8];
+	size_t n = ardop_link_step(&l, &in, 200, acts, 8);
+
+	const ardop_action *notify = find_action(acts, n, ARDOP_ACT_NOTIFY_HOST);
+	assert_non_null(notify);
+	assert_string_equal((const char *)notify->data, "REJECTEDBW W1ABC");
+	assert_int_equal(l.state, ARDOP_LINK_DISC);
+}
+
 int main(void)
 {
 	const struct CMUnitTest tests[] = {
@@ -464,6 +568,9 @@ int main(void)
 		cmocka_unit_test(test_disc_ping_not_for_us),
 		cmocka_unit_test(test_host_connect),
 		cmocka_unit_test(test_host_connect_ignored_when_busy),
+		cmocka_unit_test(test_iss_conreq_gets_conack),
+		cmocka_unit_test(test_iss_conreq_rejected_busy),
+		cmocka_unit_test(test_iss_conreq_rejected_bw),
 	};
 	return cmocka_run_group_tests(tests, NULL, NULL);
 }
