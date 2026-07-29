@@ -1070,6 +1070,12 @@ static size_t step_host(ardop_link *l, const ardop_host_cmd *cmd,
 	case ARDOP_CMD_BREAK:
 		return step_host_break(l);
 	case ARDOP_CMD_SET_MODE:
+		/* Switch protocol mode only while disconnected. arg is the
+		 * ardop_link_mode (ARQ/FEC/RXO). */
+		if (l->state == ARDOP_LINK_DISC && cmd->arg >= ARDOP_MODE_ARQ
+		    && cmd->arg <= ARDOP_MODE_RXO)
+			l->mode = (ardop_link_mode)cmd->arg;
+		return 0;
 	case ARDOP_CMD_FEC_SEND:
 	case ARDOP_CMD_SEND_ID:
 		/* Ported as these commands land. */
@@ -1092,12 +1098,43 @@ void ardop_link_init(ardop_link *l)
 	l->tuning_range = 100;   /* inherited default; selects the 2000 modes. */
 }
 
+/* --- RXO: receive-only monitor mode -------------------------------------- */
+
+/*
+ * Receive-only: hand every decoded frame's content to the host and never
+ * transmit. The ARQ/FEC state machine is bypassed entirely. Ported from the
+ * essence of ProcessRXOFrame (the per-frame logging/status is dropped; the data
+ * and a status line reach the host). This is the mode `--decodewav` runs in.
+ */
+static size_t step_rxo_rx(ardop_link *l, const ardop_event *ev,
+			  ardop_action *actions, size_t max)
+{
+	size_t n = 0;
+
+	if (ev->kind != ARDOP_EV_FRAME_DECODED)
+		return 0;
+
+	if (ev->data_len > 0)
+		deliver_data(l, actions, &n, max, ev->data, ev->data_len);
+
+	const ardop_frame_spec *spec = ardop_frame_spec_for(ev->frame_type);
+	char msg[64];
+	snprintf(msg, sizeof(msg), "STATUS [RXO] %s received",
+		 spec ? spec->name : "?");
+	notify_host(l, actions, &n, max, msg);
+	return n;
+}
+
 size_t ardop_link_step(ardop_link *l, const ardop_link_input *in,
 		       uint64_t now_samples, ardop_action *actions,
 		       size_t max_actions)
 {
 	switch (in->kind) {
 	case ARDOP_IN_RX:
+		/* Receive-only mode bypasses the ARQ/FEC machine. */
+		if (l->mode == ARDOP_MODE_RXO)
+			return step_rxo_rx(l, &in->as.rx, actions,
+					   max_actions);
 		switch (l->state) {
 		case ARDOP_LINK_DISC:
 			return step_disc_rx(l, &in->as.rx, now_samples,

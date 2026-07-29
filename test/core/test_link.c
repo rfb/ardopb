@@ -1223,6 +1223,39 @@ static void test_host_abort(void **state)
 	assert_int_equal(l.tx_len, 0);
 }
 
+/*
+ * Receive-only mode: SET_MODE switches it on while disconnected; then every
+ * decoded frame's content is delivered to the host with a status line, and the
+ * link never transmits (no ACK, no anything). Mirrors ProcessRXOFrame.
+ */
+static void test_rxo_mode(void **state)
+{
+	(void)state;
+
+	ardop_link l;
+	ardop_link_init(&l);
+
+	ardop_link_input sm = {0};
+	sm.kind = ARDOP_IN_HOST;
+	sm.as.host.kind = ARDOP_CMD_SET_MODE;
+	sm.as.host.arg = ARDOP_MODE_RXO;
+	ardop_action acts[8];
+	(void)ardop_link_step(&l, &sm, 0, acts, 8);
+	assert_int_equal(l.mode, ARDOP_MODE_RXO);
+
+	/* A data frame is delivered to the host, and nothing is transmitted. */
+	const uint8_t payload[] = {0x11, 0x22, 0x33, 0x44};
+	ardop_link_input in = data_frame(0x42, payload, sizeof(payload), 80);
+	size_t n = ardop_link_step(&l, &in, 100, acts, 8);
+
+	const ardop_action *d = find_action(acts, n, ARDOP_ACT_DELIVER_DATA);
+	assert_non_null(d);
+	assert_int_equal(d->data_len, sizeof(payload));
+	assert_memory_equal(d->data, payload, sizeof(payload));
+	assert_null(find_action(acts, n, ARDOP_ACT_SEND_FRAME));
+	assert_int_equal(l.state, ARDOP_LINK_DISC);   /* never leaves DISC. */
+}
+
 int main(void)
 {
 	const struct CMUnitTest tests[] = {
@@ -1259,6 +1292,7 @@ int main(void)
 		cmocka_unit_test(test_host_disconnect_ignored),
 		cmocka_unit_test(test_host_disconnect_gives_up),
 		cmocka_unit_test(test_host_abort),
+		cmocka_unit_test(test_rxo_mode),
 	};
 	return cmocka_run_group_tests(tests, NULL, NULL);
 }
