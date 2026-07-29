@@ -10,6 +10,7 @@
 #include "link/link.h"
 #include "modem/modulate.h"
 #include "modem/demodulate.h"
+#include "codec/frame.h"
 #include "codec/rs.h"
 #include "codec/stationid.h"
 
@@ -26,11 +27,22 @@
  * two-station channel needs no session-key threading between link and demod.
  */
 
-extern const unsigned char bytValidFrameTypesALL[];
-extern int bytValidFrameTypesLengthALL;
-
 static const int kRSLens[] = {2, 4, 8, 16, 32, 36, 50, 64};
 #define NUM_RSLENS ((int)(sizeof kRSLens / sizeof kRSLens[0]))
+
+/* Candidate frame types for the receive-only frame-type decode: every byte the
+ * core frame table names (the inherited bytValidFrameTypesALL set). */
+static uint8_t g_valid_types[256];
+static int g_valid_len;
+
+static void build_valid_types(void)
+{
+	if (g_valid_len)
+		return;
+	for (int b = 0; b < 256; b++)
+		if (ardop_frame_spec_for((uint8_t)b))
+			g_valid_types[g_valid_len++] = (uint8_t)b;
+}
 
 struct station {
 	ardop_link link;
@@ -52,10 +64,11 @@ static void station_init(struct station *s, const char *call, bool listening)
 	s->link.tx_cap = sizeof(s->tx);
 	s->link.listening = listening;
 
+	build_valid_types();
 	ardop_demod_init(&s->demod, 100, 5);
 	s->demod.rs = &s->rs;
-	s->demod.ft_ctx.valid_types = bytValidFrameTypesALL;
-	s->demod.ft_ctx.valid_len = bytValidFrameTypesLengthALL;
+	s->demod.ft_ctx.valid_types = g_valid_types;
+	s->demod.ft_ctx.valid_len = g_valid_len;
 	s->demod.ft_ctx.rxo = true;
 }
 

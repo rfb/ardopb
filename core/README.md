@@ -90,8 +90,8 @@ that forgets an include fails there rather than mysteriously later.
 ### 8. Return values that must be checked — *enforced by `ARDOP_MUSTUSE`*
 
 Functions that can fail are marked `ARDOP_MUSTUSE` (`warn_unused_result`), so
-discarding a status is a build failure. Reused from `src/common/mustuse.h`,
-which the old tree already got right.
+discarding a status is a build failure. Defined in `core/common/mustuse.h`
+(carried over from the inherited tree, which got this one right).
 
 ### 9. No platform dependencies — *enforced by `make check-standalone`*
 

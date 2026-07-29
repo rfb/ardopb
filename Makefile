@@ -1,108 +1,34 @@
-#	ardopcf Makefile
-#		For Linux, the default build requires gcc, make, and development
-#		libraries for ALSA.
-#			sudo apt install build-essential libasound2-dev
-#			make
+# ardopb -- a rebuilt ARDOP HF data modem (see README.md).
 #
-#		Fow Windows, the default build requires installation of a MinGW build
-#		environment.  The easily installable packages from https://winlibs.com
-#		available for 32-bit or 64-bit builds are suggested.  These are used to
-#		build the Windows releases.  Installing these in `C:\Program Files` is
-#		not recommended since that may require admin privileges.  Other build
-#		environments may also work but are not tested.
-#			mingw32-make
+# Build requirements (Debian/Ubuntu):
+#   sudo apt install build-essential libasound2-dev   # ardopb + apps
+#   sudo apt install libcmocka-dev                     # to run `make test-core`
 #
-#	`make test` which builds the executable and also runs some tests also
-#	requires installation of cmocka, which is not required for the default build.
-#		On Debian/Ubuntu this is easily installed with:
-#			sudo apt install libcmocka-dev
-#
-#		Package managers for other Linux distributions are also likely to
-#		provide easy installation of cmocka.
-#
-#		In the following description of how to install cmocka for Windows, a
-#		winlibs MinGW installation is assumed to be located at `C:\winlibs`
-#		If installed elsewhere, substitute the appropriate path.  Putting the
-#		cmocka files into the winlibs install directory avoids the need for further
-#		configuration.  This uses git (available from https://git-scm.com/downloads/win)
-#		to download the cmocka source code.
-#
-#		git clone https://git.cryptomilk.org/projects/cmocka.git
-#		cd cmocka
-#		mkdir build
-#		cd build
-#		cmake -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="C:\winlibs" ..
-#		mingw32-make
-#		mingw32-make install
-#
-#	To cross-compile for Windows on Linux,
-#		sudo apt install mingw-w64
-#		make CC_NATIVE=gcc CC=i686-w64-mingw32-gcc-posix WIN32=1
+# Targets:
+#   make               ardopb + the host-client apps (the default)
+#   make ardopb        the modem
+#   make apps          ardop-tx / ardop-rx / ardop-chat
+#   make test-core     the in-process unit/integration tests (needs cmocka)
+#   make check-pure    assert core/ has no mutable globals and no allocation
+#   make check-headers assert every core/ header compiles standalone
+#   make check-standalone  assert core/ links with only libm
+#   make golden-core / golden-shell / golden-tx   conformance vs the frozen corpus
+#   make clean
 
-.PHONY: all buildtest test golden golden-regen golden-core golden-shell golden-tx core check-pure check-headers check-standalone test-core ardopb apps
+.PHONY: all core ardopb apps test-core check-pure check-headers check-standalone \
+	golden-core golden-shell golden-tx clean
 
-# list all object files and their directories
-# keep sorted by filename
-OBJS = \
-	lib/rawhid/rawhid.o \
-	lib/rockliff/rrs.o \
-	lib/ws_server/ws_server.o \
-	core/modem/templates.o \
-	src/common/ARDOPC.o \
-	src/common/ARDOPCommon.o \
-	src/common/ARQ.o \
-	src/common/BusyDetect.o \
-	src/common/FEC.o \
-	src/common/FFT.o \
-	src/common/HostInterface.o \
-	src/common/Locator.o \
-	src/common/log_file.o \
-	src/common/log.o \
-	src/common/Modulate.o \
-	src/common/Packed6.o \
-	src/common/RXO.o \
-	src/common/sdft.o \
-	src/common/SoundInput.o \
-	src/common/StationId.o \
-	src/common/TCPHostInterface.o \
-	src/common/txframe.o \
-	src/common/wav.o \
-	src/common/gen-webgui.html.o \
-	src/common/gen-webgui.js.o \
-	src/common/Webgui.o \
-	src/common/noise.o \
+CC = gcc
+CFLAGS = -g -MMD
 
-# Linux-only object files
-OBJS_LIN = \
-	src/linux/ALSASound.o \
-	src/linux/LinSerial.o \
+# core/ is held to a strict standard: -Werror and no mutable global state
+# (enforced by check-pure).  The shell/ and apps/ layers compose it under the
+# same flags.
+CORE_CFLAGS = -std=c11 -Wall -Wextra -Werror -Wmissing-prototypes \
+	-Wstrict-prototypes -Wshadow -Wconversion -Wcast-qual -Wwrite-strings
+CORE_CPPFLAGS = -Icore
 
-# Windows-only object files
-OBJS_WIN = \
-	src/windows/Waveout.o \
-	lib/hid/hid.o \
-
-# user-facing executables, like ardopcf
-OBJS_EXE = \
-	src/common/ardopcf.o \
-
-# unit test executables
-TESTS = \
-	test/ardop/test_ARDOPCommon \
-	test/ardop/test_HostInterface \
-	test/ardop/test_Locator \
-	test/ardop/test_log \
-	test/ardop/test_Packed6 \
-	test/ardop/test_StationId \
-
-# unit test common code
-TEST_OBJS_COMMON = \
-	test/ardop/setup.o \
-
-# core/ -- the rebuilt pure layers.  See core/README.md.
-# These are built to a stricter standard than the inherited tree: -Werror,
-# and no mutable global state (enforced by `make check-pure`).  They are not
-# yet linked into ardopcf.
+# --- core/ : the pure modem + protocol library -----------------------------
 CORE_OBJS = \
 	core/codec/crc.o \
 	core/codec/dataframe.o \
@@ -122,149 +48,41 @@ CORE_OBJS = \
 	core/link/bandwidth.o \
 	core/link/datamodes.o \
 	core/link/frames.o \
-	core/link/link.o \
+	core/link/link.o
 
-CORE_TESTS = \
-	test/core/test_crc \
-	test/core/test_dataframe \
-	test/core/test_frame \
-	test/core/test_locator \
-	test/core/test_packed6 \
-	test/core/test_rs \
-	test/core/test_stationid \
-	test/core/test_goertzel \
-	test/core/test_demodulate \
-	test/core/test_modulate \
-	test/core/test_rxquality \
-	test/core/test_fft \
-	test/core/test_busy \
-	test/core/test_session \
-	test/core/test_quality \
-	test/core/test_bandwidth \
-	test/core/test_datamodes \
-	test/core/test_frames \
-	test/core/test_link \
-	test/core/test_loopback \
-	test/core/test_runtime \
-	test/core/test_loop \
-	test/core/test_host \
-
-# define newline for use with foreach to run tests
-define newline
-
-
-endef
-
-# Configuration:
-CPPFLAGS += -Isrc -Ilib
-CFLAGS = -g -MMD
-LDLIBS = -lm -lpthread
-LDFLAGS = -Xlinker -Map=output.map
-CC = gcc
-CC_NATIVE ?= $(CC)
-
-# How to wrap a symbol with ld
-LDWRAP := -Wl,--wrap=
-
-# Path to txt2c executable; will be built if it does not already exist
-TXT2C ?=
-
-# Set WIN32 to non-empty to cross-compile on Linux.
-# Leave empty for OS auto-detection
-WIN32 ?= $(filter $(OS),Windows_NT)
-
-ifneq ($(WIN32),)
-OBJS += $(OBJS_WIN)
-LDLIBS += -lwsock32 -lwinmm -lsetupapi -lws2_32
-else
-OBJS += $(OBJS_LIN)
-LDLIBS += -lrt -lasound
-endif
-
-all: ardopcf
-
-ardopcf: $(OBJS_EXE) $(OBJS)
-	$(CC) $(LDFLAGS) $^ -o $@ $(LOADLIBES) $(LDLIBS)
-
-# if txt2c is not provided, build it
-ifeq ($(TXT2C),)
-TXT2C := lib/txt2c/txt2c
-
-# build txt2c directly and without our link libraries (none are required)
-$(TXT2C): $(TXT2C).c
-	$(CC_NATIVE) $^ -o $@
-
-# mark build products for cleaning
-CLEAN += $(TXT2C) $(TXT2C).exe
-endif
-
-# Use txt2c to convert webgui/FOO.xyz → FOO.xyz.c
-#   The C symbol name will be FOO_xyz.
-#   This is used to convert HTML and JavaScript to C sources.
-#   The implicit rule will then compile them to FOO.xyz.o.
-src/common/gen-%.c:: webgui/% | $(TXT2C)
-	$(TXT2C) $< $@ $(subst .,_,$(notdir $<))
-
-# `make buildtest` builds the test-case executables but does not run them
-buildtest: $(TESTS)
-
-# `make test` prints the name of each test file and then runs that test.
-# running the test should indicate the tests run and whether they passed
-# or failed.
-test: buildtest
-	$(foreach test, $(TESTS), @echo $(test):$(newline)@$(test)$(newline))
-
-# --- core/ ------------------------------------------------------------------
-#
-# core/ is held to a stricter standard than the inherited tree.  The flags are
-# separate from CFLAGS so that adding -Werror here cannot break the main build,
-# and so the inherited tree's 177 warnings do not have to be fixed first.
-CORE_CFLAGS = -std=c11 -Wall -Wextra -Werror -Wmissing-prototypes \
-	-Wstrict-prototypes -Wshadow -Wconversion -Wcast-qual -Wwrite-strings
-CORE_CPPFLAGS = -Icore -Isrc
+# The waveform templates are large const tables, not protocol logic, so they
+# live outside CORE_OBJS (and outside check-pure) but link into everything.
+TEMPLATES = core/modem/templates.o
 
 core/%.o: core/%.c
 	$(CC) $(CORE_CPPFLAGS) $(CFLAGS) $(CORE_CFLAGS) -c -o $@ $<
 
-# The shell/ layer -- the I/O-free main-loop body (Stage 4, W2).  It composes
-# core/ under the same -Werror standard; it is not part of check-pure (it is the
-# app layer that will grow the impure platform backends).
+# --- shell/ : the I/O-free runtime + the platform backends -----------------
 SHELL_OBJS = shell/runtime.o shell/loop.o shell/host.o
 
 shell/%.o: shell/%.c
 	$(CC) -I. $(CORE_CPPFLAGS) $(CFLAGS) $(CORE_CFLAGS) -c -o $@ $<
 
-# The ALSA backend needs POSIX/GNU feature macros the strict -std=c11 core flags
-# withhold (struct timespec, alloca) -- ALSA's headers assume them.  It is the
-# one impure device file; the feature macros stop at its edge.
+# The ALSA backend needs POSIX/GNU feature macros the strict -std=c11 withholds
+# (struct timespec, alloca); the host transport and null backend need sockets /
+# usleep.  These impure device files are the only place the macros appear.
 shell/backend_alsa.o: shell/backend_alsa.c
 	$(CC) -I. -D_GNU_SOURCE $(CORE_CPPFLAGS) $(CFLAGS) $(CORE_CFLAGS) -c -o $@ $<
-
-# The TCP host transport needs POSIX sockets/fcntl the strict -std=c11 withholds;
-# the null backend needs usleep for its optional real-time pacing.
 shell/host_tcp.o: shell/host_tcp.c
 	$(CC) -I. -D_DEFAULT_SOURCE $(CORE_CPPFLAGS) $(CFLAGS) $(CORE_CFLAGS) -c -o $@ $<
-
 shell/backend_null.o: shell/backend_null.c
 	$(CC) -I. -D_DEFAULT_SOURCE $(CORE_CPPFLAGS) $(CFLAGS) $(CORE_CFLAGS) -c -o $@ $<
 
-# `make core` builds the rebuilt layers.
 core: $(CORE_OBJS) $(SHELL_OBJS)
 
-# `make ardopb` -- the rebuilt program: the pure core, a platform backend, one
-# loop (analysis/13 W2).  Links only core/ + shell/, no src/.  The ALSA backend
-# talks to real hardware and is not in the test suite (which uses the fake
-# platform); the null backend gives a hardware-free smoke path.  (Defined here,
-# below SHELL_OBJS, because make expands a rule's prerequisites as it reads them.)
+# --- ardopb : the modem ----------------------------------------------------
 ARDOPB_OBJS = shell/main.o shell/backend_null.o shell/backend_alsa.o \
 	shell/host_tcp.o
-ardopb: $(CORE_OBJS) core/modem/templates.o $(SHELL_OBJS) $(ARDOPB_OBJS)
-	$(CC) $(LDFLAGS) $^ -o $@ -lasound -lm
 
-# `make apps` -- host-client applications built on the TCP host interface: the
-# ardop-tx/ardop-rx pipe utilities and a basic ardop-chat.  They are plain socket
-# clients (no core/ or shell/ objects, no extra libraries), held to the same
-# strict flags; each links the shared apps/hostclient.o.  See apps/README.md.
+ardopb: $(CORE_OBJS) $(TEMPLATES) $(SHELL_OBJS) $(ARDOPB_OBJS)
+	$(CC) $^ -o $@ -lasound -lm
+
+# --- apps/ : host-client applications (plain TCP clients) ------------------
 APPS = apps/ardop-tx apps/ardop-rx apps/ardop-chat
 
 apps/%.o: apps/%.c
@@ -276,22 +94,14 @@ apps/ardop-chat: apps/ardop_chat.o apps/hostclient.o ; $(CC) $^ -o $@
 
 apps: $(APPS)
 
-# `make check-pure` enforces the rule that makes core/ testable: no mutable
-# global state.  This is a link-time fact, not a code-review habit -- see
-# core/README.md rule 1.
+all: ardopb apps
+
+# --- mechanical guarantees on core/ ----------------------------------------
 #
-# The test is which *section* a symbol lands in, not what nm calls it.  nm
-# reports a `static const` table containing pointers as `d`, which looks like
-# mutable data but is not: in a position-independent build such a table goes to
-# .data.rel.ro, which the loader maps read-only once relocations are applied.
-# Keying on nm's letter would reject every const table with a string in it.
-#
-#   rejected:  .data  .bss  *COM*     genuinely writable for the whole run
-#   allowed:   .rodata  .data.rel.ro*  .text
-#
-# It also checks that the core allocates nothing, so it can be driven from an
-# embedded shell or another language without sharing an allocator.  That catches
-# direct calls only, not transitive ones.
+# check-pure: core/ has no mutable global state and no allocation, so it can be
+# driven from an embedded shell or another language.  The test is which ELF
+# *section* a symbol lands in: .data/.bss/*COM* are genuinely writable; .rodata
+# and .data.rel.ro* (a const table with relocations) are read-only once loaded.
 check-pure: $(CORE_OBJS)
 	@fail=0; \
 	for o in $(CORE_OBJS); do \
@@ -300,22 +110,19 @@ check-pure: $(CORE_OBJS)
 			|| true`; \
 		if [ -n "$$syms" ]; then \
 			echo "FAIL: $$o has mutable global state:"; \
-			echo "$$syms" | sed 's/^/    /'; \
-			fail=1; \
+			echo "$$syms" | sed 's/^/    /'; fail=1; \
 		fi; \
 		alloc=`nm --undefined-only $$o \
 			| grep -E ' U (malloc|calloc|realloc|free|strdup)$$' || true`; \
 		if [ -n "$$alloc" ]; then \
 			echo "FAIL: $$o allocates:"; \
-			echo "$$alloc" | sed 's/^/    /'; \
-			fail=1; \
+			echo "$$alloc" | sed 's/^/    /'; fail=1; \
 		fi; \
 	done; \
 	if [ $$fail -ne 0 ]; then exit 1; fi; \
 	echo "check-pure: $(words $(CORE_OBJS)) object(s), no mutable globals, no allocation"
 
-# Every core header must compile standalone -- a header that forgets an include
-# fails here rather than mysteriously later.  See core/README.md rule 7.
+# check-headers: every core/ header compiles standalone.
 check-headers:
 	@for h in `find core -name '*.h'`; do \
 		echo "#include \"$${h#core/}\"" > /tmp/ardop-hdr-$$$$.c; \
@@ -326,152 +133,78 @@ check-headers:
 	done; \
 	echo "check-headers: all core headers compile standalone"
 
-# `make check-standalone` proves the core is self-contained: the whole core --
-# codec, modem (with waveform templates), link -- links into a program with only
-# libm.  If any core object grew a dependency on ALSA, sockets, or the WebGui, the
-# link would fail here.  This is the mechanical form of analysis/13 W2's exit
-# criterion "the core links with no ALSA / no sockets / no WebGui"; it holds now
-# and must keep holding as src/ is retired.
-check-standalone: $(CORE_OBJS) core/modem/templates.o
+# check-standalone: the whole core links into a program with only libm.  A core
+# object that grew a dependency on ALSA, sockets or anything else fails here.
+check-standalone: $(CORE_OBJS) $(TEMPLATES)
 	@tmp=`mktemp -d`; \
 	printf 'int main(void){return 0;}\n' > $$tmp/m.c; \
-	if $(CC) $$tmp/m.c $(CORE_OBJS) core/modem/templates.o -lm \
-			-o $$tmp/standalone 2>$$tmp/err; then \
-		echo "check-standalone: core links with only -lm (no ALSA/sockets/WebGui)"; \
-		rm -rf $$tmp; \
+	if $(CC) $$tmp/m.c $(CORE_OBJS) $(TEMPLATES) -lm -o $$tmp/standalone \
+			2>$$tmp/err; then \
+		echo "check-standalone: core links with only -lm"; rm -rf $$tmp; \
 	else \
-		echo "FAIL: core needs more than libm:"; \
-		cat $$tmp/err; rm -rf $$tmp; exit 1; \
+		echo "FAIL: core needs more than libm:"; cat $$tmp/err; \
+		rm -rf $$tmp; exit 1; \
 	fi
 
-# `make test-core` builds and runs the core unit tests.
+# --- in-process tests ------------------------------------------------------
+CORE_TESTS = \
+	test/core/test_link \
+	test/core/test_loopback \
+	test/core/test_runtime \
+	test/core/test_loop \
+	test/core/test_host
+
+define newline
+
+
+endef
+
 test-core: $(CORE_TESTS)
 	$(foreach test, $(CORE_TESTS), @echo $(test):$(newline)@$(test)$(newline))
 
-# Core tests link the inherited objects too, because the equivalence tests use
-# the old implementation as an oracle.  That dependency disappears when the old
-# code does.
-test/core/test_%: test/core/test_%.c $(CORE_OBJS) $(SHELL_OBJS) $(OBJS) $(TEST_OBJS_COMMON)
-	$(CC) \
-		$(CPPFLAGS) $(CORE_CPPFLAGS) -I. -Itest/ardop \
-		$(CFLAGS) \
-		$(LDFLAGS) \
-		$< \
-		$(CORE_OBJS) $(SHELL_OBJS) $(OBJS) $(TEST_OBJS_COMMON) \
-		$(LDLIBS) -lcmocka \
-		-o $@
+test/core/setup.o: test/core/setup.c
+	$(CC) $(CFLAGS) -c -o $@ $<
 
-# `make golden` checks this build against the committed golden-vector corpus
-# in test/golden: that the modulator is still bit-exact, and that every
-# frozen recording still decodes to the bytes it was made from.  It needs
-# only python3, no additional libraries.  See test/golden/README.md.
-golden: all
-	cd test/golden && ./test_golden.py
+# The tests link the core, the shell runtime and the templates; no old code.
+test/core/test_%: test/core/test_%.c $(CORE_OBJS) $(TEMPLATES) $(SHELL_OBJS) \
+		test/core/setup.o
+	$(CC) $(CORE_CPPFLAGS) -I. -Itest/core $(CFLAGS) \
+		$< $(CORE_OBJS) $(TEMPLATES) $(SHELL_OBJS) test/core/setup.o \
+		-lcmocka -lm -o $@
 
-# `make golden-regen` rewrites that corpus from the current build, moving the
-# baseline.  Review the resulting diff before committing: a changed tx_sha256
-# means the modulated audio changed.
-golden-regen: all
-	cd test/golden && ./gen_golden.py
-
-# `make golden-core` runs the frozen recordings through the *rebuilt* core
-# demodulator (ardop_demod_push, receive-only) and checks each against the
-# manifest's decode result.  This is the definitive external oracle for the
-# core RX chain: real ardopcf-generated audio, including noise-degraded copies,
-# decoded by core/ alone.  core_decode_wav links only core objects.
-test/golden/core_decode_wav: test/golden/core_decode_wav.c $(CORE_OBJS) core/modem/templates.o
+# --- golden-corpus conformance (see test/golden/README.md) -----------------
+#
+# The frozen corpus of ardopcf-generated TX audio and recordings is the
+# regression net now that the reference implementation is gone: golden-core /
+# golden-shell decode the recordings through the core and the assembled shell,
+# and golden-tx checks the modulator's TX audio bit-for-bit.
+test/golden/core_decode_wav: test/golden/core_decode_wav.c $(CORE_OBJS) $(TEMPLATES)
 	$(CC) $(CORE_CPPFLAGS) $(CFLAGS) $(CORE_CFLAGS) \
-		$< $(CORE_OBJS) core/modem/templates.o -lm -o $@
-
+		$< $(CORE_OBJS) $(TEMPLATES) -lm -o $@
 golden-core: test/golden/core_decode_wav
 	cd test/golden && ./test_golden_core.py
 
-# `make golden-shell` runs the same frozen recordings through the assembled
-# *shell* -- ardop_runtime_rx, the RXO link path and the observation stream --
-# instead of the core demod alone, and judges the identical output against the
-# manifest.  Passing proves the shell wires the demodulator exactly as the core
-# does.  Uses -I. so the shell/ headers resolve; needs the shell objects and
-# -std=c11's POSIX-free core flags (the shell is pure, no sockets here).
-test/golden/shell_decode_wav: test/golden/shell_decode_wav.c $(CORE_OBJS) $(SHELL_OBJS) core/modem/templates.o
+test/golden/shell_decode_wav: test/golden/shell_decode_wav.c $(CORE_OBJS) \
+		$(SHELL_OBJS) $(TEMPLATES)
 	$(CC) -I. $(CORE_CPPFLAGS) $(CFLAGS) $(CORE_CFLAGS) \
-		$< $(CORE_OBJS) $(SHELL_OBJS) core/modem/templates.o -lm -o $@
-
+		$< $(CORE_OBJS) $(SHELL_OBJS) $(TEMPLATES) -lm -o $@
 golden-shell: test/golden/shell_decode_wav
 	cd test/golden && GOLDEN_DECODE_BIN=./shell_decode_wav ./test_golden_core.py
 
-# `make golden-tx` proves the assembled program's TRANSMIT audio is bit-identical
-# to the frozen corpus: for every data case it re-modulates the frame (same
-# encoder, drive level and leader the shell's start_tx uses) and checks the WAV
-# SHA-256 against the manifest tx_sha256.  Links only core objects + templates.
-test/golden/shell_tx_wav: test/golden/shell_tx_wav.c $(CORE_OBJS) core/modem/templates.o
+test/golden/shell_tx_wav: test/golden/shell_tx_wav.c $(CORE_OBJS) $(TEMPLATES)
 	$(CC) $(CORE_CPPFLAGS) $(CFLAGS) $(CORE_CFLAGS) \
-		$< $(CORE_OBJS) core/modem/templates.o -lm -o $@
-
+		$< $(CORE_OBJS) $(TEMPLATES) -lm -o $@
 golden-tx: test/golden/shell_tx_wav
 	cd test/golden && ./test_golden_tx.py
 
-# rule to make test-case executables from their sources
-test/ardop/test_%: test/ardop/test_%.c $(OBJS) $(TEST_OBJS_COMMON)
-	$(CC) \
-		$(CPPFLAGS) \
-		$(CFLAGS) \
-		$(LDFLAGS) \
-		$(patsubst %,$(LDWRAP)%,$(WRAP)) \
-		$< \
-		$(OBJS) \
-		$(TEST_OBJS_COMMON) \
-		-o $@ \
-		$(LOADLIBES) \
-		$(LDLIBS) \
-		-lcmocka
+# Pull in -MMD dependency files so a changed header rebuilds its dependents.
+-include core/*/*.d shell/*.d apps/*.d test/core/*.d
 
-# linkage overrides for unit tests
-#   for tests that need only a subset of production code,
-#   set OBJS to the .o files you want
-#
-#   for tests that need mock functions injected,
-#   set WRAP to a space-separated list of functions to mock
-test/ardop/test_log: OBJS := \
-	src/common/log_file.o \
-	src/common/log.o
-test/ardop/test_log: WRAP := fopen fclose fwrite fflush freopen
-
-# Pull in the -MMD dependency files so a changed header rebuilds every object
-# that includes it. The bare `*.d` glob only covered the repo root; the rebuilt
-# tree lives in subdirectories, so list those too. Without this a header edit
-# (e.g. adding a field to a struct in a shared header) leaves stale objects with
-# a mismatched struct size -- a memset/overrun crash that only a full rebuild
-# clears.
--include *.d core/*/*.d shell/*.d test/core/*.d apps/*.d
-
-# 'make clean' deletes files produced by the build process.
-# After using git checkout change branches, it is sometimes neccessary to run
-# 'make clean' before running 'make' to produce a successful build.  Failure
-# to run 'make clean' before using git checkout may sometimes leave build
-# related files that must then be manually deleted.
-CLEAN += \
-	ardopcf \
-	ardopcf.exe \
-	$(OBJS) \
-	$(OBJS:.o=.d) \
-	$(OBJS_LIN) \
-	$(OBJS_LIN:.o=.d) \
-	$(OBJS_WIN) \
-	$(OBJS_WIN:.o=.d) \
-	$(OBJS_EXE) \
-	$(OBJS_EXE:.o=.d) \
-	$(TESTS) \
-	$(TESTS:%=%.exe) \
-	$(TESTS:%=%.d) \
-	$(TEST_OBJS_COMMON) \
-	$(TEST_OBJS_COMMON:.o=.d) \
-	output.map \
-
-ifeq ($(OS),Windows_NT)
-# on Windows, del requires backslash paths
-clean :
-	del /Q /F $(subst /,\,$(CLEAN))
-else
-clean :
-	rm -f -- $(CLEAN)
-endif
+clean:
+	rm -f -- ardopb $(APPS) \
+		$(CORE_OBJS) $(CORE_OBJS:.o=.d) \
+		$(TEMPLATES) $(TEMPLATES:.o=.d) \
+		shell/*.o shell/*.d apps/*.o apps/*.d \
+		test/core/*.o test/core/*.d $(CORE_TESTS) \
+		test/golden/core_decode_wav test/golden/shell_decode_wav \
+		test/golden/shell_tx_wav test/golden/*.d
