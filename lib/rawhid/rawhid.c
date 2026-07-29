@@ -16,6 +16,7 @@
 
 #include <string.h>
 #include <stdio.h>
+#include <stdint.h>
 #include <errno.h>
 
 #include "hid/hidapi.h"
@@ -358,7 +359,10 @@ int HID_Read_Block()
 #ifdef WIN32
 	Len = rawhid_recv(0, Msg, 64, 100);
 #else
-	Len = read(CM108Handle, Msg, 64);
+	/* On Linux CM108Handle carries an int fd stuffed into the pointer slot
+	 * (Windows keeps a real hid_device*); recover it via intptr_t so GCC 14's
+	 * default -Wint-conversion error is satisfied. */
+	Len = read((int)(intptr_t)CM108Handle, Msg, 64);
 #endif
 
 	if (Len <= 0)
@@ -411,12 +415,12 @@ int HID_Write_Block()
 			return 0;
 		}
 #else
-		ret = write(CM108Handle, Msg, 64);
+		ret = write((int)(intptr_t)CM108Handle, Msg, 64);
 
 		if (ret != 64)
 		{
 			printf ("Write to %s failed, n=%d, errno=%d\n", HIDDevice, ret, errno);
-			close (CM108Handle);
+			close ((int)(intptr_t)CM108Handle);
 			CM108Handle = 0;
 			return 0;
 		}

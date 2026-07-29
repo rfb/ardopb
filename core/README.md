@@ -93,6 +93,13 @@ Functions that can fail are marked `ARDOP_MUSTUSE` (`warn_unused_result`), so
 discarding a status is a build failure. Reused from `src/common/mustuse.h`,
 which the old tree already got right.
 
+### 9. No platform dependencies — *enforced by `make check-standalone`*
+
+The whole core (codec, modem with its waveform templates, link) links into a
+program with only `libm`. If a core object ever grew a dependency on ALSA,
+sockets, or the WebGui, the link fails here. Devices, the clock and I/O live in
+`shell/` and the platform backends, never in `core/`.
+
 ---
 
 ## Style

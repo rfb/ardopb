@@ -39,7 +39,7 @@
 #		sudo apt install mingw-w64
 #		make CC_NATIVE=gcc CC=i686-w64-mingw32-gcc-posix WIN32=1
 
-.PHONY: all buildtest test golden golden-regen golden-core core check-pure check-headers test-core ardopb
+.PHONY: all buildtest test golden golden-regen golden-core core check-pure check-headers check-standalone test-core ardopb
 
 # list all object files and their directories
 # keep sorted by filename
@@ -310,6 +310,24 @@ check-headers:
 		rm -f /tmp/ardop-hdr-$$$$.c; \
 	done; \
 	echo "check-headers: all core headers compile standalone"
+
+# `make check-standalone` proves the core is self-contained: the whole core --
+# codec, modem (with waveform templates), link -- links into a program with only
+# libm.  If any core object grew a dependency on ALSA, sockets, or the WebGui, the
+# link would fail here.  This is the mechanical form of analysis/13 W2's exit
+# criterion "the core links with no ALSA / no sockets / no WebGui"; it holds now
+# and must keep holding as src/ is retired.
+check-standalone: $(CORE_OBJS) core/modem/templates.o
+	@tmp=`mktemp -d`; \
+	printf 'int main(void){return 0;}\n' > $$tmp/m.c; \
+	if $(CC) $$tmp/m.c $(CORE_OBJS) core/modem/templates.o -lm \
+			-o $$tmp/standalone 2>$$tmp/err; then \
+		echo "check-standalone: core links with only -lm (no ALSA/sockets/WebGui)"; \
+		rm -rf $$tmp; \
+	else \
+		echo "FAIL: core needs more than libm:"; \
+		cat $$tmp/err; rm -rf $$tmp; exit 1; \
+	fi
 
 # `make test-core` builds and runs the core unit tests.
 test-core: $(CORE_TESTS)
