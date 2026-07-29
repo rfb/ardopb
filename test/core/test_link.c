@@ -616,6 +616,134 @@ static void test_irs_conack_completes(void **state)
 	assert_int_equal(l.session_bw, 2000);
 }
 
+/* Drive a link all the way to connected IRS_DATA. */
+static void connected_as_irs(ardop_link *l)
+{
+	accept_as_irs(l);
+
+	ardop_link_input in = {0};
+	in.kind = ARDOP_IN_RX;
+	in.as.rx.kind = ARDOP_EV_FRAME_DECODED;
+	in.as.rx.frame_type = ARDOP_FT_CON_ACK_2000;
+	in.as.rx.quality = 75;
+
+	ardop_action acts[8];
+	(void)ardop_link_step(l, &in, 2000, acts, 8);
+	assert_int_equal(l->state, ARDOP_LINK_IRS_DATA);
+}
+
+static ardop_link_input data_frame(uint8_t ft, const uint8_t *payload,
+				   int len, int quality)
+{
+	ardop_link_input in = {0};
+	in.kind = ARDOP_IN_RX;
+	in.as.rx.kind = ARDOP_EV_FRAME_DECODED;
+	in.as.rx.frame_type = ft;
+	in.as.rx.data = payload;
+	in.as.rx.data_len = len;
+	in.as.rx.quality = quality;
+	return in;
+}
+
+/*
+ * Connected IRS + a good data frame: deliver the payload to the host and ACK
+ * with the decode quality; a genuine retransmission (same frame type) is ACKed
+ * again but not re-delivered; the next frame (alternated type) is delivered.
+ * Mirrors the IRS/IRSData good-data arm and its intLastARQDataFrameToHost dedup.
+ */
+static void test_irs_data_deliver_and_dedup(void **state)
+{
+	(void)state;
+
+	ardop_link l;
+	connected_as_irs(&l);
+	uint8_t session = l.session_id;
+
+	const uint8_t payload[] = {0xDE, 0xAD, 0xBE, 0xEF, 0x12, 0x34};
+
+	/* First data frame (even, 0x42): delivered and ACKed. */
+	ardop_link_input in = data_frame(0x42, payload, sizeof(payload), 80);
+	ardop_action acts[8];
+	size_t n = ardop_link_step(&l, &in, 3000, acts, 8);
+
+	const ardop_action *deliver = find_action(acts, n,
+						  ARDOP_ACT_DELIVER_DATA);
+	assert_non_null(deliver);
+	assert_int_equal(deliver->data_len, sizeof(payload));
+	assert_memory_equal(deliver->data, payload, sizeof(payload));
+
+	const ardop_action *ack = find_action(acts, n, ARDOP_ACT_SEND_FRAME);
+	assert_non_null(ack);
+	assert_int_equal(ack->frame_type, ardop_quality_to_ack_type(80));
+	assert_int_equal(ack->data[1], ardop_quality_to_ack_type(80) ^ session);
+
+	/* Same frame again (ISS missed our ACK): re-ACK, do NOT re-deliver. */
+	in = data_frame(0x42, payload, sizeof(payload), 78);
+	n = ardop_link_step(&l, &in, 4000, acts, 8);
+	assert_null(find_action(acts, n, ARDOP_ACT_DELIVER_DATA));
+	assert_non_null(find_action(acts, n, ARDOP_ACT_SEND_FRAME));
+
+	/* The next frame (odd, 0x43): delivered again. */
+	const uint8_t payload2[] = {0x55, 0x66};
+	in = data_frame(0x43, payload2, sizeof(payload2), 82);
+	n = ardop_link_step(&l, &in, 5000, acts, 8);
+	deliver = find_action(acts, n, ARDOP_ACT_DELIVER_DATA);
+	assert_non_null(deliver);
+	assert_int_equal(deliver->data_len, sizeof(payload2));
+	assert_memory_equal(deliver->data, payload2, sizeof(payload2));
+}
+
+/* Connected IRS + a failed data decode (new frame): NAK with quality. */
+static void test_irs_data_nak(void **state)
+{
+	(void)state;
+
+	ardop_link l;
+	connected_as_irs(&l);
+
+	ardop_link_input in = {0};
+	in.kind = ARDOP_IN_RX;
+	in.as.rx.kind = ARDOP_EV_FRAME_BAD;
+	in.as.rx.frame_type = 0x42;
+	in.as.rx.quality = 40;
+
+	ardop_action acts[8];
+	size_t n = ardop_link_step(&l, &in, 3000, acts, 8);
+
+	assert_null(find_action(acts, n, ARDOP_ACT_DELIVER_DATA));
+	const ardop_action *nak = find_action(acts, n, ARDOP_ACT_SEND_FRAME);
+	assert_non_null(nak);
+	assert_int_equal(nak->frame_type, ardop_quality_to_nak_type(40));
+}
+
+/* Connected IRS + DISC from the ISS: tell the host, answer END, return to DISC. */
+static void test_irs_data_disc(void **state)
+{
+	(void)state;
+
+	ardop_link l;
+	connected_as_irs(&l);
+	uint8_t session = l.session_id;
+
+	ardop_link_input in = {0};
+	in.kind = ARDOP_IN_RX;
+	in.as.rx.kind = ARDOP_EV_FRAME_DECODED;
+	in.as.rx.frame_type = ARDOP_FT_DISC;
+
+	ardop_action acts[8];
+	size_t n = ardop_link_step(&l, &in, 6000, acts, 8);
+
+	const ardop_action *notify = find_action(acts, n, ARDOP_ACT_NOTIFY_HOST);
+	assert_non_null(notify);
+	assert_string_equal((const char *)notify->data, "DISCONNECTED");
+	const ardop_action *end = find_action(acts, n, ARDOP_ACT_SEND_FRAME);
+	assert_non_null(end);
+	assert_int_equal(end->frame_type, ARDOP_FT_END);
+	assert_int_equal(end->data[1], ARDOP_FT_END ^ session);
+	assert_int_equal(l.state, ARDOP_LINK_DISC);
+	assert_int_equal(l.last_session_id, session);
+}
+
 int main(void)
 {
 	const struct CMUnitTest tests[] = {
@@ -635,6 +763,9 @@ int main(void)
 		cmocka_unit_test(test_iss_conreq_rejected_busy),
 		cmocka_unit_test(test_iss_conreq_rejected_bw),
 		cmocka_unit_test(test_irs_conack_completes),
+		cmocka_unit_test(test_irs_data_deliver_and_dedup),
+		cmocka_unit_test(test_irs_data_nak),
+		cmocka_unit_test(test_irs_data_disc),
 	};
 	return cmocka_run_group_tests(tests, NULL, NULL);
 }

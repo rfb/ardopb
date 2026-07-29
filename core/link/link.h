@@ -167,6 +167,10 @@ typedef struct {
 	ardop_stationid local;      /**< The local call this session uses. */
 	ardop_stationid final_id_call; /**< Callsign for the closing ID frame. */
 	int avg_quality;            /**< Running decode-quality average. */
+	int last_data_to_host;      /**< Type of the last data frame delivered
+	                             *   (intLastARQDataFrameToHost); -1 = none. */
+	int last_acked_type;        /**< Type of the last data frame ACKed
+	                             *   (bytLastACKedDataFrameType); -1 = none. */
 
 	/* --- timers, as absolute sample deadlines (0 = inactive) --- */
 	uint64_t final_id_deadline; /**< tmrFinalID: when the closing ID may go. */
@@ -176,6 +180,7 @@ typedef struct {
 
 	/* --- scratch the emitted actions point into (valid until next step) --- */
 	uint8_t out_frame[ARDOP_LINK_OUT_FRAME_MAX];  /**< SEND_FRAME bytes. */
+	uint8_t out_data[ARDOP_DEMOD_MAX_PAYLOAD];    /**< DELIVER_DATA payload. */
 	char out_host[128];         /**< NOTIFY_HOST text. */
 } ardop_link;
 

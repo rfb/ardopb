@@ -368,6 +368,90 @@ static size_t step_irs_conack_rx(ardop_link *l, const ardop_event *ev,
 	return 0;
 }
 
+/* --- IRS_DATA: connected, receiving data --------------------------------- */
+
+/* Emit a DELIVER_DATA action carrying a copy of the payload. */
+static void deliver_data(ardop_link *l, ardop_action *actions, size_t *n,
+			 size_t max, const uint8_t *data, int len)
+{
+	ardop_action a = {0};
+	if (len > (int)sizeof(l->out_data))
+		len = (int)sizeof(l->out_data);
+	memcpy(l->out_data, data, (size_t)len);
+	a.kind = ARDOP_ACT_DELIVER_DATA;
+	a.data = l->out_data;
+	a.data_len = (size_t)len;
+	emit(actions, n, max, &a);
+}
+
+/* Build a 2-byte control frame into out_frame and emit it as a SEND_FRAME. */
+static void send_control(ardop_link *l, ardop_action *actions, size_t *n,
+			 size_t max, uint8_t frame_type)
+{
+	size_t len = ardop_encode_control(frame_type, l->session_id,
+					  l->out_frame);
+	send_frame(l, actions, n, max, frame_type, len);
+}
+
+/*
+ * Connected and receiving. A good data frame is delivered to the host unless it
+ * repeats the last one delivered (the even/odd type alternation makes a genuine
+ * retransmission share its type), and is always ACKed with the decode quality --
+ * the ISS may have missed the previous ACK. A failed decode is re-ACKed if it
+ * matches the last frame already delivered, else NAKed. A DISC ends the session.
+ * Ported from ProcessRcvdARQFrame's IRS/IRSData arm. The BREAK turnover and the
+ * IRSfromISS substate are not yet ported (they need the host BREAK command).
+ */
+static size_t step_irs_data_rx(ardop_link *l, const ardop_event *ev,
+			       uint64_t now, ardop_action *actions, size_t max)
+{
+	size_t n = 0;
+
+	/* DISC from the ISS: tell the host, answer END, hold the closing ID,
+	 * and return to DISC keeping the session id for a late DISC (rule 1.5). */
+	if (ev->kind == ARDOP_EV_FRAME_DECODED
+	    && ev->frame_type == ARDOP_FT_DISC) {
+		notify_host(l, actions, &n, max, "DISCONNECTED");
+		send_control(l, actions, &n, max, ARDOP_FT_END);
+		l->final_id_deadline = now + ARDOP_MS_TO_SAMPLES(FINAL_ID_HOLD_MS);
+		set_timer(l, actions, &n, max, l->final_id_deadline);
+		reset_to_disc(l);
+		return n;
+	}
+
+	/* A good data frame: deliver if new, always ACK. */
+	if (ev->kind == ARDOP_EV_FRAME_DECODED
+	    && ardop_frame_is_data(ev->frame_type)) {
+		if ((int)ev->frame_type != l->last_data_to_host) {
+			deliver_data(l, actions, &n, max, ev->data,
+				     ev->data_len);
+			l->last_data_to_host = ev->frame_type;
+		}
+		send_control(l, actions, &n, max,
+			     ardop_quality_to_ack_type(ev->quality));
+		l->last_acked_type = ev->frame_type;
+		return n;
+	}
+
+	/* A failed decode already ACKed once: re-ACK, data is already delivered. */
+	if (ev->kind == ARDOP_EV_FRAME_BAD
+	    && (int)ev->frame_type == l->last_acked_type) {
+		send_control(l, actions, &n, max,
+			     ardop_quality_to_ack_type(ev->quality));
+		return n;
+	}
+
+	/* A failed decode of a new data frame: NAK with quality. */
+	if (ev->kind == ARDOP_EV_FRAME_BAD
+	    && ardop_frame_is_data(ev->frame_type)) {
+		send_control(l, actions, &n, max,
+			     ardop_quality_to_nak_type(ev->quality));
+		return n;
+	}
+
+	return 0;
+}
+
 /* --- host commands ------------------------------------------------------- */
 
 /*
@@ -454,6 +538,8 @@ void ardop_link_init(ardop_link *l)
 	l->state = ARDOP_LINK_DISC;
 	l->leader_ms = 240;        /* inherited LeaderLength default. */
 	l->reply_leader_ms = 240;  /* inherited intARQDefaultDlyMs default. */
+	l->last_data_to_host = -1;
+	l->last_acked_type = -1;
 }
 
 size_t ardop_link_step(ardop_link *l, const ardop_link_input *in,
@@ -472,9 +558,11 @@ size_t ardop_link_step(ardop_link *l, const ardop_link_input *in,
 		case ARDOP_LINK_IRS_CON_ACK:
 			return step_irs_conack_rx(l, &in->as.rx, now_samples,
 						  actions, max_actions);
+		case ARDOP_LINK_IRS_DATA:
+			return step_irs_data_rx(l, &in->as.rx, now_samples,
+						actions, max_actions);
 		case ARDOP_LINK_ISS_CON_ACK:
 		case ARDOP_LINK_ISS:
-		case ARDOP_LINK_IRS_DATA:
 		case ARDOP_LINK_IDLE:
 		case ARDOP_LINK_IRS_TO_ISS:
 			/* Ported as these states land. */
