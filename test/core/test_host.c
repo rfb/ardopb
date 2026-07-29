@@ -150,6 +150,74 @@ static void test_host_arqcall_connects(void **state)
 	assert_int_equal(g_rt.link.state, ARDOP_LINK_DISC);
 }
 
+/* The binary data channel: TNC->host framing and host->TNC parsing. */
+static void test_host_data_framing(void **state)
+{
+	(void)state;
+
+	/* TNC->host: <2-byte BE (3+len)><tag><payload>. */
+	const uint8_t payload[] = {0xDE, 0xAD, 0xBE, 0xEF};
+	uint8_t out[64];
+	size_t n = ardop_host_data_frame(out, sizeof(out), "ARQ", payload, 4);
+	assert_int_equal(n, 2 + 3 + 4);
+	assert_int_equal(out[0], 0);        /* (3+4) >> 8 */
+	assert_int_equal(out[1], 7);        /* (3+4) & 0xFF */
+	assert_memory_equal(out + 2, "ARQ", 3);
+	assert_memory_equal(out + 5, payload, 4);
+
+	/* A too-small buffer refuses rather than overruns. */
+	assert_int_equal(ardop_host_data_frame(out, 5, "FEC", payload, 4), 0);
+
+	/* host->TNC: <2-byte BE len><payload>. Parse a message plus a trailing
+	 * partial one from a single buffer. */
+	uint8_t stream[] = {
+		0x00, 0x03, 'a', 'b', 'c',   /* complete: len 3 "abc" */
+		0x00, 0x05, 'x', 'y',        /* partial: len 5, only 2 present */
+	};
+	const uint8_t *p;
+	size_t plen, consumed;
+	assert_true(ardop_host_data_parse(stream, sizeof(stream), &p, &plen,
+					  &consumed));
+	assert_int_equal(plen, 3);
+	assert_memory_equal(p, "abc", 3);
+	assert_int_equal(consumed, 5);
+
+	/* After consuming the first, the remainder is incomplete. */
+	assert_false(ardop_host_data_parse(stream + consumed,
+					   sizeof(stream) - consumed, &p, &plen,
+					   &consumed));
+
+	/* A length prefix alone (no payload yet) is incomplete. */
+	uint8_t just_len[] = {0x00, 0x04};
+	assert_false(ardop_host_data_parse(just_len, 2, &p, &plen, &consumed));
+
+	/* A zero-length payload is a complete, empty message. */
+	uint8_t empty[] = {0x00, 0x00};
+	assert_true(ardop_host_data_parse(empty, 2, &p, &plen, &consumed));
+	assert_int_equal(plen, 0);
+	assert_int_equal(consumed, 2);
+}
+
+/* Data arriving on the (parsed) data channel queues into the runtime's TX
+ * buffer via a SEND_DATA link input -- the path the socket layer drives. */
+static void test_host_data_queues_to_runtime(void **state)
+{
+	(void)state;
+	reset();
+
+	uint8_t stream[] = {0x00, 0x05, 'h', 'e', 'l', 'l', 'o'};
+	const uint8_t *p;
+	size_t plen, consumed;
+	assert_true(ardop_host_data_parse(stream, sizeof(stream), &p, &plen,
+					  &consumed));
+
+	ardop_host_cmd sd = {.kind = ARDOP_CMD_SEND_DATA, .data = p,
+			     .data_len = plen};
+	ardop_runtime_host(&g_rt, &sd, 0);
+	assert_int_equal(g_rt.link.tx_len, 5);
+	assert_memory_equal(g_rt.link.tx_data, "hello", 5);
+}
+
 int main(void)
 {
 	const struct CMUnitTest tests[] = {
@@ -157,6 +225,8 @@ int main(void)
 		cmocka_unit_test(test_host_state_and_version),
 		cmocka_unit_test(test_host_actions_guarded_by_mycall),
 		cmocka_unit_test(test_host_arqcall_connects),
+		cmocka_unit_test(test_host_data_framing),
+		cmocka_unit_test(test_host_data_queues_to_runtime),
 	};
 	return cmocka_run_group_tests(tests, NULL, NULL);
 }

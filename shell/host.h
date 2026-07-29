@@ -1,6 +1,7 @@
 #ifndef ARDOP_SHELL_HOST_H_
 #define ARDOP_SHELL_HOST_H_
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -48,5 +49,45 @@
  */
 void ardop_host_command(ardop_runtime *rt, const char *line, uint64_t now,
 			char *reply, size_t cap);
+
+/* --- data channel framing (the second, binary TCP port) ------------------ */
+
+/** Length of the type tag prepended to received data ("ARQ"/"FEC"/...). */
+#define ARDOP_HOST_TAG_LEN 3
+
+/**
+ * @brief Frame received data for the host: `<2-byte BE (3+len)><tag><data>`.
+ *
+ * The TNC->host direction of the data channel, matching
+ * TCPAddTagToDataAndSendToHost. The 2-byte big-endian length counts the 3 tag
+ * bytes plus the payload (not the length bytes themselves).
+ *
+ * @param out   Output buffer.
+ * @param cap   Capacity of @p out.
+ * @param tag   Exactly ::ARDOP_HOST_TAG_LEN characters ("ARQ", "FEC", "ERR", ...).
+ * @param data  Payload bytes.
+ * @param len   Payload length.
+ * @return Total bytes written (2 + 3 + @p len), or 0 if it would not fit.
+ */
+size_t ardop_host_data_frame(uint8_t *out, size_t cap, const char *tag,
+			     const uint8_t *data, size_t len);
+
+/**
+ * @brief Parse one host->TNC data message from the front of a byte stream.
+ *
+ * The host->TNC direction: `<2-byte BE len><len payload bytes>`. On success the
+ * payload is located within @p buf (no copy) and @p consumed gives the whole
+ * message size so the caller can advance past it.
+ *
+ * @param buf          Received bytes.
+ * @param avail        Number valid in @p buf.
+ * @param[out] payload      Set to the payload start within @p buf.
+ * @param[out] payload_len  Set to the payload length.
+ * @param[out] consumed     Set to bytes to drop from the front (2 + payload_len).
+ * @return true if a complete message is present; false if more bytes are needed.
+ */
+bool ardop_host_data_parse(const uint8_t *buf, size_t avail,
+			   const uint8_t **payload, size_t *payload_len,
+			   size_t *consumed);
 
 #endif /* ARDOP_SHELL_HOST_H_ */

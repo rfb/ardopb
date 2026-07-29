@@ -386,3 +386,34 @@ void ardop_host_command(ardop_runtime *rt, const char *line, uint64_t now,
 	 * string the inherited TNC sends. */
 	replyf(reply, cap, "FAULT CMD %s not recoginized", kw);
 }
+
+/* --- data channel framing ------------------------------------------------ */
+
+size_t ardop_host_data_frame(uint8_t *out, size_t cap, const char *tag,
+			     const uint8_t *data, size_t len)
+{
+	size_t total = 2 + ARDOP_HOST_TAG_LEN + len;
+	if (total > cap)
+		return 0;
+	size_t tagged = ARDOP_HOST_TAG_LEN + len;   /* the counted length. */
+	out[0] = (uint8_t)(tagged >> 8);
+	out[1] = (uint8_t)(tagged & 0xFF);
+	memcpy(out + 2, tag, ARDOP_HOST_TAG_LEN);
+	memcpy(out + 2 + ARDOP_HOST_TAG_LEN, data, len);
+	return total;
+}
+
+bool ardop_host_data_parse(const uint8_t *buf, size_t avail,
+			   const uint8_t **payload, size_t *payload_len,
+			   size_t *consumed)
+{
+	if (avail < 2)
+		return false;   /* need the length prefix. */
+	size_t len = ((size_t)buf[0] << 8) | buf[1];
+	if (avail < 2 + len)
+		return false;   /* payload not fully arrived. */
+	*payload = buf + 2;
+	*payload_len = len;
+	*consumed = 2 + len;
+	return true;
+}

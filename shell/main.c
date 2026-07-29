@@ -41,6 +41,7 @@ static const int kRSLens[] = {2, 4, 8, 16, 32, 36, 50, 64};
 /* App context: routes the runtime's callbacks to the backend / host / stdout. */
 struct app {
 	const ardop_platform_ops *ops;
+	ardop_runtime *rt;      /* for reading link mode when tagging data. */
 	ardop_host_tcp *host;   /* NULL unless --host is given. */
 };
 
@@ -59,12 +60,15 @@ static void on_host(void *ctx, const char *msg)
 }
 static void on_data(void *ctx, const uint8_t *d, size_t n)
 {
-	(void)ctx;
+	struct app *a = ctx;
 	printf("[data] %zu bytes:", n);
 	for (size_t i = 0; i < n && i < 32; i++)
 		printf(" %02x", d[i]);
 	printf(n > 32 ? " ...\n" : "\n");
 	fflush(stdout);
+	/* Forward to the data channel, tagged by the mode it arrived under. */
+	const char *tag = a->rt->link.mode == ARDOP_MODE_FEC ? "FEC" : "ARQ";
+	ardop_host_tcp_send_data(a->host, tag, d, n);
 }
 
 static void usage(const char *me)
@@ -159,7 +163,7 @@ int main(int argc, char **argv)
 			cap, play, ptt ? ptt : "(none)");
 	}
 
-	struct app app = {.ops = &ops, .host = NULL};
+	struct app app = {.ops = &ops, .rt = &rt, .host = NULL};
 	if (host_port != 0) {
 		app.host = ardop_host_tcp_open(host_port);
 		if (!app.host) {
