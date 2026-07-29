@@ -22,6 +22,7 @@
 #   tools/loopback.sh down    remove the cables
 #   tools/loopback.sh check   verify the cable carries audio (beacon -> listener)
 #   tools/loopback.sh demo    up, run ardopb<->ardopb (connect + data), down
+#   tools/loopback.sh pipe    up, transfer a file with ardop-tx/ardop-rx, down
 #
 # For a real interop test, `up`, then in two terminals (with the printed env):
 #   ardopcf 8515 b2a_mon a2b -H "MYCALL N0AAA"      # inherited, station A
@@ -154,6 +155,46 @@ PY
 	echo "cables removed."
 }
 
+# Pipe demo: transfer a random file with the ardop-tx / ardop-rx apps over the
+# cables and verify it arrives bit-exact.
+cmd_pipe() {
+	local tx="$HERE/apps/ardop-tx" rx="$HERE/apps/ardop-rx"
+	[ -x "$ARDOPB" ] || { echo "build first: make ardopb" >&2; exit 1; }
+	[ -x "$tx" ] && [ -x "$rx" ] || { echo "build first: make apps" >&2; exit 1; }
+	cmd_up >/dev/null
+	export ALSA_CONFIG_PATH="$CONF"
+	local d; d="$(mktemp -d)"
+	echo "launching two ardopb daemons over the cables..."
+	setsid "$ARDOPB" N0AAA --host 8600 --alsa b2a_mon a2b \
+		>"$d/A.log" 2>&1 </dev/null &
+	setsid "$ARDOPB" N0BBB --listen --host 8700 --alsa a2b_mon b2a \
+		>"$d/B.log" 2>&1 </dev/null &
+	sleep 3
+	head -c 500 /dev/urandom > "$d/in.bin"
+	( "$rx" --host 127.0.0.1:8700 > "$d/out.bin" 2>"$d/rx.err" ) &
+	local rxpid=$!
+	sleep 1
+	echo "transferring 500 bytes N0AAA -> N0BBB over audio..."
+	timeout 120 "$tx" --host 127.0.0.1:8600 N0BBB < "$d/in.bin" \
+		>"$d/tx.err" 2>&1 || true
+	wait "$rxpid" 2>/dev/null || true
+	pkill -9 ardopb 2>/dev/null || true
+	sleep 0.3
+	echo "--- result ---"
+	if cmp -s "$d/in.bin" "$d/out.bin"; then
+		echo "SUCCESS: $(wc -c <"$d/in.bin") bytes transferred bit-exact."
+	else
+		echo "MISMATCH (in $(wc -c <"$d/in.bin") vs out $(wc -c <"$d/out.bin" 2>/dev/null || echo 0) bytes). Logs in $d:"
+		tail -3 "$d/tx.err" "$d/rx.err" 2>/dev/null
+		cmd_down >/dev/null
+		echo "cables removed."
+		return
+	fi
+	rm -rf "$d"
+	cmd_down >/dev/null
+	echo "cables removed."
+}
+
 # Cable sanity check: one station beacons an ID into a2b, another listens on
 # a2b.monitor. If the listener logs a received frame, audio crosses the cable.
 # Isolates "is the virtual cable working" from "does the protocol connect".
@@ -212,5 +253,6 @@ case "${1:-}" in
 	down)  cmd_down ;;
 	demo)  cmd_demo ;;
 	check) cmd_check ;;
+	pipe)  cmd_pipe ;;
 	*)     grep '^#' "$0" | sed 's/^# \{0,1\}//' | head -40; exit 2 ;;
 esac

@@ -39,7 +39,7 @@
 #		sudo apt install mingw-w64
 #		make CC_NATIVE=gcc CC=i686-w64-mingw32-gcc-posix WIN32=1
 
-.PHONY: all buildtest test golden golden-regen golden-core golden-shell golden-tx core check-pure check-headers check-standalone test-core ardopb
+.PHONY: all buildtest test golden golden-regen golden-core golden-shell golden-tx core check-pure check-headers check-standalone test-core ardopb apps
 
 # list all object files and their directories
 # keep sorted by filename
@@ -261,6 +261,21 @@ ARDOPB_OBJS = shell/main.o shell/backend_null.o shell/backend_alsa.o \
 ardopb: $(CORE_OBJS) core/modem/templates.o $(SHELL_OBJS) $(ARDOPB_OBJS)
 	$(CC) $(LDFLAGS) $^ -o $@ -lasound -lm
 
+# `make apps` -- host-client applications built on the TCP host interface: the
+# ardop-tx/ardop-rx pipe utilities and a basic ardop-chat.  They are plain socket
+# clients (no core/ or shell/ objects, no extra libraries), held to the same
+# strict flags; each links the shared apps/hostclient.o.  See apps/README.md.
+APPS = apps/ardop-tx apps/ardop-rx apps/ardop-chat
+
+apps/%.o: apps/%.c
+	$(CC) -Iapps $(CFLAGS) $(CORE_CFLAGS) -c -o $@ $<
+
+apps/ardop-tx:   apps/ardop_tx.o   apps/hostclient.o ; $(CC) $^ -o $@
+apps/ardop-rx:   apps/ardop_rx.o   apps/hostclient.o ; $(CC) $^ -o $@
+apps/ardop-chat: apps/ardop_chat.o apps/hostclient.o ; $(CC) $^ -o $@
+
+apps: $(APPS)
+
 # `make check-pure` enforces the rule that makes core/ testable: no mutable
 # global state.  This is a link-time fact, not a code-review habit -- see
 # core/README.md rule 1.
@@ -427,7 +442,7 @@ test/ardop/test_log: WRAP := fopen fclose fwrite fflush freopen
 # (e.g. adding a field to a struct in a shared header) leaves stale objects with
 # a mismatched struct size -- a memset/overrun crash that only a full rebuild
 # clears.
--include *.d core/*/*.d shell/*.d test/core/*.d
+-include *.d core/*/*.d shell/*.d test/core/*.d apps/*.d
 
 # 'make clean' deletes files produced by the build process.
 # After using git checkout change branches, it is sometimes neccessary to run
