@@ -9,8 +9,12 @@
 
 #include "link/link.h"
 #include "codec/frame.h"
+#include "codec/rs.h"
 #include "codec/stationid.h"
 #include "link/session.h"
+
+static const int kRSLens[] = {2, 4, 8, 16, 32, 36, 50, 64};
+static ardop_rs g_rs;
 
 /*
  * The FSM is proven by scripted input -> action sequences, not by bit-equivalence
@@ -366,6 +370,85 @@ static void test_disc_ping_not_for_us(void **state)
 	assert_string_equal((const char *)notify->data, "CANCELPENDING");
 }
 
+/*
+ * Host CONNECT from DISC: build and send a ConReq encoding our bandwidth and the
+ * callsign pair, become ISS awaiting ConAck, set the session id from the pair,
+ * and arm the 2 s resend. Exercises the ARDOP_IN_HOST input path end-to-end.
+ * Mirrors SendARQConnectRequest (rule 1.1).
+ */
+static void test_host_connect(void **state)
+{
+	(void)state;
+
+	assert_true(ardop_rs_init(&g_rs, kRSLens,
+				  (int)(sizeof kRSLens / sizeof kRSLens[0])));
+
+	ardop_link l;
+	ardop_link_init(&l);
+	assert_int_equal(ardop_stationid_from_str("N0CALL", &l.mycall),
+			 ARDOP_STATIONID_OK);
+	l.bw_setting = ARDOP_ARQ_BW_2000_MAX;
+	l.rs = &g_rs;
+
+	ardop_link_input in = {0};
+	in.kind = ARDOP_IN_HOST;
+	in.as.host.kind = ARDOP_CMD_CONNECT;
+	assert_int_equal(ardop_stationid_from_str("W1ABC", &in.as.host.target),
+			 ARDOP_STATIONID_OK);
+	in.as.host.bandwidth = ARDOP_ARQ_BW_UNDEFINED;  /* use station default */
+
+	uint64_t now = 3000000;
+	ardop_action acts[8];
+	size_t n = ardop_link_step(&l, &in, now, acts, 8);
+
+	const ardop_action *send = find_action(acts, n, ARDOP_ACT_SEND_FRAME);
+	assert_non_null(send);
+	assert_int_equal(send->frame_type, ARDOP_FT_CON_REQ_2000M);
+	assert_int_equal(send->data_len, 18);
+	assert_int_equal(send->data[0], ARDOP_FT_CON_REQ_2000M);
+	/* ConReq always goes out under session 0xFF, not the stored session. */
+	assert_int_equal(send->data[1], ARDOP_FT_CON_REQ_2000M ^ 0xFF);
+
+	/* The 12 data bytes decode back to our call then the target. */
+	ardop_stationid a, b;
+	assert_int_equal(ardop_stationid_from_bytes(send->data + 2, &a),
+			 ARDOP_STATIONID_OK);
+	assert_int_equal(ardop_stationid_from_bytes(
+				 send->data + 2 + ARDOP_PACKED6_SIZE, &b),
+			 ARDOP_STATIONID_OK);
+	assert_string_equal(a.str, "N0CALL");
+	assert_string_equal(b.str, "W1ABC");
+
+	const ardop_action *timer = find_action(acts, n, ARDOP_ACT_SET_TIMER);
+	assert_non_null(timer);
+	assert_int_equal(timer->deadline, now + 2000 * 12);
+
+	assert_int_equal(l.state, ARDOP_LINK_ISS_CON_REQ);
+	assert_true(l.pending);
+	assert_int_equal(l.session_id, ardop_session_id("N0CALL", "W1ABC"));
+}
+
+/* A CONNECT while already connected/connecting is ignored. */
+static void test_host_connect_ignored_when_busy(void **state)
+{
+	(void)state;
+
+	ardop_link l;
+	ardop_link_init(&l);
+	l.state = ARDOP_LINK_ISS;   /* already in a session */
+
+	ardop_link_input in = {0};
+	in.kind = ARDOP_IN_HOST;
+	in.as.host.kind = ARDOP_CMD_CONNECT;
+	assert_int_equal(ardop_stationid_from_str("W1ABC", &in.as.host.target),
+			 ARDOP_STATIONID_OK);
+
+	ardop_action acts[8];
+	size_t n = ardop_link_step(&l, &in, 1000, acts, 8);
+	assert_int_equal(n, 0);
+	assert_int_equal(l.state, ARDOP_LINK_ISS);
+}
+
 int main(void)
 {
 	const struct CMUnitTest tests[] = {
@@ -379,6 +462,8 @@ int main(void)
 		cmocka_unit_test(test_disc_ping_replies),
 		cmocka_unit_test(test_disc_ping_ack_disabled),
 		cmocka_unit_test(test_disc_ping_not_for_us),
+		cmocka_unit_test(test_host_connect),
+		cmocka_unit_test(test_host_connect_ignored_when_busy),
 	};
 	return cmocka_run_group_tests(tests, NULL, NULL);
 }

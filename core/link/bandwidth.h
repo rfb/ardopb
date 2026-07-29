@@ -56,4 +56,17 @@ ARDOP_MUSTUSE uint8_t ardop_negotiate_bandwidth(ardop_arq_bandwidth local,
 						uint8_t con_req_type,
 						int *session_hz);
 
+/**
+ * @brief The ConReq frame type that expresses a bandwidth setting.
+ *
+ * Ported from the type selection in `EncodeARQConRequest`: each setting maps to
+ * the ConReq that encodes its width and its max/forced policy (e.g. a 2000-max
+ * setting requests ConReq2000M). The initiating station puts this on the air.
+ *
+ * @param setting This station's bandwidth setting (not ARDOP_ARQ_BW_UNDEFINED).
+ * @return The ConReq frame type (ARDOP_FT_CON_REQ_*), or 0 if @p setting is
+ *         undefined.
+ */
+ARDOP_MUSTUSE uint8_t ardop_bandwidth_conreq_type(ardop_arq_bandwidth setting);
+
 #endif /* ARDOP_LINK_BANDWIDTH_H_ */

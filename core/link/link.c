@@ -25,6 +25,13 @@
 /** Auto-abort a pending IRS connection after 10 s (ARQ.c tmrIRSPendingTimeout). */
 #define IRS_PENDING_TIMEOUT_MS 10000
 
+/** Resend a ConReq this often while awaiting a ConAck (ARQ.c 2000 ms). */
+#define CONREQ_REPEAT_MS 2000
+
+/** A ConReq frame: 2 header + mycall(6) + target(6) + RS(4). */
+#define CONREQ_LEN 18
+#define CONREQ_RS_LEN 4
+
 /* Append an action if there is room; silently drop past capacity (the caller
  * sizes the array to the proven per-step maximum, so this cannot happen in
  * practice -- it just keeps the port memory-safe). */
@@ -230,6 +237,83 @@ static size_t step_disc_rx(ardop_link *l, const ardop_event *ev,
 	return n;
 }
 
+/* --- host commands ------------------------------------------------------- */
+
+/*
+ * Host CONNECT (ARQCALL): initiate an ARQ session. Build a ConReq encoding our
+ * bandwidth setting and our + the target callsign, become ISS awaiting the
+ * ConAck, set the session id from the callsign pair, and repeat the ConReq
+ * every 2 s until answered. Ported from SendARQConnectRequest (rule 1.1).
+ *
+ * Only initiates from DISC; a CONNECT in any other state is ignored (the shell
+ * disconnects first). The ConReq always goes out under session id 0xFF.
+ */
+static size_t step_host_connect(ardop_link *l, const ardop_host_cmd *cmd,
+				uint64_t now, ardop_action *actions, size_t max)
+{
+	size_t n = 0;
+
+	if (l->state != ARDOP_LINK_DISC)
+		return 0;
+
+	/* A per-call bandwidth overrides the station default when given. */
+	ardop_arq_bandwidth bw = cmd->bandwidth != ARDOP_ARQ_BW_UNDEFINED
+					 ? cmd->bandwidth
+					 : l->bw_setting;
+	uint8_t type = ardop_bandwidth_conreq_type(bw);
+	if (type == 0)
+		return 0;
+
+	l->out_frame[0] = type;
+	l->out_frame[1] = (uint8_t)(type ^ 0xFF);   /* ConReq: session 0xFF. */
+	if (!ardop_stationid_to_buffer(&l->mycall, &l->out_frame[2]))
+		return 0;
+	if (!ardop_stationid_to_buffer(&cmd->target,
+				       &l->out_frame[2 + ARDOP_PACKED6_SIZE]))
+		return 0;
+	if (!l->rs || ardop_rs_append(l->rs, &l->out_frame[2], 12,
+				      CONREQ_RS_LEN) != 0)
+		return 0;
+
+	l->remote = cmd->target;
+	l->local = l->mycall;
+	l->final_id_call = l->mycall;
+	l->session_id = ardop_session_id(l->mycall.str, cmd->target.str);
+	l->pending = true;
+	l->state = ARDOP_LINK_ISS_CON_REQ;
+	l->repeat_interval_ms = CONREQ_REPEAT_MS;
+	l->repeat_deadline = now + ARDOP_MS_TO_SAMPLES(CONREQ_REPEAT_MS);
+
+	ardop_action a = {0};
+	a.kind = ARDOP_ACT_SEND_FRAME;
+	a.frame_type = type;
+	a.data = l->out_frame;
+	a.data_len = CONREQ_LEN;
+	a.leader_ms = l->leader_ms;
+	emit(actions, &n, max, &a);
+
+	set_timer(l, actions, &n, max, l->repeat_deadline);
+	return n;
+}
+
+static size_t step_host(ardop_link *l, const ardop_host_cmd *cmd,
+			uint64_t now, ardop_action *actions, size_t max)
+{
+	switch (cmd->kind) {
+	case ARDOP_CMD_CONNECT:
+		return step_host_connect(l, cmd, now, actions, max);
+	case ARDOP_CMD_DISCONNECT:
+	case ARDOP_CMD_ABORT:
+	case ARDOP_CMD_SEND_DATA:
+	case ARDOP_CMD_SET_MODE:
+	case ARDOP_CMD_FEC_SEND:
+	case ARDOP_CMD_SEND_ID:
+		/* Ported as these commands land. */
+		return 0;
+	}
+	return 0;
+}
+
 /* --- dispatch ------------------------------------------------------------ */
 
 void ardop_link_init(ardop_link *l)
@@ -251,6 +335,7 @@ size_t ardop_link_step(ardop_link *l, const ardop_link_input *in,
 		case ARDOP_LINK_DISC:
 			return step_disc_rx(l, &in->as.rx, now_samples,
 					     actions, max_actions);
+		case ARDOP_LINK_ISS_CON_REQ:
 		case ARDOP_LINK_ISS:
 		case ARDOP_LINK_IRS_CON_ACK:
 		case ARDOP_LINK_IRS_DATA:
@@ -262,8 +347,8 @@ size_t ardop_link_step(ardop_link *l, const ardop_link_input *in,
 		return 0;
 
 	case ARDOP_IN_HOST:
-		/* Ported as host commands land. */
-		return 0;
+		return step_host(l, &in->as.host, now_samples, actions,
+				 max_actions);
 
 	case ARDOP_IN_NONE:
 		/* Timer service ported as timers land. */

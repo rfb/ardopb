@@ -122,3 +122,19 @@ uint8_t ardop_negotiate_bandwidth(ardop_arq_bandwidth local,
 
 	return ARDOP_FT_CON_REJ_BW;
 }
+
+uint8_t ardop_bandwidth_conreq_type(ardop_arq_bandwidth setting)
+{
+	switch (setting) {
+	case ARDOP_ARQ_BW_200_MAX:    return ARDOP_FT_CON_REQ_200M;
+	case ARDOP_ARQ_BW_500_MAX:    return ARDOP_FT_CON_REQ_500M;
+	case ARDOP_ARQ_BW_1000_MAX:   return ARDOP_FT_CON_REQ_1000M;
+	case ARDOP_ARQ_BW_2000_MAX:   return ARDOP_FT_CON_REQ_2000M;
+	case ARDOP_ARQ_BW_200_FORCED: return ARDOP_FT_CON_REQ_200F;
+	case ARDOP_ARQ_BW_500_FORCED: return ARDOP_FT_CON_REQ_500F;
+	case ARDOP_ARQ_BW_1000_FORCED:return ARDOP_FT_CON_REQ_1000F;
+	case ARDOP_ARQ_BW_2000_FORCED:return ARDOP_FT_CON_REQ_2000F;
+	case ARDOP_ARQ_BW_UNDEFINED:  break;
+	}
+	return 0;
+}

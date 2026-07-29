@@ -6,6 +6,7 @@
 #include <stdint.h>
 
 #include "codec/locator.h"
+#include "codec/rs.h"
 #include "codec/stationid.h"
 #include "link/bandwidth.h"
 #include "modem/demodulate.h"
@@ -46,6 +47,7 @@
  */
 typedef enum {
 	ARDOP_LINK_DISC = 0,   /**< Not connected. */
+	ARDOP_LINK_ISS_CON_REQ,/**< Sent a ConReq, awaiting ConAck. */
 	ARDOP_LINK_ISS,        /**< Connected, this station is sending (ISS). */
 	ARDOP_LINK_IRS_CON_ACK,/**< IRS, ConAck sent, awaiting first data. */
 	ARDOP_LINK_IRS_DATA,   /**< IRS, receiving data (steady state). */
@@ -146,6 +148,7 @@ typedef struct {
 	ardop_stationid auxcalls[ARDOP_LINK_MAX_AUX];  /**< Aux callsigns. */
 	size_t n_aux;
 	ardop_locator grid;         /**< Our grid square (for ID frames). */
+	const ardop_rs *rs;         /**< RS context for building/decoding frames. */
 	ardop_arq_bandwidth bw_setting; /**< Our bandwidth setting. */
 	uint16_t leader_ms;         /**< Leader length for transmissions. */
 	uint16_t reply_leader_ms;   /**< Leader for quick ARQ replies (intARQDefaultDlyMs). */
@@ -167,6 +170,8 @@ typedef struct {
 	/* --- timers, as absolute sample deadlines (0 = inactive) --- */
 	uint64_t final_id_deadline; /**< tmrFinalID: when the closing ID may go. */
 	uint64_t pending_deadline;  /**< tmrIRSPendingTimeout: auto-abort a stuck pending. */
+	uint64_t repeat_deadline;   /**< Next resend of the current repeated frame. */
+	uint16_t repeat_interval_ms;/**< Resend interval while repeating (0 = none). */
 
 	/* --- scratch the emitted actions point into (valid until next step) --- */
 	uint8_t out_frame[ARDOP_LINK_OUT_FRAME_MAX];  /**< SEND_FRAME bytes. */
