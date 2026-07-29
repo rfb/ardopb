@@ -1,8 +1,7 @@
-# Build ardopcf and run both test suites.
+# Build ardopb + the host-client apps and run the full verification sweep.
 #
-# The codebase this fork inherits from had no CI at all.  This is step 1 of
-# the adoption order in analysis/08-style-and-tooling.md; steps 3 onward
-# (sanitizers, -flto, -fanalyzer, -Werror, a Windows job) are still open.
+# The whole tree builds at -Wall -Wextra -Werror, so there is nothing to
+# suppress and no warning census to keep -- a failed build IS the census.
 
 name: test
 
@@ -22,26 +21,14 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libasound2-dev libcmocka-dev
 
-      # -Wno-int-conversion works around lib/rawhid/rawhid.c, which assigns
-      # an int fd to a `hid_device *` on Linux.  GCC 14 makes that an error
-      # rather than a warning, so the tree does not build without it.  The
-      # fix is listed in analysis/07-migration-path.md; remove this flag
-      # once it lands.
-      - name: Build
-        run: make CFLAGS="-g -MMD -Wno-int-conversion"
+      - name: Build (ardopb + apps)
+        run: make
 
-      - name: Unit tests
-        run: make CFLAGS="-g -MMD -Wno-int-conversion" test
+      - name: Core guarantees
+        run: make check-pure check-headers check-standalone
 
-      - name: Golden vectors
-        run: make CFLAGS="-g -MMD -Wno-int-conversion" golden
+      - name: Unit and integration tests
+        run: make test-core
 
-      # Non-blocking: report the current warning count so it is visible and
-      # can be driven down, without failing the build on day one.
-      - name: Warning census
-        continue-on-error: true
-        run: |
-          make clean
-          make CFLAGS="-g -MMD -Wno-int-conversion -Wall -Wextra" 2>&1 \
-            | tee build.log | grep -c "warning:" \
-            | xargs -I{} echo "::notice::{} warnings under -Wall -Wextra"
+      - name: Golden-corpus conformance
+        run: make golden-core golden-shell golden-tx
