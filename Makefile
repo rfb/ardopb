@@ -39,7 +39,7 @@
 #		sudo apt install mingw-w64
 #		make CC_NATIVE=gcc CC=i686-w64-mingw32-gcc-posix WIN32=1
 
-.PHONY: all buildtest test golden golden-regen golden-core core check-pure check-headers test-core ardop2
+.PHONY: all buildtest test golden golden-regen golden-core core check-pure check-headers test-core ardopb
 
 # list all object files and their directories
 # keep sorted by filename
@@ -240,13 +240,13 @@ shell/backend_alsa.o: shell/backend_alsa.c
 # `make core` builds the rebuilt layers.
 core: $(CORE_OBJS) $(SHELL_OBJS)
 
-# `make ardop2` -- the rebuilt program: the pure core, a platform backend, one
+# `make ardopb` -- the rebuilt program: the pure core, a platform backend, one
 # loop (analysis/13 W2).  Links only core/ + shell/, no src/.  The ALSA backend
 # talks to real hardware and is not in the test suite (which uses the fake
 # platform); the null backend gives a hardware-free smoke path.  (Defined here,
 # below SHELL_OBJS, because make expands a rule's prerequisites as it reads them.)
-ARDOP2_OBJS = shell/main.o shell/backend_null.o shell/backend_alsa.o
-ardop2: $(CORE_OBJS) core/modem/templates.o $(SHELL_OBJS) $(ARDOP2_OBJS)
+ARDOPB_OBJS = shell/main.o shell/backend_null.o shell/backend_alsa.o
+ardopb: $(CORE_OBJS) core/modem/templates.o $(SHELL_OBJS) $(ARDOPB_OBJS)
 	$(CC) $(LDFLAGS) $^ -o $@ -lasound -lm
 
 # `make check-pure` enforces the rule that makes core/ testable: no mutable

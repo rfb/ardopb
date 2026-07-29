@@ -25,7 +25,7 @@
  * only chooses a backend and turns the crank.
  *
  * Usage:
- *   ardop2 MYCALL [--listen] [--id]
+ *   ardopb MYCALL [--listen] [--id]
  *          [--null [SECONDS] | --alsa CAPTURE PLAYBACK [--ptt SERIAL]]
  *
  * --id sends one ID frame at startup (a beacon), which with --null is a
