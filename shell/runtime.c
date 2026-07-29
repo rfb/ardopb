@@ -14,6 +14,41 @@
 /** Events one demod push can emit. */
 #define MAX_EVENTS 8
 
+/* Fan one observation out to every registered observer. */
+static void emit(ardop_runtime *rt, const ardop_obs *o)
+{
+	for (int i = 0; i < rt->n_observers; i++)
+		rt->observers[i].fn(rt->observers[i].ctx, o);
+}
+
+/* Emit the changes in the link's observable state since the last check. Called
+ * after every step, so a state/mode/bandwidth/buffer change surfaces exactly
+ * once regardless of which input caused it. */
+static void emit_state_diffs(ardop_runtime *rt)
+{
+	const ardop_link *l = &rt->link;
+
+	if (l->state != rt->last_state) {
+		rt->last_state = l->state;
+		emit(rt, &(ardop_obs){.kind = ARDOP_OBS_STATE, .state = l->state,
+				      .remote = l->remote.str});
+	}
+	if (l->mode != rt->last_mode) {
+		rt->last_mode = l->mode;
+		emit(rt, &(ardop_obs){.kind = ARDOP_OBS_MODE, .mode = l->mode});
+	}
+	if (l->session_bw != rt->last_bw) {
+		rt->last_bw = l->session_bw;
+		emit(rt, &(ardop_obs){.kind = ARDOP_OBS_BANDWIDTH,
+				      .bandwidth = l->session_bw});
+	}
+	if (l->tx_len != rt->last_buffer) {
+		rt->last_buffer = l->tx_len;
+		emit(rt, &(ardop_obs){.kind = ARDOP_OBS_BUFFER,
+				      .buffer_len = l->tx_len});
+	}
+}
+
 /* Begin modulating a frame to transmit, keying PTT. */
 static void start_tx(ardop_runtime *rt, uint8_t frame_type,
 		     const uint8_t *encoded, size_t len, uint16_t leader_ms)
@@ -23,10 +58,11 @@ static void start_tx(ardop_runtime *rt, uint8_t frame_type,
 			     rt->tx_samples, ARDOP_MOD_MAX_SAMPLES))
 		return;   /* unsupported/oversized frame: drop it. */
 	rt->tx_active = true;
+	emit(rt, &(ardop_obs){.kind = ARDOP_OBS_TX_FRAME,
+			      .frame_type = frame_type});
 	if (!rt->ptt_keyed) {
 		rt->ptt_keyed = true;
-		if (rt->on_ptt)
-			rt->on_ptt(rt->ctx, true);
+		emit(rt, &(ardop_obs){.kind = ARDOP_OBS_PTT, .key = true});
 	}
 }
 
@@ -38,12 +74,14 @@ static void perform(ardop_runtime *rt, const ardop_action *a)
 		start_tx(rt, a->frame_type, a->data, a->data_len, a->leader_ms);
 		break;
 	case ARDOP_ACT_NOTIFY_HOST:
-		if (rt->on_host)
-			rt->on_host(rt->ctx, (const char *)a->data);
+		emit(rt, &(ardop_obs){.kind = ARDOP_OBS_HOST_MSG,
+				      .text = (const char *)a->data});
 		break;
 	case ARDOP_ACT_DELIVER_DATA:
-		if (rt->on_data)
-			rt->on_data(rt->ctx, a->data, a->data_len);
+		emit(rt, &(ardop_obs){
+			.kind = ARDOP_OBS_RX_DATA,
+			.tag = rt->link.mode == ARDOP_MODE_FEC ? "FEC" : "ARQ",
+			.data = a->data, .data_len = a->data_len});
 		break;
 	case ARDOP_ACT_SET_TIMER:
 		/* The link re-checks its own deadlines on every NONE step, so
@@ -54,7 +92,8 @@ static void perform(ardop_runtime *rt, const ardop_action *a)
 	}
 }
 
-/* Step the link with one input and perform every resulting action. */
+/* Step the link with one input, perform every resulting action, then surface
+ * any state change. */
 static void step_and_perform(ardop_runtime *rt, const ardop_link_input *in,
 			     uint64_t now)
 {
@@ -62,6 +101,16 @@ static void step_and_perform(ardop_runtime *rt, const ardop_link_input *in,
 	size_t na = ardop_link_step(&rt->link, in, now, acts, MAX_ACTIONS);
 	for (size_t i = 0; i < na; i++)
 		perform(rt, &acts[i]);
+	emit_state_diffs(rt);
+}
+
+void ardop_runtime_observe(ardop_runtime *rt, ardop_observer_fn fn, void *ctx)
+{
+	if (rt->n_observers >= ARDOP_MAX_OBSERVERS)
+		return;
+	rt->observers[rt->n_observers].fn = fn;
+	rt->observers[rt->n_observers].ctx = ctx;
+	rt->n_observers++;
 }
 
 bool ardop_runtime_init(ardop_runtime *rt, const int *rslens, int n_rs)
@@ -85,6 +134,13 @@ bool ardop_runtime_init(ardop_runtime *rt, const int *rslens, int n_rs)
 	rt->demod.ft_ctx.valid_len = rt->valid_len;
 	rt->demod.ft_ctx.rxo = true;   /* session-independent frame-type decode. */
 
+	/* The state-diff baseline matches the freshly-initialised link, so the
+	 * first real change is what surfaces (not the initial values). */
+	rt->last_state = rt->link.state;
+	rt->last_mode = rt->link.mode;
+	rt->last_bw = rt->link.session_bw;
+	rt->last_buffer = rt->link.tx_len;
+
 	return true;
 }
 
@@ -96,11 +152,21 @@ void ardop_runtime_rx(ardop_runtime *rt, const int16_t *samples, size_t n,
 	size_t ne = ardop_demod_push(&rt->demod, samples, n, now_samples,
 				     events, MAX_EVENTS);
 	for (size_t e = 0; e < ne; e++) {
-		if (events[e].kind == ARDOP_EV_LEADER_DETECTED)
-			continue;
+		const ardop_event *ev = &events[e];
+		if (ev->kind == ARDOP_EV_FRAME_DECODED)
+			emit(rt, &(ardop_obs){.kind = ARDOP_OBS_RX_FRAME,
+					      .frame_type = ev->frame_type,
+					      .quality = ev->quality,
+					      .sn = ev->sn});
+		else if (ev->kind == ARDOP_EV_FRAME_BAD)
+			emit(rt, &(ardop_obs){.kind = ARDOP_OBS_RX_FRAME_BAD,
+					      .frame_type = ev->frame_type});
+		else
+			continue;   /* LEADER_DETECTED: not a link input. */
+
 		ardop_link_input in = {0};
 		in.kind = ARDOP_IN_RX;
-		in.as.rx = events[e];
+		in.as.rx = *ev;
 		step_and_perform(rt, &in, now_samples);
 	}
 }
@@ -141,8 +207,7 @@ size_t ardop_runtime_pull_tx(ardop_runtime *rt, int16_t *out, size_t max)
 		if (rt->tx_active)
 			return ardop_runtime_pull_tx(rt, out, max);
 		rt->ptt_keyed = false;
-		if (rt->on_ptt)
-			rt->on_ptt(rt->ctx, false);
+		emit(rt, &(ardop_obs){.kind = ARDOP_OBS_PTT, .key = false});
 	}
 	return n;
 }

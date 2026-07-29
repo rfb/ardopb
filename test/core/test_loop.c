@@ -99,26 +99,31 @@ static bool plat_poll_host(void *ctx, ardop_host_cmd *out)
 	return true;
 }
 
-/* --- runtime callbacks (also take the station as ctx) -------------------- */
+/* --- runtime observer (takes the station as ctx) ------------------------- */
 
-static void on_host(void *ctx, const char *msg)
+/* One observer: captures host/data and routes PTT to the platform the way a
+ * real backend wires it (observation -> device). */
+static void observe(void *ctx, const ardop_obs *o)
 {
 	struct station *s = ctx;
-	snprintf(s->host, sizeof(s->host), "%s", msg);
-}
-static void on_data(void *ctx, const uint8_t *d, size_t n)
-{
-	struct station *s = ctx;
-	if (n > sizeof(s->data))
-		n = sizeof(s->data);
-	memcpy(s->data, d, n);
-	s->data_len = n;
-}
-/* PTT routed the way a real backend does: runtime callback -> platform. */
-static void on_ptt(void *ctx, bool key)
-{
-	struct station *s = ctx;
-	s->plat.set_ptt(s, key);
+	switch (o->kind) {
+	case ARDOP_OBS_HOST_MSG:
+		snprintf(s->host, sizeof(s->host), "%s", o->text);
+		break;
+	case ARDOP_OBS_RX_DATA: {
+		size_t n = o->data_len;
+		if (n > sizeof(s->data))
+			n = sizeof(s->data);
+		memcpy(s->data, o->data, n);
+		s->data_len = n;
+		break;
+	}
+	case ARDOP_OBS_PTT:
+		s->plat.set_ptt(s, o->key);
+		break;
+	default:
+		break;
+	}
 }
 
 static void station_init(struct station *s, const char *call, bool listening,
@@ -130,10 +135,7 @@ static void station_init(struct station *s, const char *call, bool listening,
 			 ARDOP_STATIONID_OK);
 	s->rt.link.bw_setting = ARDOP_ARQ_BW_2000_MAX;
 	s->rt.link.listening = listening;
-	s->rt.on_host = on_host;
-	s->rt.on_data = on_data;
-	s->rt.on_ptt = on_ptt;
-	s->rt.ctx = s;
+	ardop_runtime_observe(&s->rt, observe, s);
 
 	s->tx_air = tx_air;
 	s->rx_air = rx_air;

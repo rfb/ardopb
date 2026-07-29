@@ -34,29 +34,35 @@ struct capture {
 	int frames;          /* number of DELIVER_DATA callbacks. */
 };
 
-static void on_host(void *ctx, const char *msg)
+/* One observer, capturing the host/data/ptt observations the old three
+ * callbacks did. */
+static void observe(void *ctx, const ardop_obs *o)
 {
 	struct capture *c = ctx;
-	snprintf(c->host, sizeof(c->host), "%s", msg);
-}
-static void on_data(void *ctx, const uint8_t *d, size_t n)
-{
-	struct capture *c = ctx;
-	if (n > sizeof(c->data))
-		n = sizeof(c->data);
-	memcpy(c->data, d, n);
-	c->data_len = n;
-	c->frames++;
-	if (c->acc_len + n <= sizeof(c->acc)) {
-		memcpy(c->acc + c->acc_len, d, n);
-		c->acc_len += n;
+	switch (o->kind) {
+	case ARDOP_OBS_HOST_MSG:
+		snprintf(c->host, sizeof(c->host), "%s", o->text);
+		break;
+	case ARDOP_OBS_RX_DATA: {
+		size_t n = o->data_len;
+		if (n > sizeof(c->data))
+			n = sizeof(c->data);
+		memcpy(c->data, o->data, n);
+		c->data_len = n;
+		c->frames++;
+		if (c->acc_len + n <= sizeof(c->acc)) {
+			memcpy(c->acc + c->acc_len, o->data, n);
+			c->acc_len += n;
+		}
+		break;
 	}
-}
-static void on_ptt(void *ctx, bool key)
-{
-	struct capture *c = ctx;
-	c->ptt = key;
-	c->ptt_edges++;
+	case ARDOP_OBS_PTT:
+		c->ptt = o->key;
+		c->ptt_edges++;
+		break;
+	default:
+		break;
+	}
 }
 
 static uint64_t g_now = 1000000;
@@ -70,10 +76,7 @@ static void setup(ardop_runtime *rt, struct capture *cap, const char *call,
 	rt->link.bw_setting = ARDOP_ARQ_BW_2000_MAX;
 	rt->link.listening = listening;
 	memset(cap, 0, sizeof(*cap));
-	rt->on_host = on_host;
-	rt->on_data = on_data;
-	rt->on_ptt = on_ptt;
-	rt->ctx = cap;
+	ardop_runtime_observe(rt, observe, cap);
 }
 
 /* Carry @p tx's in-progress transmission to @p rx: drain transmit samples and

@@ -26,7 +26,7 @@
  * only chooses a backend and turns the crank.
  *
  * Usage:
- *   ardopb MYCALL [--listen] [--id] [--host PORT]
+ *   ardopb MYCALL [--listen] [--id] [--trace] [--host PORT]
  *          [--null [SECONDS] | --alsa CAPTURE PLAYBACK [--ptt SERIAL]]
  *
  * --id sends one ID frame at startup (a beacon), which with --null is a
@@ -38,43 +38,78 @@
 static const int kRSLens[] = {2, 4, 8, 16, 32, 36, 50, 64};
 #define NUM_RSLENS ((int)(sizeof kRSLens / sizeof kRSLens[0]))
 
-/* App context: routes the runtime's callbacks to the backend / host / stdout. */
+/* App context: routes the one observation stream to the backend / host / stdout. */
 struct app {
 	const ardop_platform_ops *ops;
-	ardop_runtime *rt;      /* for reading link mode when tagging data. */
 	ardop_host_tcp *host;   /* NULL unless --host is given. */
+	bool trace;             /* --trace: print every observation. */
 };
 
-static void on_ptt(void *ctx, bool key)
-{
-	const struct app *a = ctx;
-	if (a->ops->set_ptt)
-		a->ops->set_ptt(a->ops->ctx, key);
-}
-static void on_host(void *ctx, const char *msg)
+/* The single observer: performs the side-effects (PTT to the backend, host
+ * messages and data to the TCP client) and, under --trace, logs everything. */
+static void app_observe(void *ctx, const ardop_obs *o)
 {
 	struct app *a = ctx;
-	printf("[host] %s\n", msg);
-	fflush(stdout);
-	ardop_host_tcp_notify(a->host, msg);   /* no-op if not connected. */
-}
-static void on_data(void *ctx, const uint8_t *d, size_t n)
-{
-	struct app *a = ctx;
-	printf("[data] %zu bytes:", n);
-	for (size_t i = 0; i < n && i < 32; i++)
-		printf(" %02x", d[i]);
-	printf(n > 32 ? " ...\n" : "\n");
-	fflush(stdout);
-	/* Forward to the data channel, tagged by the mode it arrived under. */
-	const char *tag = a->rt->link.mode == ARDOP_MODE_FEC ? "FEC" : "ARQ";
-	ardop_host_tcp_send_data(a->host, tag, d, n);
+
+	switch (o->kind) {
+	case ARDOP_OBS_PTT:
+		if (a->ops->set_ptt)
+			a->ops->set_ptt(a->ops->ctx, o->key);
+		if (a->trace)
+			fprintf(stderr, "[obs] ptt %s\n", o->key ? "key" : "unkey");
+		break;
+	case ARDOP_OBS_HOST_MSG:
+		printf("[host] %s\n", o->text);
+		fflush(stdout);
+		ardop_host_tcp_notify(a->host, o->text);   /* no-op if unconnected. */
+		break;
+	case ARDOP_OBS_RX_DATA:
+		printf("[data] %s %zu bytes\n", o->tag, o->data_len);
+		fflush(stdout);
+		ardop_host_tcp_send_data(a->host, o->tag, o->data, o->data_len);
+		break;
+	case ARDOP_OBS_STATE:
+		if (a->trace)
+			fprintf(stderr, "[obs] state=%d remote=%s\n", o->state,
+				o->remote);
+		break;
+	case ARDOP_OBS_MODE:
+		if (a->trace)
+			fprintf(stderr, "[obs] mode=%d\n", o->mode);
+		break;
+	case ARDOP_OBS_BANDWIDTH:
+		if (a->trace)
+			fprintf(stderr, "[obs] bandwidth=%d\n", o->bandwidth);
+		break;
+	case ARDOP_OBS_RX_FRAME:
+		if (a->trace)
+			fprintf(stderr, "[obs] rx frame 0x%02x q=%d sn=%d\n",
+				o->frame_type, o->quality, o->sn);
+		break;
+	case ARDOP_OBS_RX_FRAME_BAD:
+		if (a->trace)
+			fprintf(stderr, "[obs] rx frame 0x%02x FAILED\n",
+				o->frame_type);
+		break;
+	case ARDOP_OBS_TX_FRAME:
+		if (a->trace)
+			fprintf(stderr, "[obs] tx frame 0x%02x\n", o->frame_type);
+		break;
+	case ARDOP_OBS_BUSY:
+		if (a->trace)
+			fprintf(stderr, "[obs] busy=%s\n", o->busy ? "yes" : "no");
+		break;
+	case ARDOP_OBS_BUFFER:
+		if (a->trace)
+			fprintf(stderr, "[obs] buffer=%zu\n", o->buffer_len);
+		break;
+	}
 }
 
 static void usage(const char *me)
 {
 	fprintf(stderr,
-		"usage: %s MYCALL [--listen] [--id] [--host PORT]\n"
+		"usage: %s MYCALL [--listen] [--id] [--trace] [--host PORT]\n"
 		"       [--null [SECONDS] | --alsa CAPTURE PLAYBACK [--ptt SERIAL]]\n",
 		me);
 }
@@ -87,7 +122,7 @@ int main(int argc, char **argv)
 	}
 	const char *mycall = argv[1];
 
-	bool listen = false, send_id = false, use_null = true;
+	bool listen = false, send_id = false, use_null = true, trace = false;
 	uint64_t null_seconds = 5;
 	const char *cap = NULL, *play = NULL, *ptt = NULL;
 	uint16_t host_port = 0;
@@ -97,6 +132,8 @@ int main(int argc, char **argv)
 			listen = true;
 		} else if (!strcmp(argv[i], "--id")) {
 			send_id = true;
+		} else if (!strcmp(argv[i], "--trace")) {
+			trace = true;
 		} else if (!strcmp(argv[i], "--null")) {
 			use_null = true;
 			if (i + 1 < argc && argv[i + 1][0] != '-')
@@ -163,7 +200,9 @@ int main(int argc, char **argv)
 			cap, play, ptt ? ptt : "(none)");
 	}
 
-	struct app app = {.ops = &ops, .rt = &rt, .host = NULL};
+	static struct app app;
+	app.ops = &ops;
+	app.trace = trace;
 	if (host_port != 0) {
 		app.host = ardop_host_tcp_open(host_port);
 		if (!app.host) {
@@ -172,10 +211,7 @@ int main(int argc, char **argv)
 			return 1;
 		}
 	}
-	rt.ctx = &app;
-	rt.on_ptt = on_ptt;
-	rt.on_host = on_host;
-	rt.on_data = on_data;
+	ardop_runtime_observe(&rt, app_observe, &app);
 
 	if (send_id) {
 		ardop_host_cmd id = {0};
