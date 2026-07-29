@@ -115,6 +115,105 @@ static const ardop_action *find_send(const ardop_action *acts, size_t n)
 }
 
 /*
+ * Run the four-message handshake so @p a is the connected ISS (with an empty
+ * queue, so it has fallen to IDLE) and @p b is the connected IRS. Returns @p a's
+ * last SEND_FRAME (the IDLE keep-alive).
+ */
+static const ardop_action *establish(struct station *a, struct station *b,
+				     ardop_action *acts, size_t max)
+{
+	ardop_link_input cmd = {0};
+	cmd.kind = ARDOP_IN_HOST;
+	cmd.as.host.kind = ARDOP_CMD_CONNECT;
+	assert_int_equal(ardop_stationid_from_str(b->link.mycall.str,
+						  &cmd.as.host.target),
+			 ARDOP_STATIONID_OK);
+	cmd.as.host.bandwidth = ARDOP_ARQ_BW_UNDEFINED;
+	size_t n = ardop_link_step(&a->link, &cmd, g_now, acts, max);
+	const ardop_action *send = find_send(acts, n);
+
+	n = hop(b, send, acts, max);          /* ConReq -> B: ConAck */
+	send = find_send(acts, n);
+	n = hop(a, send, acts, max);          /* ConAck -> A: ConAck */
+	send = find_send(acts, n);
+	n = hop(b, send, acts, max);          /* ConAck -> B: DataACK */
+	send = find_send(acts, n);
+	n = hop(a, send, acts, max);          /* DataACK -> A: IDLE (no data) */
+	send = find_send(acts, n);
+
+	assert_int_equal(a->link.state, ARDOP_LINK_IDLE);
+	assert_int_equal(b->link.state, ARDOP_LINK_IRS_DATA);
+	assert_non_null(send);
+	assert_int_equal(send->frame_type, ARDOP_FT_IDLE);
+	return send;
+}
+
+static ardop_link_input host_send_data(const uint8_t *data, size_t len)
+{
+	ardop_link_input in = {0};
+	in.kind = ARDOP_IN_HOST;
+	in.as.host.kind = ARDOP_CMD_SEND_DATA;
+	in.as.host.data = data;
+	in.as.host.data_len = len;
+	return in;
+}
+
+/*
+ * Link turnover over the loopback. A is the connected ISS (idle); B, the IRS,
+ * has data and AutoBreak. When A's IDLE reaches B, B BREAKs to take the link; A
+ * yields; B becomes ISS and sends its data, which A -- now the IRS -- receives.
+ * Exercises the IRStoISS/IRSfromISS handover analysis/02 flagged, end to end.
+ */
+static void test_loopback_turnover(void **state)
+{
+	(void)state;
+
+	static struct station a, b;
+	station_init(&a, "N0AAA", false);
+	station_init(&b, "N0BBB", true);
+
+	ardop_action acts[16];
+	const ardop_action *send = establish(&a, &b, acts, 16);
+
+	/* B queues data and will break automatically. */
+	b.link.auto_break = true;
+	const uint8_t reply[] = "Now I have something to say.";
+	int rlen = (int)sizeof(reply) - 1;
+	ardop_link_input q = host_send_data(reply, (size_t)rlen);
+	(void)ardop_link_step(&b.link, &q, g_now, acts, 16);
+
+	/* A's IDLE -> B: B breaks and enters IRS_TO_ISS. */
+	size_t n = hop(&b, send, acts, 16);
+	assert_int_equal(b.link.state, ARDOP_LINK_IRS_TO_ISS);
+	send = find_send(acts, n);
+	assert_non_null(send);
+	assert_int_equal(send->frame_type, ARDOP_FT_BREAK);
+
+	/* B's BREAK -> A: A yields the link (ACK) and settles into IRS_FROM_ISS. */
+	n = hop(&a, send, acts, 16);
+	assert_int_equal(a.link.state, ARDOP_LINK_IRS_FROM_ISS);
+	send = find_send(acts, n);
+	assert_non_null(send);   /* the DataACK. */
+
+	/* A's ACK -> B: turnover complete, B is ISS and sends its data. */
+	n = hop(&b, send, acts, 16);
+	assert_int_equal(b.link.state, ARDOP_LINK_ISS);
+	send = find_send(acts, n);
+	assert_non_null(send);
+
+	/* B's data -> A: A (now IRS) delivers it and ACKs; the handover settled. */
+	n = hop(&a, send, acts, 16);
+	const ardop_action *deliver = NULL;
+	for (size_t i = 0; i < n; i++)
+		if (acts[i].kind == ARDOP_ACT_DELIVER_DATA)
+			deliver = &acts[i];
+	assert_non_null(deliver);
+	assert_int_equal(deliver->data_len, rlen);
+	assert_memory_equal(deliver->data, reply, (size_t)rlen);
+	assert_int_equal(a.link.state, ARDOP_LINK_IRS_DATA);
+}
+
+/*
  * A full ARQ session over the loopback: A connects to B, B answers, they
  * complete the four-message handshake, A sends a block of data that B delivers
  * to its host, and A disconnects. Every frame really goes through modulate +
@@ -220,6 +319,7 @@ int main(void)
 {
 	const struct CMUnitTest tests[] = {
 		cmocka_unit_test(test_loopback_connect_data_disconnect),
+		cmocka_unit_test(test_loopback_turnover),
 	};
 	return cmocka_run_group_tests(tests, NULL, NULL);
 }

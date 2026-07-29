@@ -579,6 +579,27 @@ static size_t step_timer(ardop_link *l, uint64_t now, ardop_action *actions,
  * frame (data or IDLE). Ported from the ISS ConAck+DataACK arm of
  * ProcessRcvdARQFrame.
  */
+/* Initialise the gear-shift ladder and counters to begin sending as the ISS.
+ * Shared by the connect-time start and the BREAK-driven turnover. */
+static void iss_begin_sending(ardop_link *l)
+{
+	l->last_data_acked = 1;   /* odd -> first data frame is even. */
+	l->avg_quality = 0;
+	l->modes = ardop_data_modes(l->session_bw, l->fsk_only,
+				    l->tuning_range, l->use_600_modes,
+				    &l->modes_len);
+	l->thresholds = ardop_shift_up_thresholds(l->session_bw,
+						  l->tuning_range,
+						  l->use_600_modes);
+	l->mode_ptr = 0;
+	l->ack_ctr = 0;
+	l->nak_ctr = 0;
+	l->shift_up_dn = 0;
+	memset(l->mode_has_worked, 0, sizeof(l->mode_has_worked));
+	memset(l->mode_has_been_tried, 0, sizeof(l->mode_has_been_tried));
+	memset(l->mode_naks, 0, sizeof(l->mode_naks));
+}
+
 static size_t step_iss_conack_rx(ardop_link *l, const ardop_event *ev,
 				 uint64_t now, ardop_action *actions, size_t max)
 {
@@ -589,21 +610,7 @@ static size_t step_iss_conack_rx(ardop_link *l, const ardop_event *ev,
 
 	if (ev->frame_type >= ARDOP_FRAME_DATA_ACK_MIN) {
 		l->pending = false;
-		l->last_data_acked = 1;   /* odd -> first data frame is even. */
-		l->avg_quality = 0;
-		l->modes = ardop_data_modes(l->session_bw, l->fsk_only,
-					    l->tuning_range, l->use_600_modes,
-					    &l->modes_len);
-		l->thresholds = ardop_shift_up_thresholds(l->session_bw,
-							  l->tuning_range,
-							  l->use_600_modes);
-		l->mode_ptr = 0;
-		l->ack_ctr = 0;
-		l->nak_ctr = 0;
-		l->shift_up_dn = 0;
-		memset(l->mode_has_worked, 0, sizeof(l->mode_has_worked));
-		memset(l->mode_has_been_tried, 0, sizeof(l->mode_has_been_tried));
-		memset(l->mode_naks, 0, sizeof(l->mode_naks));
+		iss_begin_sending(l);
 
 		char msg[64];
 		snprintf(msg, sizeof(msg), "CONNECTED %s %d", l->remote.str,
@@ -618,6 +625,20 @@ static size_t step_iss_conack_rx(ardop_link *l, const ardop_event *ev,
 }
 
 /* --- ISS: connected, sending data ---------------------------------------- */
+
+/* The IRS sent BREAK: discard our unsent queue, ACK the break, and yield the
+ * link, becoming IRS (settling out of IRS_FROM_ISS on the first frame received).
+ * SaveQueueOnBreak (letting the app restore the data) is dropped. Applies whether
+ * we were actively sending (ISS) or idling (IDLE). */
+static void iss_yield_on_break(ardop_link *l, ardop_action *actions, size_t *n,
+			       size_t max)
+{
+	l->tx_len = 0;
+	l->outstanding_len = 0;
+	l->last_data_to_host = -1;
+	l->state = ARDOP_LINK_IRS_FROM_ISS;
+	send_control(l, actions, n, max, ardop_quality_to_ack_type(100));
+}
 
 /*
  * Connected and sending. On a DataACK the outstanding frame's bytes are
@@ -637,6 +658,12 @@ static size_t step_iss_data_rx(ardop_link *l, const ardop_event *ev,
 
 	if (connected_teardown(l, ev, now, actions, &n, max))
 		return n;
+
+	/* BREAK from the IRS: yield the link. */
+	if (ev->frame_type == ARDOP_FT_BREAK) {
+		iss_yield_on_break(l, actions, &n, max);
+		return n;
+	}
 
 	/* DataACK: confirm and advance. */
 	if (ev->frame_type >= ARDOP_FRAME_DATA_ACK_MIN) {
@@ -688,6 +715,12 @@ static size_t step_idle_rx(ardop_link *l, const ardop_event *ev, uint64_t now,
 
 	if (connected_teardown(l, ev, now, actions, &n, max))
 		return n;
+
+	/* BREAK from the IRS while we idle: yield the link. */
+	if (ev->frame_type == ARDOP_FT_BREAK) {
+		iss_yield_on_break(l, actions, &n, max);
+		return n;
+	}
 
 	if (ev->frame_type >= ARDOP_FRAME_DATA_ACK_MIN) {
 		if (l->tx_len > 0)
@@ -765,31 +798,75 @@ static void deliver_data(ardop_link *l, ardop_action *actions, size_t *n,
 	emit(actions, n, max, &a);
 }
 
+/* Request the link: send BREAK and enter IRS_TO_ISS, repeating BREAK until the
+ * ISS acknowledges. The original randomises the repeat interval to dodge
+ * collisions (ComputeInterFrameInterval(1000 + rand()%2000)); the pure core uses
+ * a fixed interval instead -- determinism over collision-jitter. (Rule 3.4.) */
+static void send_break(ardop_link *l, uint64_t now, ardop_action *actions,
+		       size_t *n, size_t max)
+{
+	send_control(l, actions, n, max, ARDOP_FT_BREAK);
+	l->state = ARDOP_LINK_IRS_TO_ISS;
+	l->break_pending = false;
+	l->repeat_interval_ms = 2000;
+	arm_repeat(l, ARDOP_FT_BREAK, 2, now);
+}
+
 /*
  * Connected and receiving. A good data frame is delivered to the host unless it
  * repeats the last one delivered (the even/odd type alternation makes a genuine
  * retransmission share its type), and is always ACKed with the decode quality --
  * the ISS may have missed the previous ACK. A failed decode is re-ACKed if it
  * matches the last frame already delivered, else NAKed. A DISC ends the session.
- * Ported from ProcessRcvdARQFrame's IRS/IRSData arm. The BREAK turnover and the
- * IRSfromISS substate are not yet ported (they need the host BREAK command).
+ *
+ * If we hold data and a break was requested (host BREAK) or is automatic, we
+ * BREAK to take the link -- on a new data frame (rule 3.4) or when the ISS goes
+ * IDLE. This handler also serves the IRS_FROM_ISS settling state, which cannot
+ * break until it has received a frame (rule 3.5). Ported from the IRS/IRSData +
+ * IRSfromISS arm of ProcessRcvdARQFrame.
  */
 static size_t step_irs_data_rx(ardop_link *l, const ardop_event *ev,
 			       uint64_t now, ardop_action *actions, size_t max)
 {
 	size_t n = 0;
+	bool can_break = (l->state == ARDOP_LINK_IRS_DATA);
 
 	if (connected_teardown(l, ev, now, actions, &n, max))
 		return n;
 
-	/* A good data frame: deliver if new, always ACK. */
+	/* The ISS is idle: if we have data queued and want the link, BREAK;
+	 * otherwise keep the link alive with an ACK. */
+	if (ev->kind == ARDOP_EV_FRAME_DECODED
+	    && ev->frame_type == ARDOP_FT_IDLE) {
+		if (can_break && l->tx_len > 0
+		    && (l->break_pending || l->auto_break)) {
+			send_break(l, now, actions, &n, max);
+			return n;
+		}
+		send_control(l, actions, &n, max,
+			     ardop_quality_to_ack_type(ev->quality));
+		return n;
+	}
+
+	/* A good data frame. */
 	if (ev->kind == ARDOP_EV_FRAME_DECODED
 	    && ardop_frame_is_data(ev->frame_type)) {
+		/* Requested a break: send it on a new (still-unacked) frame,
+		 * before ACKing, so the ISS keeps that frame for after the
+		 * turnover (rule 3.4). */
+		if (can_break && l->break_pending
+		    && (int)ev->frame_type != l->last_acked_type) {
+			send_break(l, now, actions, &n, max);
+			return n;
+		}
 		if ((int)ev->frame_type != l->last_data_to_host) {
 			deliver_data(l, actions, &n, max, ev->data,
 				     ev->data_len);
 			l->last_data_to_host = ev->frame_type;
 		}
+		/* First frame after a handover settles us into IRS (rule 3.5). */
+		if (l->state == ARDOP_LINK_IRS_FROM_ISS)
+			l->state = ARDOP_LINK_IRS_DATA;
 		send_control(l, actions, &n, max,
 			     ardop_quality_to_ack_type(ev->quality));
 		l->last_acked_type = ev->frame_type;
@@ -807,8 +884,38 @@ static size_t step_irs_data_rx(ardop_link *l, const ardop_event *ev,
 	/* A failed decode of a new data frame: NAK with quality. */
 	if (ev->kind == ARDOP_EV_FRAME_BAD
 	    && ardop_frame_is_data(ev->frame_type)) {
+		if (l->state == ARDOP_LINK_IRS_FROM_ISS)
+			l->state = ARDOP_LINK_IRS_DATA;
 		send_control(l, actions, &n, max,
 			     ardop_quality_to_nak_type(ev->quality));
+		return n;
+	}
+
+	return 0;
+}
+
+/* --- IRS_TO_ISS: sent BREAK, awaiting the ACK to become ISS --------------- */
+
+/*
+ * We requested the link with BREAK and are repeating it. When the ISS ACKs, the
+ * turnover completes: stop the BREAKs, become the ISS, and start sending our
+ * queued data. Ported from the IRStoISS+ACK transition that the inherited tree
+ * wrongly performs inside ProcessNewSamples (SoundInput.c:1070) -- here it is a
+ * proper FSM transition.
+ */
+static size_t step_irs_to_iss_rx(ardop_link *l, const ardop_event *ev,
+				 uint64_t now, ardop_action *actions, size_t max)
+{
+	size_t n = 0;
+
+	if (connected_teardown(l, ev, now, actions, &n, max))
+		return n;
+
+	if (ev->kind == ARDOP_EV_FRAME_DECODED
+	    && ev->frame_type >= ARDOP_FRAME_DATA_ACK_MIN) {
+		iss_begin_sending(l);
+		l->last_data_to_host = -1;   /* re-arm dedup for the new IRS. */
+		iss_send_next(l, now, actions, &n, max);
 		return n;
 	}
 
@@ -936,6 +1043,18 @@ static size_t step_host_abort(ardop_link *l, ardop_action *actions, size_t max)
 	return n;
 }
 
+/*
+ * Host BREAK: request the IRS->ISS turnover. Only meaningful while receiving
+ * (IRS); it arms a pending break that is acted on when the next data frame or an
+ * IDLE arrives. Ported from Break().
+ */
+static size_t step_host_break(ardop_link *l)
+{
+	if (l->state == ARDOP_LINK_IRS_DATA)
+		l->break_pending = true;
+	return 0;
+}
+
 static size_t step_host(ardop_link *l, const ardop_host_cmd *cmd,
 			uint64_t now, ardop_action *actions, size_t max)
 {
@@ -948,6 +1067,8 @@ static size_t step_host(ardop_link *l, const ardop_host_cmd *cmd,
 		return step_host_disconnect(l, now, actions, max);
 	case ARDOP_CMD_ABORT:
 		return step_host_abort(l, actions, max);
+	case ARDOP_CMD_BREAK:
+		return step_host_break(l);
 	case ARDOP_CMD_SET_MODE:
 	case ARDOP_CMD_FEC_SEND:
 	case ARDOP_CMD_SEND_ID:
@@ -1000,8 +1121,13 @@ size_t ardop_link_step(ardop_link *l, const ardop_link_input *in,
 			return step_idle_rx(l, &in->as.rx, now_samples,
 					    actions, max_actions);
 		case ARDOP_LINK_IRS_TO_ISS:
-			/* Ported as these states land. */
-			return 0;
+			return step_irs_to_iss_rx(l, &in->as.rx, now_samples,
+						  actions, max_actions);
+		case ARDOP_LINK_IRS_FROM_ISS:
+			/* Behaves like IRS receiving; settles to IRS_DATA on the
+			 * first frame. It cannot break until then (rule 3.5). */
+			return step_irs_data_rx(l, &in->as.rx, now_samples,
+						actions, max_actions);
 		}
 		return 0;
 

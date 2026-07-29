@@ -53,7 +53,8 @@ typedef enum {
 	ARDOP_LINK_IRS_CON_ACK,/**< IRS, ConAck sent, awaiting first data. */
 	ARDOP_LINK_IRS_DATA,   /**< IRS, receiving data (steady state). */
 	ARDOP_LINK_IDLE,       /**< Connected ISS with nothing to send. */
-	ARDOP_LINK_IRS_TO_ISS, /**< Requested the link, awaiting confirmation. */
+	ARDOP_LINK_IRS_TO_ISS, /**< Sent BREAK, awaiting the ACK to become ISS. */
+	ARDOP_LINK_IRS_FROM_ISS,/**< Just yielded the link; settling into IRS. */
 } ardop_link_state;
 
 /** @brief Which protocol is running. */
@@ -74,6 +75,7 @@ typedef enum {
 	ARDOP_CMD_SET_MODE,    /**< Switch ARQ/FEC/RXO. */
 	ARDOP_CMD_FEC_SEND,    /**< Broadcast the queued data as FEC. */
 	ARDOP_CMD_SEND_ID,     /**< Transmit an ID frame. */
+	ARDOP_CMD_BREAK,       /**< Request the link (IRS -> ISS turnover). */
 } ardop_host_cmd_kind;
 
 /** @brief A host command and its parameters. */
@@ -160,6 +162,7 @@ typedef struct {
 	bool fsk_only;              /**< Restrict data modes to 4FSK (FSKONLY). */
 	bool use_600_modes;         /**< 600-baud FM data modes in play (Use600Modes). */
 	int tuning_range;           /**< Tuning range, Hz; 0 selects the 2000 FM modes. */
+	bool auto_break;            /**< Break automatically when the ISS idles (AutoBreak). */
 
 	/* --- machine state --- */
 	ardop_link_mode mode;       /**< ARQ / FEC / RXO. */
@@ -176,6 +179,7 @@ typedef struct {
 	                             *   (intLastARQDataFrameToHost); -1 = none. */
 	int last_acked_type;        /**< Type of the last data frame ACKed
 	                             *   (bytLastACKedDataFrameType); -1 = none. */
+	bool break_pending;         /**< Host asked to BREAK; send it next chance (blnBREAKCmd). */
 
 	/* --- ISS send state --- */
 	size_t tx_len;              /**< Bytes queued in tx_data. */
