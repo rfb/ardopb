@@ -91,6 +91,22 @@ static void send_control(ardop_link *l, ardop_action *actions, size_t *n,
 	send_frame(l, actions, n, max, frame_type, len);
 }
 
+/*
+ * Arm the repeat timer to resend the frame now in out_frame if no response
+ * arrives within the repeat interval. Called by the sender after a frame that
+ * awaits a reply (ConReq, ConAck, data, IDLE); response-only frames (an IRS
+ * ACK/NAK) do not arm it. The bytes stay in out_frame until the next send.
+ */
+static void arm_repeat(ardop_link *l, uint8_t frame_type, size_t len,
+		       uint64_t now)
+{
+	if (l->repeat_interval_ms == 0)
+		l->repeat_interval_ms = 2000;   /* intFrameRepeatInterval default. */
+	l->repeat_frame_type = frame_type;
+	l->repeat_frame_len = len;
+	l->repeat_deadline = now + ARDOP_MS_TO_SAMPLES(l->repeat_interval_ms);
+}
+
 /* Tear the machine back down to a clean disconnected state, keeping the session
  * id available (a late DISC can still be answered). */
 static void reset_to_disc(ardop_link *l)
@@ -297,7 +313,6 @@ static size_t step_iss_conreq_rx(ardop_link *l, const ardop_event *ev,
 		l->pending = false;
 		l->state = ARDOP_LINK_ISS_CON_ACK;
 		l->repeat_interval_ms = CONREQ_REPEAT_MS;
-		l->repeat_deadline = now + ARDOP_MS_TO_SAMPLES(CONREQ_REPEAT_MS);
 
 		size_t len = ardop_encode_conack_timing(ev->frame_type,
 							ev->leader_ms,
@@ -310,6 +325,7 @@ static size_t step_iss_conreq_rx(ardop_link *l, const ardop_event *ev,
 		a.data_len = len;
 		a.leader_ms = l->leader_ms;
 		emit(actions, &n, max, &a);
+		arm_repeat(l, ev->frame_type, len, now);
 		set_timer(l, actions, &n, max, l->repeat_deadline);
 		return n;
 	}
@@ -430,14 +446,15 @@ static void apply_shift(ardop_link *l)
  * (GetNextFrameData). It carries the queue's leading bytes up to the frame
  * capacity; those bytes stay queued until acked.
  */
-static void iss_send_next(ardop_link *l, ardop_action *actions, size_t *n,
-			  size_t max)
+static void iss_send_next(ardop_link *l, uint64_t now, ardop_action *actions,
+			  size_t *n, size_t max)
 {
 	apply_shift(l);
 
 	if (l->tx_len == 0) {
 		send_control(l, actions, n, max, ARDOP_FT_IDLE);
 		l->state = ARDOP_LINK_IDLE;
+		arm_repeat(l, ARDOP_FT_IDLE, 2, now);
 		return;
 	}
 
@@ -464,6 +481,43 @@ static void iss_send_next(ardop_link *l, ardop_action *actions, size_t *n,
 	a.data_len = (size_t)len;
 	a.leader_ms = l->leader_ms;
 	emit(actions, n, max, &a);
+	arm_repeat(l, ft, (size_t)len, now);
+}
+
+/* --- timer service (ARDOP_IN_NONE) --------------------------------------- */
+
+/*
+ * Service the deadlines: give up on a pending connection that never completed,
+ * and resend the outstanding frame if no response arrived within the repeat
+ * interval. Ported from the CheckTimers repeat and tmrIRSPendingTimeout paths.
+ * The overall send-timeout give-up, the DISC retry count and the final-ID send
+ * are deferred (the latter needs the ID-frame builder).
+ */
+static size_t step_timer(ardop_link *l, uint64_t now, ardop_action *actions,
+			 size_t max)
+{
+	size_t n = 0;
+
+	if (l->pending_deadline && now >= l->pending_deadline) {
+		l->pending_deadline = 0;
+		notify_host(l, actions, &n, max, "DISCONNECTED");
+		reset_to_disc(l);
+		return n;
+	}
+
+	if (l->repeat_deadline && now >= l->repeat_deadline) {
+		ardop_action a = {0};
+		a.kind = ARDOP_ACT_SEND_FRAME;
+		a.frame_type = l->repeat_frame_type;
+		a.data = l->out_frame;
+		a.data_len = l->repeat_frame_len;
+		a.leader_ms = l->leader_ms;
+		emit(actions, &n, max, &a);
+		l->repeat_deadline =
+			now + ARDOP_MS_TO_SAMPLES(l->repeat_interval_ms);
+	}
+
+	return n;
 }
 
 /* --- ISS_CON_ACK: sent our ConAck, awaiting the IRS's DataACK ------------- */
@@ -479,7 +533,6 @@ static size_t step_iss_conack_rx(ardop_link *l, const ardop_event *ev,
 				 uint64_t now, ardop_action *actions, size_t max)
 {
 	size_t n = 0;
-	(void)now;
 
 	if (ev->kind != ARDOP_EV_FRAME_DECODED)
 		return 0;
@@ -507,7 +560,7 @@ static size_t step_iss_conack_rx(ardop_link *l, const ardop_event *ev,
 			 l->session_bw);
 		notify_host(l, actions, &n, max, msg);
 
-		iss_send_next(l, actions, &n, max);
+		iss_send_next(l, now, actions, &n, max);
 		return n;
 	}
 
@@ -542,7 +595,7 @@ static size_t step_iss_data_rx(ardop_link *l, const ardop_event *ev,
 			l->avg_quality, ardop_quality_from_type(ev->frame_type));
 		gearshift(l);
 		l->nak_ctr = 0;
-		iss_send_next(l, actions, &n, max);
+		iss_send_next(l, now, actions, &n, max);
 		return n;
 	}
 
@@ -554,7 +607,7 @@ static size_t step_iss_data_rx(ardop_link *l, const ardop_event *ev,
 		gearshift(l);
 		if (l->shift_up_dn != 0) {
 			l->nak_ctr = 0;
-			iss_send_next(l, actions, &n, max);
+			iss_send_next(l, now, actions, &n, max);
 		}
 		l->ack_ctr = 0;
 		return n;
@@ -744,7 +797,6 @@ static size_t step_host_connect(ardop_link *l, const ardop_host_cmd *cmd,
 	l->pending = true;
 	l->state = ARDOP_LINK_ISS_CON_REQ;
 	l->repeat_interval_ms = CONREQ_REPEAT_MS;
-	l->repeat_deadline = now + ARDOP_MS_TO_SAMPLES(CONREQ_REPEAT_MS);
 
 	ardop_action a = {0};
 	a.kind = ARDOP_ACT_SEND_FRAME;
@@ -754,6 +806,7 @@ static size_t step_host_connect(ardop_link *l, const ardop_host_cmd *cmd,
 	a.leader_ms = l->leader_ms;
 	emit(actions, &n, max, &a);
 
+	arm_repeat(l, type, CONREQ_LEN, now);
 	set_timer(l, actions, &n, max, l->repeat_deadline);
 	return n;
 }
@@ -851,8 +904,7 @@ size_t ardop_link_step(ardop_link *l, const ardop_link_input *in,
 				 max_actions);
 
 	case ARDOP_IN_NONE:
-		/* Timer service ported as timers land. */
-		return 0;
+		return step_timer(l, now_samples, actions, max_actions);
 	}
 	return 0;
 }

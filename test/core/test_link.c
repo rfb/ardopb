@@ -970,6 +970,77 @@ static void test_iss_gearshift(void **state)
 	assert_int_equal(s->frame_type, 0x4C);   /* back at mode 0. */
 }
 
+/*
+ * The repeat timer: while awaiting a response, a NONE step before the deadline
+ * does nothing; once the deadline passes it resends the outstanding frame (here
+ * the ConReq) and re-arms. Mirrors the CheckTimers repeat path.
+ */
+static void test_timer_repeat_resends(void **state)
+{
+	(void)state;
+
+	ardop_link l;
+	connect_as_iss(&l);   /* ISS_CON_REQ; ConReq (0x34) armed at now 100. */
+
+	ardop_link_input none = {0};
+	none.kind = ARDOP_IN_NONE;
+	ardop_action acts[8];
+
+	/* Well before the 2 s repeat deadline: nothing. */
+	size_t n = ardop_link_step(&l, &none, 1000, acts, 8);
+	assert_int_equal(n, 0);
+
+	/* Past the deadline (2000 ms = 24000 samples after now 100): resend. */
+	n = ardop_link_step(&l, &none, 100 + 24000, acts, 8);
+	const ardop_action *s = find_action(acts, n, ARDOP_ACT_SEND_FRAME);
+	assert_non_null(s);
+	assert_int_equal(s->frame_type, ARDOP_FT_CON_REQ_2000M);
+}
+
+/* A response stops the resend re-arming on the old frame: after the ConReq is
+ * answered the repeat tracks the new (ConAck) frame, not the ConReq. */
+static void test_timer_repeat_follows_latest(void **state)
+{
+	(void)state;
+
+	ardop_link l;
+	connect_as_iss(&l);
+
+	/* The IRS answers: ISS replies its own ConAck and re-arms on that. */
+	ardop_link_input in = {0};
+	in.kind = ARDOP_IN_RX;
+	in.as.rx.kind = ARDOP_EV_FRAME_DECODED;
+	in.as.rx.frame_type = ARDOP_FT_CON_ACK_2000;
+	in.as.rx.leader_ms = 240;
+	ardop_action acts[8];
+	(void)ardop_link_step(&l, &in, 500, acts, 8);
+	assert_int_equal(l.repeat_frame_type, ARDOP_FT_CON_ACK_2000);
+}
+
+/*
+ * The pending timeout: an IRS that answered a ConReq but never saw the ISS
+ * complete the handshake gives up after 10 s -- DISCONNECTED, back to DISC.
+ * Mirrors tmrIRSPendingTimeout.
+ */
+static void test_timer_pending_timeout(void **state)
+{
+	(void)state;
+
+	ardop_link l;
+	accept_as_irs(&l);   /* IRS_CON_ACK; pending deadline set at now 1000. */
+
+	ardop_link_input none = {0};
+	none.kind = ARDOP_IN_NONE;
+	ardop_action acts[8];
+
+	/* 10 s = 120000 samples after now 1000. */
+	size_t n = ardop_link_step(&l, &none, 1000 + 120000, acts, 8);
+	const ardop_action *notify = find_action(acts, n, ARDOP_ACT_NOTIFY_HOST);
+	assert_non_null(notify);
+	assert_string_equal((const char *)notify->data, "DISCONNECTED");
+	assert_int_equal(l.state, ARDOP_LINK_DISC);
+}
+
 int main(void)
 {
 	const struct CMUnitTest tests[] = {
@@ -997,6 +1068,9 @@ int main(void)
 		cmocka_unit_test(test_iss_idle_when_empty),
 		cmocka_unit_test(test_iss_data_drain),
 		cmocka_unit_test(test_iss_gearshift),
+		cmocka_unit_test(test_timer_repeat_resends),
+		cmocka_unit_test(test_timer_repeat_follows_latest),
+		cmocka_unit_test(test_timer_pending_timeout),
 	};
 	return cmocka_run_group_tests(tests, NULL, NULL);
 }
