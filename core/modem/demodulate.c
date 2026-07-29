@@ -7,6 +7,7 @@
 #include "codec/frame.h"
 #include "codec/rs.h"
 #include "modem/goertzel.h"
+#include "modem/rxquality.h"
 #include "modem/templates.h"
 
 /*
@@ -1273,6 +1274,29 @@ static void deliver_frame(ardop_demod *d, ardop_event *events, size_t *nev,
 			all_ok = false;
 	}
 
+	/* Score the decode quality from the constellation of the last carrier
+	 * (4FSK uses the tone magnitudes accumulated while streaming). This is
+	 * what the receiver reports back in its ACK/NAK. */
+	int last = d->frame_num_car - 1;
+	switch (d->frame_mod) {
+	case ARDOP_MOD_4PSK:
+		ev.quality = ardop_quality_psk(d->phases[last], d->mags[last],
+					       d->phases_len, 4, false);
+		break;
+	case ARDOP_MOD_8PSK:
+		ev.quality = ardop_quality_psk(d->phases[last], d->mags[last],
+					       d->phases_len, 8, false);
+		break;
+	case ARDOP_MOD_16QAM:
+		ev.quality = ardop_quality_psk(d->phases[last], d->mags[last],
+					       d->phases_len, 8, true);
+		break;
+	case ARDOP_MOD_4FSK:
+		ev.quality = ardop_quality_4fsk(d->frame_tone_mags,
+						d->tone_mags_len);
+		break;
+	}
+
 	ev.frame_type = d->frame_type;
 	ev.leader_ms = d->leader_rcvd_ms;
 	if (all_ok) {
@@ -1438,6 +1462,7 @@ size_t ardop_demod_push(ardop_demod *d, const int16_t *samples, size_t n,
 		if (d->frame_600)
 			d->symbols_left *= 3;   /* three sequential sub-blocks */
 		d->char_index = 0;
+		d->tone_mags_len = 0;
 		d->phases_len = 0;
 		d->psk_init_done = false;
 		for (int c = 0; c < ARDOP_DEMOD_MAX_CARRIERS; c++)
@@ -1484,6 +1509,15 @@ size_t ardop_demod_push(ardop_demod *d, const int16_t *samples, size_t n,
 			d->frame_data[part][off] = ardop_demod_4fsk_char(
 				d, start, 1500, d->frame_baud,
 				d->frame_samp_per_sym, tm);
+			/* Keep the tone mags for the frame's decode-quality score. */
+			if (d->tone_mags_len + ARDOP_4FSK_CHAR_TONE_MAGS
+			    <= (int)(sizeof d->frame_tone_mags
+				     / sizeof d->frame_tone_mags[0])) {
+				for (int t = 0; t < ARDOP_4FSK_CHAR_TONE_MAGS; t++)
+					d->frame_tone_mags[d->tone_mags_len + t]
+						= tm[t];
+				d->tone_mags_len += ARDOP_4FSK_CHAR_TONE_MAGS;
+			}
 			d->char_index++;
 			d->symbols_left--;
 			start += used;

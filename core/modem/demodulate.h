@@ -185,6 +185,13 @@ typedef struct {
 	uint8_t frame_data[ARDOP_DEMOD_MAX_CARRIERS][ARDOP_DEMOD_MAX_CARRIER_BYTES];
 	                             /**< Raw demodulated bytes, per carrier. */
 	uint8_t payload[ARDOP_DEMOD_MAX_PAYLOAD]; /**< Decoded payload for the event. */
+
+	/* 4FSK constellation tone magnitudes for the whole frame, four per
+	 * symbol, accumulated while streaming so the decode quality can be
+	 * scored at delivery. Sized for the widest 4FSK frame (600-baud, 759
+	 * bytes x 16). PSK/QAM quality uses phases[]/mags[] directly. */
+	int32_t frame_tone_mags[16 * 759];
+	int tone_mags_len;           /**< Valid entries in frame_tone_mags. */
 } ardop_demod;
 
 /**

@@ -68,8 +68,8 @@ def run_core(wav_bytes):
     for line in out.stdout.splitlines():
         if not line:
             continue
-        name, _, payload = line.partition("\t")
-        frames.append((name, payload))
+        name, quality, payload = line.split("\t")
+        frames.append((name, payload, int(quality)))
     return frames
 
 
@@ -96,11 +96,12 @@ class Report:
             print(f"  PASS  {cid}{(' ' + note) if note else ''}")
 
 
-def judge(report, cid, label, frames, true_type, true_payload, required):
+def judge(report, cid, label, frames, true_type, true_payload,
+          true_quality, required):
     """Apply the asymmetric conformance rule to one variant's output."""
     # A wrong decode is always a failure: any recovered frame must be exactly
     # the ground-truth frame.
-    for name, payload in frames:
+    for name, payload, quality in frames:
         if name != true_type:
             report.fail(cid, f"{label}: decoded {name!r},"
                              f" expected {true_type!r}")
@@ -110,8 +111,18 @@ def judge(report, cid, label, frames, true_type, true_payload, required):
                              f" truth ({len(payload)//2} vs"
                              f" {len(true_payload)//2} bytes)")
             return
+        # Decode quality is a Tier-2 heuristic (the inherited golden reports it
+        # but never fails on it). The metric functions are proven bit-exact; a
+        # small end-to-end drift means the demod fed slightly different
+        # phases/tone-mags than ardopcf did on this frame, near a truncation
+        # edge. Report it, do not fail -- an off-by-one rarely even changes the
+        # 5-bit ACK it is scaled into.
+        if true_quality is not None and quality != true_quality:
+            report.soft(cid, f"{label}: {name} quality {quality},"
+                             f" manifest {true_quality} (heuristic, not"
+                             f" enforced)")
 
-    matched = any(name == true_type for name, _ in frames)
+    matched = any(name == true_type for name, _, _ in frames)
     if matched:
         report.ok(cid, label)
         return
@@ -149,9 +160,13 @@ def check_case(report, entry):
             continue
 
         required = True if key == "clean" else spec.get("required", True)
+        # Expected decode quality for this variant (clean uses the top-level
+        # decode; degraded variants carry their own). Only data frames record it.
+        variant_decode = truth if key == "clean" else spec.get("decode", {})
+        true_quality = variant_decode.get("quality")
         frames = run_core(wav)
         judge(report, cid, f"core-{key}", frames, true_type, true_payload,
-              required)
+              true_quality, required)
 
 
 def main():

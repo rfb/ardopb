@@ -212,7 +212,8 @@ int main(int argc, char **argv)
 				continue;
 			const ardop_frame_spec *spec =
 				ardop_frame_spec_for(evs[e].frame_type);
-			printf("%s\t", spec ? spec->name : "?");
+			printf("%s\t%d\t", spec ? spec->name : "?",
+			       evs[e].quality);
 			for (int i = 0; i < evs[e].data_len; i++)
 				printf("%02x", evs[e].data[i]);
 			printf("\n");
