@@ -330,16 +330,111 @@ static size_t step_iss_conreq_rx(ardop_link *l, const ardop_event *ev,
 
 /* --- ISS send ------------------------------------------------------------ */
 
+/* Whole-frame data capacity of a frame type (FrameSize[]). */
+static int frame_capacity(uint8_t frame_type)
+{
+	const ardop_frame_spec *spec = ardop_frame_spec_for(frame_type);
+	if (spec == NULL)
+		return 0;
+	return spec->carriers * spec->data_bytes_per_carrier;
+}
+
+/* Drop the leading @p count bytes from the outbound queue (RemoveDataFromQueue). */
+static void tx_dequeue(ardop_link *l, int count)
+{
+	if (count <= 0)
+		return;
+	if (count > (int)l->tx_len)
+		count = (int)l->tx_len;
+	memmove(l->tx_data, l->tx_data + count, l->tx_len - (size_t)count);
+	l->tx_len -= (size_t)count;
+}
+
+/*
+ * Gear-shift: choose whether the next frame moves to a more robust or faster
+ * mode. Ported from Gearshift_9. Shifts down after DownNAKS consecutive NAKs
+ * (2 normally, 1 if the current mode has never worked); shifts up when the
+ * average quality clears the mode's threshold with >= 2 ACKs, unless the
+ * remaining data already fits the current mode or the next mode was tried and
+ * immediately failed (retried only after 5 ACKs). Sets shift_up_dn; the send
+ * applies it. Constants are normative-ish (link convergence) -- preserved.
+ */
+static void gearshift(ardop_link *l)
+{
+	int down_naks = 2;
+	int bytes_remaining = (int)l->tx_len;
+
+	if (l->mode_has_worked[l->mode_ptr] == 0)
+		down_naks = 1;   /* revert immediately from a mode that never worked. */
+
+	if (l->ack_ctr)
+		l->mode_has_worked[l->mode_ptr]++;
+	else if (l->nak_ctr)
+		l->mode_naks[l->mode_ptr]++;
+
+	if (l->mode_ptr > 0 && l->nak_ctr >= down_naks) {
+		l->shift_up_dn = -1;
+		l->avg_quality = 0;
+		l->nak_ctr = 0;
+		l->ack_ctr = 0;
+		return;
+	}
+
+	if (l->avg_quality > l->thresholds[l->mode_ptr]
+	    && l->mode_ptr < (int)l->modes_len - 1 && l->ack_ctr >= 2) {
+		/* Don't shift up if the remaining data fits the current mode. */
+		if (bytes_remaining <= frame_capacity(l->modes[l->mode_ptr])) {
+			l->shift_up_dn = 0;
+			return;
+		}
+		/* Don't retry a mode that was tried and immediately failed until
+		 * 5 successive ACKs. */
+		if (l->mode_has_been_tried[l->mode_ptr + 1]
+		    && l->mode_has_worked[l->mode_ptr + 1] == 0
+		    && l->ack_ctr < 5) {
+			l->shift_up_dn = 0;
+			return;
+		}
+		l->shift_up_dn = 1;
+		l->mode_has_been_tried[l->mode_ptr + 1] = 1;
+		l->avg_quality = 0;
+		l->nak_ctr = 0;
+		l->ack_ctr = 0;
+	}
+}
+
+/* Apply a pending gear shift to the mode pointer (GetNextFrameData's shift arm). */
+static void apply_shift(ardop_link *l)
+{
+	if (l->shift_up_dn < 0) {
+		if (l->mode_ptr > 0) {
+			int p = l->mode_ptr + l->shift_up_dn;
+			l->mode_ptr = p < 0 ? 0 : p;
+		}
+		l->shift_up_dn = 0;
+	} else if (l->shift_up_dn > 0) {
+		if (l->mode_ptr < (int)l->modes_len) {
+			int p = l->mode_ptr + l->shift_up_dn;
+			l->mode_ptr = p > (int)l->modes_len ? (int)l->modes_len
+							    : p;
+		}
+		l->shift_up_dn = 0;
+	}
+}
+
 /*
  * Build and send the next outbound frame: a data frame at the current gear-shift
- * mode, or an IDLE keep-alive if the queue is empty. The data frame type toggles
- * its even/odd bit against the last one acknowledged so a retransmission is
- * distinguishable from the next frame (GetNextFrameData). It carries the queue's
- * leading bytes up to the frame capacity; those bytes stay queued until acked.
+ * mode, or an IDLE keep-alive if the queue is empty. Any pending shift is applied
+ * first. The data frame type toggles its even/odd bit against the last one
+ * acknowledged so a retransmission is distinguishable from the next frame
+ * (GetNextFrameData). It carries the queue's leading bytes up to the frame
+ * capacity; those bytes stay queued until acked.
  */
 static void iss_send_next(ardop_link *l, ardop_action *actions, size_t *n,
 			  size_t max)
 {
+	apply_shift(l);
+
 	if (l->tx_len == 0) {
 		send_control(l, actions, n, max, ARDOP_FT_IDLE);
 		l->state = ARDOP_LINK_IDLE;
@@ -396,7 +491,16 @@ static size_t step_iss_conack_rx(ardop_link *l, const ardop_event *ev,
 		l->modes = ardop_data_modes(l->session_bw, l->fsk_only,
 					    l->tuning_range, l->use_600_modes,
 					    &l->modes_len);
+		l->thresholds = ardop_shift_up_thresholds(l->session_bw,
+							  l->tuning_range,
+							  l->use_600_modes);
 		l->mode_ptr = 0;
+		l->ack_ctr = 0;
+		l->nak_ctr = 0;
+		l->shift_up_dn = 0;
+		memset(l->mode_has_worked, 0, sizeof(l->mode_has_worked));
+		memset(l->mode_has_been_tried, 0, sizeof(l->mode_has_been_tried));
+		memset(l->mode_naks, 0, sizeof(l->mode_naks));
 
 		char msg[64];
 		snprintf(msg, sizeof(msg), "CONNECTED %s %d", l->remote.str,
@@ -404,6 +508,65 @@ static size_t step_iss_conack_rx(ardop_link *l, const ardop_event *ev,
 		notify_host(l, actions, &n, max, msg);
 
 		iss_send_next(l, actions, &n, max);
+		return n;
+	}
+
+	return 0;
+}
+
+/* --- ISS: connected, sending data ---------------------------------------- */
+
+/*
+ * Connected and sending. On a DataACK the outstanding frame's bytes are
+ * confirmed: drop them from the queue, fold the reported quality into the
+ * average, gear-shift, and send the next frame (data or IDLE). On a DataNAK,
+ * gear-shift and resend only if it produced a shift (otherwise the repeat timer
+ * resends the current frame unchanged). A DISC ends the session. Ported from
+ * ProcessRcvdARQFrame's ISS/ISSData arm.
+ */
+static size_t step_iss_data_rx(ardop_link *l, const ardop_event *ev,
+			       uint64_t now, ardop_action *actions, size_t max)
+{
+	size_t n = 0;
+
+	if (ev->kind != ARDOP_EV_FRAME_DECODED)
+		return 0;
+
+	/* DataACK: confirm and advance. */
+	if (ev->frame_type >= ARDOP_FRAME_DATA_ACK_MIN) {
+		l->ack_ctr++;
+		l->last_data_acked = l->last_data_sent;
+		tx_dequeue(l, l->outstanding_len);
+		l->outstanding_len = 0;
+		l->avg_quality = ardop_quality_avg(
+			l->avg_quality, ardop_quality_from_type(ev->frame_type));
+		gearshift(l);
+		l->nak_ctr = 0;
+		iss_send_next(l, actions, &n, max);
+		return n;
+	}
+
+	/* DataNAK: gear-shift; resend now only if the mode changed. */
+	if (ev->frame_type <= ARDOP_FRAME_DATA_NAK_MAX) {
+		l->nak_ctr++;
+		l->avg_quality = ardop_quality_avg(
+			l->avg_quality, ardop_quality_from_type(ev->frame_type));
+		gearshift(l);
+		if (l->shift_up_dn != 0) {
+			l->nak_ctr = 0;
+			iss_send_next(l, actions, &n, max);
+		}
+		l->ack_ctr = 0;
+		return n;
+	}
+
+	/* DISC from the IRS: tear down (rule 1.5). */
+	if (ev->frame_type == ARDOP_FT_DISC) {
+		notify_host(l, actions, &n, max, "DISCONNECTED");
+		send_control(l, actions, &n, max, ARDOP_FT_END);
+		l->final_id_deadline = now + ARDOP_MS_TO_SAMPLES(FINAL_ID_HOLD_MS);
+		set_timer(l, actions, &n, max, l->final_id_deadline);
+		reset_to_disc(l);
 		return n;
 	}
 
@@ -674,6 +837,8 @@ size_t ardop_link_step(ardop_link *l, const ardop_link_input *in,
 			return step_iss_conack_rx(l, &in->as.rx, now_samples,
 						  actions, max_actions);
 		case ARDOP_LINK_ISS:
+			return step_iss_data_rx(l, &in->as.rx, now_samples,
+						actions, max_actions);
 		case ARDOP_LINK_IDLE:
 		case ARDOP_LINK_IRS_TO_ISS:
 			/* Ported as these states land. */

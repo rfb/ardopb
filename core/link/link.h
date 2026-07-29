@@ -180,11 +180,20 @@ typedef struct {
 	/* --- ISS send state --- */
 	size_t tx_len;              /**< Bytes queued in tx_data. */
 	const uint8_t *modes;       /**< Gear-shift mode ladder (bytFrameTypesForBW). */
+	const uint8_t *thresholds;  /**< Shift-up thresholds (bytShiftUpThresholds). */
 	size_t modes_len;           /**< Number of modes. */
 	int mode_ptr;               /**< Current mode index (intFrameTypePtr). */
 	uint8_t last_data_sent;     /**< Type of the outstanding data frame. */
 	uint8_t last_data_acked;    /**< Parity anchor for toggling (bytLastARQDataFrameAcked). */
 	int outstanding_len;        /**< Payload bytes in the outstanding frame. */
+
+	/* --- gear-shift state (Gearshift_9) --- */
+	int ack_ctr;                /**< ACKs since the last shift (intACKctr). */
+	int nak_ctr;                /**< NAKs since the last shift (intNAKctr). */
+	int shift_up_dn;            /**< Pending shift: -1 down, +1 up, 0 none. */
+	uint16_t mode_has_worked[16];   /**< Per-mode success count (ModeHasWorked). */
+	uint16_t mode_has_been_tried[16];/**< Per-mode tried flag (ModeHasBeenTried). */
+	uint16_t mode_naks[16];          /**< Per-mode NAK count (ModeNAKS). */
 
 	/* --- timers, as absolute sample deadlines (0 = inactive) --- */
 	uint64_t final_id_deadline; /**< tmrFinalID: when the closing ID may go. */

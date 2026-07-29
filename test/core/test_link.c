@@ -856,6 +856,120 @@ static void test_iss_idle_when_empty(void **state)
 	assert_int_equal(l.state, ARDOP_LINK_IDLE);
 }
 
+static ardop_link_input dataack(int quality)
+{
+	ardop_link_input in = {0};
+	in.kind = ARDOP_IN_RX;
+	in.as.rx.kind = ARDOP_EV_FRAME_DECODED;
+	in.as.rx.frame_type = ardop_quality_to_ack_type(quality);
+	return in;
+}
+
+static ardop_link_input datanak(int quality)
+{
+	ardop_link_input in = {0};
+	in.kind = ARDOP_IN_RX;
+	in.as.rx.kind = ARDOP_EV_FRAME_DECODED;
+	in.as.rx.frame_type = ardop_quality_to_nak_type(quality);
+	return in;
+}
+
+/* Reach connected ISS with `len` payload queued and the first frame sent. */
+static void iss_sending(ardop_link *l, size_t len)
+{
+	iss_to_con_ack(l);
+	static uint8_t big[2048];
+	for (size_t i = 0; i < len; i++)
+		big[i] = (uint8_t)i;
+	ardop_link_input q = host_send(big, len);
+	ardop_action acts[8];
+	(void)ardop_link_step(l, &q, 300, acts, 8);
+	/* First DataACK completes the handshake and sends the first frame. */
+	ardop_link_input ack = dataack(90);
+	(void)ardop_link_step(l, &ack, 400, acts, 8);
+	assert_int_equal(l->state, ARDOP_LINK_ISS);
+}
+
+/*
+ * Connected ISS draining the queue: each DataACK confirms the outstanding frame
+ * (dropping its bytes), alternates the even/odd frame type, and sends the next;
+ * when the queue empties the ISS falls to IDLE. Mode 0 for 2000 Hz is 0x4C, a
+ * 32-byte frame, so 80 bytes take three frames (the last is short).
+ */
+static void test_iss_data_drain(void **state)
+{
+	(void)state;
+
+	ardop_link l;
+	iss_sending(&l, 80);   /* first frame 0x4C (32 B) sent; tx_len 80. */
+	assert_int_equal(l.last_data_sent, 0x4C);
+	assert_int_equal(l.outstanding_len, 32);
+
+	ardop_action acts[8];
+
+	/* ACK #1: drop 32 -> 48 left, send 0x4D (toggled). */
+	ardop_link_input in = dataack(90);
+	size_t n = ardop_link_step(&l, &in, 500, acts, 8);
+	assert_int_equal(l.tx_len, 48);
+	const ardop_action *s = find_action(acts, n, ARDOP_ACT_SEND_FRAME);
+	assert_non_null(s);
+	assert_int_equal(s->frame_type, 0x4D);
+
+	/* ACK #2: drop 32 -> 16 left, send 0x4C, carrying the last 16 bytes. */
+	in = dataack(90);
+	n = ardop_link_step(&l, &in, 600, acts, 8);
+	assert_int_equal(l.tx_len, 16);
+	s = find_action(acts, n, ARDOP_ACT_SEND_FRAME);
+	assert_int_equal(s->frame_type, 0x4C);
+	assert_int_equal(l.outstanding_len, 16);
+
+	/* ACK #3: drop 16 -> empty, IDLE. */
+	in = dataack(90);
+	n = ardop_link_step(&l, &in, 700, acts, 8);
+	assert_int_equal(l.tx_len, 0);
+	s = find_action(acts, n, ARDOP_ACT_SEND_FRAME);
+	assert_int_equal(s->frame_type, ARDOP_FT_IDLE);
+	assert_int_equal(l.state, ARDOP_LINK_IDLE);
+}
+
+/*
+ * Gear-shift up then down. With plenty of data queued and high-quality ACKs the
+ * ISS shifts up from mode 0 (0x4C) to mode 1 (0x4A) once it has >= 2 ACKs; a
+ * subsequent NAK on the freshly-entered mode (which has never worked, so one NAK
+ * suffices) shifts back down to mode 0.
+ */
+static void test_iss_gearshift(void **state)
+{
+	(void)state;
+
+	ardop_link l;
+	iss_sending(&l, 500);   /* first frame at mode 0. */
+	assert_int_equal(l.mode_ptr, 0);
+
+	ardop_action acts[8];
+
+	/* ACK #1 (ack_ctr becomes 1): not enough to shift up yet. */
+	ardop_link_input in = dataack(90);
+	(void)ardop_link_step(&l, &in, 500, acts, 8);
+	assert_int_equal(l.mode_ptr, 0);
+
+	/* ACK #2 (ack_ctr 2, quality above threshold, data remains): shift up. */
+	in = dataack(90);
+	size_t n = ardop_link_step(&l, &in, 600, acts, 8);
+	assert_int_equal(l.mode_ptr, 1);
+	const ardop_action *s = find_action(acts, n, ARDOP_ACT_SEND_FRAME);
+	assert_non_null(s);
+	assert_int_equal(s->frame_type, 0x4A);   /* mode 1. */
+
+	/* NAK on mode 1 (never worked -> DownNAKS = 1): shift back to mode 0. */
+	in = datanak(40);
+	n = ardop_link_step(&l, &in, 700, acts, 8);
+	assert_int_equal(l.mode_ptr, 0);
+	s = find_action(acts, n, ARDOP_ACT_SEND_FRAME);
+	assert_non_null(s);   /* a shift resends immediately. */
+	assert_int_equal(s->frame_type, 0x4C);   /* back at mode 0. */
+}
+
 int main(void)
 {
 	const struct CMUnitTest tests[] = {
@@ -881,6 +995,8 @@ int main(void)
 		cmocka_unit_test(test_host_send_data_queues),
 		cmocka_unit_test(test_iss_sends_first_data),
 		cmocka_unit_test(test_iss_idle_when_empty),
+		cmocka_unit_test(test_iss_data_drain),
+		cmocka_unit_test(test_iss_gearshift),
 	};
 	return cmocka_run_group_tests(tests, NULL, NULL);
 }
