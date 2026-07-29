@@ -421,7 +421,13 @@ test/ardop/test_log: OBJS := \
 	src/common/log.o
 test/ardop/test_log: WRAP := fopen fclose fwrite fflush freopen
 
--include *.d
+# Pull in the -MMD dependency files so a changed header rebuilds every object
+# that includes it. The bare `*.d` glob only covered the repo root; the rebuilt
+# tree lives in subdirectories, so list those too. Without this a header edit
+# (e.g. adding a field to a struct in a shared header) leaves stale objects with
+# a mismatched struct size -- a memset/overrun crash that only a full rebuild
+# clears.
+-include *.d core/*/*.d shell/*.d test/core/*.d
 
 # 'make clean' deletes files produced by the build process.
 # After using git checkout change branches, it is sometimes neccessary to run
