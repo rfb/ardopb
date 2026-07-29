@@ -4,6 +4,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "modem/fft.h"
+
 /**
  * @file busy.c
  * @brief Channel-busy detector, ported from BusyDetect.c (BusyDetect3).
@@ -168,4 +170,63 @@ bool ardop_busy_detect(ardop_busy_detector *b, const float *mag, int start,
 	}
 
 	return b->last_busy;
+}
+
+/* The reduced pi, as elsewhere; see [[ardop-mpi-normative-accident]]. */
+#define ARDOP_BUSY_PI 3.1415926f
+
+/* First bin of the 206-bin magnitude window (~293 Hz at 12000/1024 per bin). */
+#define BUSY_FIRST_BIN 25
+/* Number of magnitude bins the detector searches (~293..2695 Hz). */
+#define BUSY_MAG_BINS 206
+/* Centre bin of the tuning-line range (bin 128 = 1500 Hz, offset by 25). */
+#define BUSY_CENTRE_BIN 103
+
+void ardop_busy_window(float *w)
+{
+	/* Ported from generateBH. The window is symmetric; store the first half.
+	 * The reduced M_PI is preserved so the coefficients match bit-for-bit. */
+	float pi = ARDOP_BUSY_PI;
+	for (int i = 0; i < 513; i++) {
+		float fi = (float)i;
+		w[i] = (float)(0.35875 - 0.48829 * cos(2.0f * pi * fi / 1024.0f)
+			       + 0.14128 * cos(4.0f * pi * fi / 1024.0f)
+			       - 0.01168 * cos(6.0f * pi * fi / 1024.0f));
+	}
+}
+
+bool ardop_busy_analyze(ardop_busy_detector *b, const float *window,
+			const int16_t *samples, int bw_hz, ardop_bandwidth bw,
+			int tuning_range, int busy_det, uint32_t now_ms)
+{
+	float windowed[ARDOP_BUSY_WINDOW];
+	float re[ARDOP_BUSY_WINDOW];
+	float im[ARDOP_BUSY_WINDOW];
+	float mag[BUSY_MAG_BINS];
+
+	/* Apply the symmetric Blackman-Harris window (as UpdateBusyDetector). */
+	windowed[0] = (float)samples[0] * window[0];
+	windowed[512] = (float)samples[512] * window[512];
+	for (int i = 1; i < 512; i++) {
+		windowed[i] = (float)samples[i] * window[i];
+		windowed[1024 - i] = (float)samples[1024 - i] * window[i];
+	}
+
+	ardop_fft(ARDOP_BUSY_WINDOW, windowed, re, im, false);
+
+	for (int i = 0; i < BUSY_MAG_BINS; i++)
+		mag[i] = powf(re[i + BUSY_FIRST_BIN], 2)
+			 + powf(im[i + BUSY_FIRST_BIN], 2);
+
+	/* The tuning-line search range, widened by bandwidth and tuning range.
+	 * 11.719 Hz is one FFT bin (12000/1024). */
+	int delta = (int)((float)(bw_hz / 2 + tuning_range) / 11.719f);
+	int low = BUSY_CENTRE_BIN - delta;
+	int high = BUSY_CENTRE_BIN + delta;
+	if (low < 3)
+		low = 3;
+	if (high > 203)
+		high = 203;
+
+	return ardop_busy_detect(b, mag, low, high, bw, busy_det, now_ms);
 }

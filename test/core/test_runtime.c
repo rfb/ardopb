@@ -2,6 +2,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <math.h>
 #include <setjmp.h>
 #include <string.h>
 #include <cmocka.h>
@@ -32,6 +33,8 @@ struct capture {
 	uint8_t acc[4096];   /* all DELIVER_DATA payloads concatenated. */
 	size_t acc_len;
 	int frames;          /* number of DELIVER_DATA callbacks. */
+	bool busy;           /* last ARDOP_OBS_BUSY state. */
+	int busy_changes;    /* number of busy transitions. */
 };
 
 /* One observer, capturing the host/data/ptt observations the old three
@@ -59,6 +62,10 @@ static void observe(void *ctx, const ardop_obs *o)
 	case ARDOP_OBS_PTT:
 		c->ptt = o->key;
 		c->ptt_edges++;
+		break;
+	case ARDOP_OBS_BUSY:
+		c->busy = o->busy;
+		c->busy_changes++;
 		break;
 	default:
 		break;
@@ -225,11 +232,52 @@ static void test_runtime_fec_broadcast(void **state)
 	assert_int_equal(ca.ptt_edges, 2);   /* one key, one unkey. */
 }
 
+/*
+ * The channel-busy detector, wired through the runtime: a strong in-band tone
+ * fed while idle (DISC) trips ARDOP_OBS_BUSY, and silence afterwards clears it
+ * (after the detector's 5 s hold). Exercises the busy front end (window, FFT,
+ * spectrum, detector) and the runtime's 1024-sample windowing.
+ */
+static void test_runtime_busy(void **state)
+{
+	(void)state;
+
+	static ardop_runtime rt;
+	struct capture cap;
+	setup(&rt, &cap, "N0AAA", true);
+
+	int16_t buf[1024];
+	uint64_t t = 0;
+
+	/* ~1.5 s of a loud 1500 Hz tone: the channel looks occupied. */
+	for (int w = 0; w < 18; w++) {
+		for (int i = 0; i < 1024; i++) {
+			double s = 12000.0 * sin(2.0 * 3.14159265 * 1500.0
+						 * (w * 1024 + i) / 12000.0);
+			buf[i] = (int16_t)s;
+		}
+		ardop_runtime_rx(&rt, buf, 1024, t);
+		t += 1024;
+	}
+	assert_true(cap.busy);
+	assert_true(rt.busy_state);
+
+	/* ~7 s of near-silence: past the 5 s hold, busy clears. */
+	memset(buf, 0, sizeof(buf));
+	for (int w = 0; w < 84; w++) {
+		ardop_runtime_rx(&rt, buf, 1024, t);
+		t += 1024;
+	}
+	assert_false(cap.busy);
+	assert_true(cap.busy_changes >= 2);   /* at least one set and one clear. */
+}
+
 int main(void)
 {
 	const struct CMUnitTest tests[] = {
 		cmocka_unit_test(test_runtime_session),
 		cmocka_unit_test(test_runtime_fec_broadcast),
+		cmocka_unit_test(test_runtime_busy),
 	};
 	return cmocka_run_group_tests(tests, NULL, NULL);
 }

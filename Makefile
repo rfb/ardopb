@@ -113,6 +113,7 @@ CORE_OBJS = \
 	core/codec/stationid.o \
 	core/modem/busy.o \
 	core/modem/demodulate.o \
+	core/modem/fft.o \
 	core/modem/goertzel.o \
 	core/modem/modulate.o \
 	core/modem/rxquality.o \
@@ -135,6 +136,7 @@ CORE_TESTS = \
 	test/core/test_demodulate \
 	test/core/test_modulate \
 	test/core/test_rxquality \
+	test/core/test_fft \
 	test/core/test_busy \
 	test/core/test_session \
 	test/core/test_quality \

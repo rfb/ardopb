@@ -7,6 +7,7 @@
 
 #include "codec/rs.h"
 #include "link/link.h"
+#include "modem/busy.h"
 #include "modem/demodulate.h"
 #include "modem/modulate.h"
 
@@ -103,6 +104,15 @@ typedef struct {
 	/* Candidate frame types for the (receive-only) frame-type decode. */
 	uint8_t valid_types[256];
 	int valid_len;
+
+	/* Channel-busy detection: RX samples are accumulated into 1024-sample
+	 * windows and analysed while idle (DISC); a change emits ARDOP_OBS_BUSY. */
+	ardop_busy_detector busy;
+	float busy_window[513];
+	int16_t busy_accum[ARDOP_BUSY_WINDOW];
+	size_t busy_accum_len;
+	int busy_det;         /* sensitivity 0..10 (host BUSYDET); 0 disables. */
+	bool busy_state;      /* last reported busy, for change detection. */
 
 	/* Observers, and the last values state-diffs are compared against. */
 	struct {

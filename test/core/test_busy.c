@@ -1,6 +1,7 @@
 #include <stdarg.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <math.h>
 #include <setjmp.h>
 #include <string.h>
 #include <cmocka.h>
@@ -21,6 +22,11 @@
  */
 int BusyDetect3(float *dblMag, int intStart, int intStop);
 void ClearBusy(void);
+/* The inherited busy front end: the Blackman-Harris window and the FFT. */
+void generateBH(void);
+extern float bhWindow[];
+void FourierTransform(int NumSamples, float *RealIn, float *RealOut,
+		      float *ImagOut, int InverseTransform);
 
 enum _ARQBandwidth {
 	B200FORCED, B500FORCED, B1000FORCED, B2000FORCED,
@@ -147,10 +153,105 @@ static void test_busy_matches_legacy(void **state)
 	}
 }
 
+/* The rebuilt window must match generateBH's bhWindow bit-for-bit. */
+static void test_busy_window_matches_legacy(void **state)
+{
+	(void)state;
+	generateBH();
+	float w[513];
+	ardop_busy_window(w);
+	for (int i = 0; i < 513; i++)
+		assert_memory_equal(&w[i], &bhWindow[i], sizeof(float));
+}
+
+/*
+ * The whole busy front end -- window, FFT, magnitude spectrum, tuning-line
+ * range -- must agree with the inherited UpdateBusyDetector path. The reference
+ * builds the spectrum with generateBH's bhWindow and the original
+ * FourierTransform, applies the same bin range, and calls the oracle
+ * BusyDetect3; ardop_busy_analyze does all of that internally. Both are driven
+ * off the same clock and their busy decision must match at every 1024-sample
+ * window.
+ */
+static void test_busy_analyze_matches_legacy(void **state)
+{
+	(void)state;
+
+	DecodeWav[0][0] = 'x';   /* route getTicks() to WavNow. */
+	generateBH();
+	float w[513];
+	ardop_busy_window(w);
+
+	ardop_busy_detector b = {0};
+	WavNow = 1000;
+	ClearBusy();
+	ardop_busy_clear(&b, 1000);
+
+	const int bw_hz = 2000, tuning_range = 100, busy_det = 5;
+	ARQBandwidth = B2000MAX;
+	BusyDet = busy_det;
+
+	/* The same tuning-line range the port computes, for the reference. */
+	int delta = (int)((float)(bw_hz / 2 + tuning_range) / 11.719f);
+	int low = 103 - delta, high = 103 + delta;
+	if (low < 3) low = 3;
+	if (high > 203) high = 203;
+
+	uint32_t rng = 0x1234ABCDu;
+	uint32_t t = 1000;
+
+	static int16_t samples[1024];
+	static float windowed[1024], re[1024], im[1024], mag[206];
+
+	for (int step = 0; step < 400; step++) {
+		t += 100;
+		WavNow = (int)t;
+
+		/* A noisy window, sometimes carrying an in-band tone so busy
+		 * actually trips and clears over the run. */
+		int noise = 200 + (int)(xorshift32(&rng) % 400u);
+		for (int i = 0; i < 1024; i++)
+			samples[i] = (int16_t)((int)(xorshift32(&rng)
+						      % (uint32_t)noise) - noise / 2);
+		if (xorshift32(&rng) & 1u) {
+			double freq = 800.0 + (xorshift32(&rng) % 1200u);
+			double amp = 3000.0 + (xorshift32(&rng) % 8000u);
+			for (int i = 0; i < 1024; i++)
+				samples[i] = (int16_t)(samples[i]
+					+ (int)(amp * sin(2.0 * 3.14159265
+							  * freq * i / 12000.0)));
+		}
+
+		/* Reference: the inherited front end + oracle detector. */
+		windowed[0] = (float)samples[0] * bhWindow[0];
+		windowed[512] = (float)samples[512] * bhWindow[512];
+		for (int i = 1; i < 512; i++) {
+			windowed[i] = (float)samples[i] * bhWindow[i];
+			windowed[1024 - i] = (float)samples[1024 - i] * bhWindow[i];
+		}
+		FourierTransform(1024, windowed, re, im, 0);
+		for (int i = 0; i < 206; i++)
+			mag[i] = powf(re[i + 25], 2) + powf(im[i + 25], 2);
+		int oracle = BusyDetect3(mag, low, high);
+
+		bool port = ardop_busy_analyze(&b, w, samples, bw_hz,
+					       ARDOP_BW_2000, tuning_range,
+					       busy_det, t);
+
+		if ((oracle != 0) != port)
+			fail_msg("step %d: analyze legacy=%d port=%d t=%u",
+				 step, oracle, port, t);
+		assert_int_equal(b.busy_on_count, intBusyOnCnt);
+		assert_int_equal(b.last_busy ? 1 : 0, blnLastBusy ? 1 : 0);
+	}
+}
+
 int main(void)
 {
 	const struct CMUnitTest tests[] = {
 		cmocka_unit_test(test_busy_matches_legacy),
+		cmocka_unit_test(test_busy_window_matches_legacy),
+		cmocka_unit_test(test_busy_analyze_matches_legacy),
 	};
 	return cmocka_run_group_tests(tests, NULL, NULL);
 }

@@ -99,4 +99,41 @@ bool ardop_busy_detect(ardop_busy_detector *b, const float *mag, int start,
 		       int stop, ardop_bandwidth bw, int busy_det,
 		       uint32_t now_ms);
 
+/** @brief Samples one busy analysis consumes (the FFT size). */
+#define ARDOP_BUSY_WINDOW 1024
+
+/**
+ * @brief Fill the half Blackman-Harris window ::ardop_busy_analyze uses.
+ *
+ * The window is symmetric, so only the first 513 coefficients are stored (index
+ * 0..512); ::ardop_busy_analyze mirrors them for the upper half. Ported from
+ * generateBH. Call once and reuse.
+ *
+ * @param w  Output, at least 513 floats.
+ */
+void ardop_busy_window(float *w);
+
+/**
+ * @brief Analyse one 1024-sample window and update the busy state.
+ *
+ * The full front end of the inherited UpdateBusyDetector: window the samples,
+ * FFT them, form the 206-bin magnitude spectrum (~300-2700 Hz), derive the
+ * tuning-line search range from the bandwidth and tuning range, and hand it to
+ * ardop_busy_detect. The per-call magnitudes are used raw (the 0.2/0.8 spectrum
+ * average in the original feeds only the waterfall).
+ *
+ * @param b            Detector state, updated in place.
+ * @param window       The 513-coefficient half window from ardop_busy_window().
+ * @param samples      Exactly ::ARDOP_BUSY_WINDOW captured samples.
+ * @param bw_hz        Channel bandwidth in Hz (200/500/1000/2000), for the range.
+ * @param bw           Same bandwidth as the enum, selecting detector thresholds.
+ * @param tuning_range Max tuning offset searched, Hz (host TuningRange).
+ * @param busy_det     Sensitivity 0..10 (host BusyDet); 0 disables.
+ * @param now_ms       Current time, milliseconds.
+ * @return true if the channel is currently reported busy.
+ */
+bool ardop_busy_analyze(ardop_busy_detector *b, const float *window,
+			const int16_t *samples, int bw_hz, ardop_bandwidth bw,
+			int tuning_range, int busy_det, uint32_t now_ms);
+
 #endif /* ARDOP_MODEM_BUSY_H_ */

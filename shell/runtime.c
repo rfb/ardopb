@@ -134,6 +134,10 @@ bool ardop_runtime_init(ardop_runtime *rt, const int *rslens, int n_rs)
 	rt->demod.ft_ctx.valid_len = rt->valid_len;
 	rt->demod.ft_ctx.rxo = true;   /* session-independent frame-type decode. */
 
+	ardop_busy_window(rt->busy_window);
+	ardop_busy_clear(&rt->busy, 0);
+	rt->busy_det = 5;   /* the inherited default sensitivity. */
+
 	/* The state-diff baseline matches the freshly-initialised link, so the
 	 * first real change is what surfaces (not the initial values). */
 	rt->last_state = rt->link.state;
@@ -144,10 +148,61 @@ bool ardop_runtime_init(ardop_runtime *rt, const int *rslens, int n_rs)
 	return true;
 }
 
+/* Map the link's ARQ bandwidth setting to the busy detector's Hz + enum. The
+ * low two bits of the setting select the width (200/500/1000/2000), FORCED and
+ * MAX sharing a width. */
+static void busy_bandwidth(const ardop_link *l, int *hz, ardop_bandwidth *bw)
+{
+	static const int kHz[4] = {200, 500, 1000, 2000};
+	static const ardop_bandwidth kBw[4] = {ARDOP_BW_200, ARDOP_BW_500,
+					       ARDOP_BW_1000, ARDOP_BW_2000};
+	int idx = (int)l->bw_setting & 3;
+	*hz = kHz[idx];
+	*bw = kBw[idx];
+}
+
+/* Accumulate captured samples into 1024-sample windows and, while idle, run the
+ * busy detector on each; emit ARDOP_OBS_BUSY when the state changes. Busy is a
+ * DISC-state signal (the original only checks it while looking for a leader). */
+static void feed_busy(ardop_runtime *rt, const int16_t *samples, size_t n,
+		      uint64_t now_samples)
+{
+	if (rt->link.state != ARDOP_LINK_DISC)
+		return;
+
+	size_t off = 0;
+	while (off < n) {
+		size_t room = ARDOP_BUSY_WINDOW - rt->busy_accum_len;
+		size_t take = (n - off < room) ? (n - off) : room;
+		memcpy(rt->busy_accum + rt->busy_accum_len, samples + off,
+		       take * sizeof(int16_t));
+		rt->busy_accum_len += take;
+		off += take;
+		if (rt->busy_accum_len < ARDOP_BUSY_WINDOW)
+			break;
+
+		rt->busy_accum_len = 0;
+		int hz;
+		ardop_bandwidth bw;
+		busy_bandwidth(&rt->link, &hz, &bw);
+		bool busy = ardop_busy_analyze(&rt->busy, rt->busy_window,
+					       rt->busy_accum, hz, bw,
+					       rt->demod.tuning_range,
+					       rt->busy_det,
+					       (uint32_t)(now_samples / 12));
+		if (busy != rt->busy_state) {
+			rt->busy_state = busy;
+			emit(rt, &(ardop_obs){.kind = ARDOP_OBS_BUSY,
+					      .busy = busy});
+		}
+	}
+}
+
 void ardop_runtime_rx(ardop_runtime *rt, const int16_t *samples, size_t n,
 		      uint64_t now_samples)
 {
 	rt->now = now_samples;
+	feed_busy(rt, samples, n, now_samples);
 	ardop_event events[MAX_EVENTS];
 	size_t ne = ardop_demod_push(&rt->demod, samples, n, now_samples,
 				     events, MAX_EVENTS);
