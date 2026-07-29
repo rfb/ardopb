@@ -167,6 +167,35 @@ post-change call and every call after it, and no temporal smoothing at all.
   would need re-tuning together with the fix — a good candidate for `improved`
   mode once there is a way to measure busy-detector quality.
 
+### 7. 4FSK quality carries plot geometry into its own maths — RX-local
+
+`Update4FSKConstellation` (`SoundInput.c:3823`) computes the decode quality that
+is reported back to the sender (it rides in the ACK/NAK type and drives
+gear-shifting). Its running `intRad` — the distance of a symbol from the
+constellation centre — is rescaled by `PLOTRADIUS / 50` (= `42/50`) *after* each
+symbol's contribution is accumulated, and that rescaled value is a plot
+coordinate, not a distance. Because `intRad` is a single variable reused across
+symbols, a symbol whose four tones sum to zero skips the recompute and
+accumulates the *previous* symbol's plot-scaled radius instead of a real
+distance. So the quality of a frame containing a dead symbol depends on a number
+that exists only for drawing the OLED constellation.
+
+- **Category.** **RX-local**: quality is a heuristic the receiver reports; it
+  affects the *sender's* gear-shifting, not the wire format. It is a
+  [05](05-essential-vs-incidental.md) "normative-ish" value — preserve and
+  measure — not a free parameter.
+- **Handled in `core/` by** reproducing it exactly (`core/modem/rxquality.c`,
+  `ardop_quality_4fsk`): the `rad = rad * 42 / 50` rescale is kept and carries
+  across symbols, and the `max(5, …)` floor stays inside the `sum > 0` guard so a
+  dead symbol reuses the scaled value. `test/core/test_rxquality.c` pins 20 000
+  randomised patterns (including all-zero symbols) to `Update4FSKConstellation`
+  bit-for-bit.
+- **`improved` opportunity** — compute the distance without the plot rescale and
+  reset it per symbol, so a dead symbol contributes a defined value rather than a
+  leftover coordinate. The `2.7` calibration constant assumes the current
+  distribution, so it would move with the fix; worth it only alongside a
+  quality-vs-SNR measurement.
+
 ---
 
 ## How to add to this catalog
