@@ -47,7 +47,8 @@
 typedef enum {
 	ARDOP_LINK_DISC = 0,   /**< Not connected. */
 	ARDOP_LINK_ISS,        /**< Connected, this station is sending (ISS). */
-	ARDOP_LINK_IRS,        /**< Connected, this station is receiving (IRS). */
+	ARDOP_LINK_IRS_CON_ACK,/**< IRS, ConAck sent, awaiting first data. */
+	ARDOP_LINK_IRS_DATA,   /**< IRS, receiving data (steady state). */
 	ARDOP_LINK_IDLE,       /**< Connected ISS with nothing to send. */
 	ARDOP_LINK_IRS_TO_ISS, /**< Requested the link, awaiting confirmation. */
 } ardop_link_state;
@@ -147,6 +148,7 @@ typedef struct {
 	ardop_locator grid;         /**< Our grid square (for ID frames). */
 	ardop_arq_bandwidth bw_setting; /**< Our bandwidth setting. */
 	uint16_t leader_ms;         /**< Leader length for transmissions. */
+	uint16_t reply_leader_ms;   /**< Leader for quick ARQ replies (intARQDefaultDlyMs). */
 	bool listening;             /**< Answer incoming connections. */
 
 	/* --- machine state --- */
@@ -155,12 +157,18 @@ typedef struct {
 	uint8_t session_id;         /**< Current session id. */
 	uint8_t last_session_id;    /**< Retained after disconnect (for late DISC). */
 	int session_bw;             /**< Negotiated session width, Hz. */
+	bool pending;               /**< Connection pending (blnPending). */
+	ardop_stationid remote;     /**< The other station (ARQStationRemote). */
+	ardop_stationid local;      /**< The local call this session uses. */
+	int avg_quality;            /**< Running decode-quality average. */
 
 	/* --- timers, as absolute sample deadlines (0 = inactive) --- */
 	uint64_t final_id_deadline; /**< tmrFinalID: when the closing ID may go. */
+	uint64_t pending_deadline;  /**< tmrIRSPendingTimeout: auto-abort a stuck pending. */
 
 	/* --- scratch the emitted actions point into (valid until next step) --- */
-	uint8_t out_frame[ARDOP_LINK_OUT_FRAME_MAX];
+	uint8_t out_frame[ARDOP_LINK_OUT_FRAME_MAX];  /**< SEND_FRAME bytes. */
+	char out_host[128];         /**< NOTIFY_HOST text. */
 } ardop_link;
 
 /**

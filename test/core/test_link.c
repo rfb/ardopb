@@ -9,6 +9,8 @@
 
 #include "link/link.h"
 #include "codec/frame.h"
+#include "codec/stationid.h"
+#include "link/session.h"
 
 /*
  * The FSM is proven by scripted input -> action sequences, not by bit-equivalence
@@ -106,12 +108,175 @@ static void test_disc_ignores_bad_frame(void **state)
 	assert_int_equal(n, 0);
 }
 
+/* Build a ConReq payload: caller and target station IDs, six wire bytes each. */
+static void build_conreq(const char *caller, const char *target, uint8_t *out)
+{
+	ardop_stationid c, t;
+	assert_int_equal(ardop_stationid_from_str(caller, &c),
+			 ARDOP_STATIONID_OK);
+	assert_int_equal(ardop_stationid_from_str(target, &t),
+			 ARDOP_STATIONID_OK);
+	assert_true(ardop_stationid_to_buffer(&c, out));
+	assert_true(ardop_stationid_to_buffer(&t, out + ARDOP_PACKED6_SIZE));
+}
+
+/* A link listening as N0CALL, 2000 Hz max, ARQ. */
+static void setup_listening(ardop_link *l)
+{
+	ardop_link_init(l);
+	assert_int_equal(ardop_stationid_from_str("N0CALL", &l->mycall),
+			 ARDOP_STATIONID_OK);
+	l->bw_setting = ARDOP_ARQ_BW_2000_MAX;
+	l->listening = true;
+}
+
+/*
+ * DISC + a ConReq addressed to us with a compatible bandwidth: answer ConAck
+ * (carrying the session id and the received-leader timing), tell the host the
+ * oncoming TARGET, become IRS pending the first data, and arm the 10 s pending
+ * timeout. Mirrors ProcessRcvdARQFrame's DISC/ConReq accept arm (rule 1.2).
+ */
+static void test_disc_conreq_accept(void **state)
+{
+	(void)state;
+
+	ardop_link l;
+	setup_listening(&l);
+
+	uint8_t payload[2 * ARDOP_PACKED6_SIZE];
+	build_conreq("W1ABC", "N0CALL", payload);
+
+	ardop_link_input in = {0};
+	in.kind = ARDOP_IN_RX;
+	in.as.rx.kind = ARDOP_EV_FRAME_DECODED;
+	in.as.rx.frame_type = ARDOP_FT_CON_REQ_2000M;
+	in.as.rx.data = payload;
+	in.as.rx.data_len = sizeof(payload);
+	in.as.rx.leader_ms = 240;
+
+	uint64_t now = 1000000;
+	ardop_action acts[8];
+	size_t n = ardop_link_step(&l, &in, now, acts, 8);
+
+	const ardop_action *send = find_action(acts, n, ARDOP_ACT_SEND_FRAME);
+	assert_non_null(send);
+	assert_int_equal(send->frame_type, ARDOP_FT_CON_ACK_2000);
+	/* ConAck with timing: [type][type^session][t][t][t], t = 240/10 = 24. */
+	assert_int_equal(send->data_len, 5);
+	uint8_t session = ardop_session_id("W1ABC", "N0CALL");
+	assert_int_equal(send->data[0], ARDOP_FT_CON_ACK_2000);
+	assert_int_equal(send->data[1], ARDOP_FT_CON_ACK_2000 ^ session);
+	assert_int_equal(send->data[2], 24);
+	assert_int_equal(send->leader_ms, l.reply_leader_ms);
+
+	const ardop_action *notify = find_action(acts, n, ARDOP_ACT_NOTIFY_HOST);
+	assert_non_null(notify);
+	assert_string_equal((const char *)notify->data, "TARGET N0CALL");
+
+	const ardop_action *timer = find_action(acts, n, ARDOP_ACT_SET_TIMER);
+	assert_non_null(timer);
+	assert_int_equal(timer->deadline, now + 10000 * 12);
+
+	assert_int_equal(l.state, ARDOP_LINK_IRS_CON_ACK);
+	assert_true(l.pending);
+	assert_int_equal(l.session_id, session);
+	assert_int_equal(l.session_bw, 2000);
+}
+
+/* ConReq to us but incompatible bandwidth: ConRejBW, REJECTEDBW, stay DISC. */
+static void test_disc_conreq_reject_bw(void **state)
+{
+	(void)state;
+
+	ardop_link l;
+	setup_listening(&l);
+	l.bw_setting = ARDOP_ARQ_BW_200_FORCED;   /* forces 200 Hz */
+
+	uint8_t payload[2 * ARDOP_PACKED6_SIZE];
+	build_conreq("W1ABC", "N0CALL", payload);
+
+	ardop_link_input in = {0};
+	in.kind = ARDOP_IN_RX;
+	in.as.rx.kind = ARDOP_EV_FRAME_DECODED;
+	in.as.rx.frame_type = ARDOP_FT_CON_REQ_2000F;  /* forced 2000 */
+	in.as.rx.data = payload;
+	in.as.rx.data_len = sizeof(payload);
+
+	ardop_action acts[8];
+	size_t n = ardop_link_step(&l, &in, 1000, acts, 8);
+
+	const ardop_action *send = find_action(acts, n, ARDOP_ACT_SEND_FRAME);
+	assert_non_null(send);
+	assert_int_equal(send->frame_type, ARDOP_FT_CON_REJ_BW);
+	const ardop_action *notify = find_action(acts, n, ARDOP_ACT_NOTIFY_HOST);
+	assert_non_null(notify);
+	assert_string_equal((const char *)notify->data, "REJECTEDBW W1ABC");
+	assert_int_equal(l.state, ARDOP_LINK_DISC);
+}
+
+/* ConReq addressed to someone else: CANCELPENDING, no frame, stay DISC. */
+static void test_disc_conreq_not_for_us(void **state)
+{
+	(void)state;
+
+	ardop_link l;
+	setup_listening(&l);
+
+	uint8_t payload[2 * ARDOP_PACKED6_SIZE];
+	build_conreq("W1ABC", "K9XYZ", payload);   /* not N0CALL */
+
+	ardop_link_input in = {0};
+	in.kind = ARDOP_IN_RX;
+	in.as.rx.kind = ARDOP_EV_FRAME_DECODED;
+	in.as.rx.frame_type = ARDOP_FT_CON_REQ_2000M;
+	in.as.rx.data = payload;
+	in.as.rx.data_len = sizeof(payload);
+
+	ardop_action acts[8];
+	size_t n = ardop_link_step(&l, &in, 1000, acts, 8);
+
+	assert_null(find_action(acts, n, ARDOP_ACT_SEND_FRAME));
+	const ardop_action *notify = find_action(acts, n, ARDOP_ACT_NOTIFY_HOST);
+	assert_non_null(notify);
+	assert_string_equal((const char *)notify->data, "CANCELPENDING");
+	assert_int_equal(l.state, ARDOP_LINK_DISC);
+}
+
+/* A ConReq while not listening is ignored entirely. */
+static void test_disc_conreq_not_listening(void **state)
+{
+	(void)state;
+
+	ardop_link l;
+	setup_listening(&l);
+	l.listening = false;
+
+	uint8_t payload[2 * ARDOP_PACKED6_SIZE];
+	build_conreq("W1ABC", "N0CALL", payload);
+
+	ardop_link_input in = {0};
+	in.kind = ARDOP_IN_RX;
+	in.as.rx.kind = ARDOP_EV_FRAME_DECODED;
+	in.as.rx.frame_type = ARDOP_FT_CON_REQ_2000M;
+	in.as.rx.data = payload;
+	in.as.rx.data_len = sizeof(payload);
+
+	ardop_action acts[8];
+	size_t n = ardop_link_step(&l, &in, 1000, acts, 8);
+	assert_int_equal(n, 0);
+	assert_int_equal(l.state, ARDOP_LINK_DISC);
+}
+
 int main(void)
 {
 	const struct CMUnitTest tests[] = {
 		cmocka_unit_test(test_disc_discframe_sends_end),
 		cmocka_unit_test(test_disc_ignores_other_frames),
 		cmocka_unit_test(test_disc_ignores_bad_frame),
+		cmocka_unit_test(test_disc_conreq_accept),
+		cmocka_unit_test(test_disc_conreq_reject_bw),
+		cmocka_unit_test(test_disc_conreq_not_for_us),
+		cmocka_unit_test(test_disc_conreq_not_listening),
 	};
 	return cmocka_run_group_tests(tests, NULL, NULL);
 }

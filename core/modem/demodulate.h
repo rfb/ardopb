@@ -64,6 +64,8 @@ typedef struct {
 	uint8_t frame_type;   /**< FRAME_DECODED / FRAME_BAD. */
 	float offset_hz;      /**< LEADER_DETECTED tuning offset. */
 	int sn;               /**< LEADER_DETECTED signal/noise, dB. */
+	int leader_ms;        /**< Received leader length, ms; feeds ConAck timing
+	                       *   (FRAME_DECODED). */
 	const uint8_t *data;  /**< FRAME_DECODED payload; points into the demod,
 	                       *   valid until the next push. */
 	int data_len;         /**< FRAME_DECODED payload length. */

@@ -1274,6 +1274,7 @@ static void deliver_frame(ardop_demod *d, ardop_event *events, size_t *nev,
 	}
 
 	ev.frame_type = d->frame_type;
+	ev.leader_ms = d->leader_rcvd_ms;
 	if (all_ok) {
 		ev.kind = ARDOP_EV_FRAME_DECODED;
 		ev.data = d->payload;
