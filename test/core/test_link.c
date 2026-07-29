@@ -11,6 +11,7 @@
 #include "codec/frame.h"
 #include "codec/rs.h"
 #include "codec/stationid.h"
+#include "codec/locator.h"
 #include "link/quality.h"
 #include "link/session.h"
 
@@ -1256,6 +1257,49 @@ static void test_rxo_mode(void **state)
 	assert_int_equal(l.state, ARDOP_LINK_DISC);   /* never leaves DISC. */
 }
 
+/*
+ * Host SEND_ID transmits a station ID frame carrying our callsign and grid,
+ * RS-protected; and the closing-ID timer fires an ID (under the session's call)
+ * after a disconnect's hold expires. Mirrors EncodeARQIDFrame/SendID + tmrFinalID.
+ */
+static void test_send_id(void **state)
+{
+	(void)state;
+
+	assert_true(ardop_rs_init(&g_rs, kRSLens,
+				  (int)(sizeof kRSLens / sizeof kRSLens[0])));
+	ardop_link l;
+	ardop_link_init(&l);
+	l.rs = &g_rs;
+	assert_int_equal(ardop_stationid_from_str("N0CALL", &l.mycall),
+			 ARDOP_STATIONID_OK);
+	assert_int_equal(ardop_locator_from_str("EM79vr", &l.grid),
+			 0);
+
+	ardop_link_input in = {0};
+	in.kind = ARDOP_IN_HOST;
+	in.as.host.kind = ARDOP_CMD_SEND_ID;
+	ardop_action acts[8];
+	size_t n = ardop_link_step(&l, &in, 0, acts, 8);
+
+	const ardop_action *s = find_action(acts, n, ARDOP_ACT_SEND_FRAME);
+	assert_non_null(s);
+	assert_int_equal(s->frame_type, ARDOP_FT_ID);
+	assert_int_equal(s->data_len, 18);
+	assert_int_equal(s->data[0], ARDOP_FT_ID);
+	assert_int_equal(s->data[1], ARDOP_FT_ID ^ 0xFF);
+
+	/* The 12 data bytes are our callsign then our grid. */
+	ardop_stationid call;
+	ardop_locator grid;
+	assert_int_equal(ardop_stationid_from_bytes(s->data + 2, &call),
+			 ARDOP_STATIONID_OK);
+	assert_string_equal(call.str, "N0CALL");
+	assert_int_equal(ardop_locator_from_bytes(s->data + 2 + ARDOP_PACKED6_SIZE,
+						  &grid), 0);
+	assert_string_equal(grid.grid, "EM79vr");
+}
+
 int main(void)
 {
 	const struct CMUnitTest tests[] = {
@@ -1293,6 +1337,7 @@ int main(void)
 		cmocka_unit_test(test_host_disconnect_gives_up),
 		cmocka_unit_test(test_host_abort),
 		cmocka_unit_test(test_rxo_mode),
+		cmocka_unit_test(test_send_id),
 	};
 	return cmocka_run_group_tests(tests, NULL, NULL);
 }

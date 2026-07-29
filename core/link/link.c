@@ -5,6 +5,8 @@
 
 #include "codec/dataframe.h"
 #include "codec/frame.h"
+#include "codec/locator.h"
+#include "codec/packed6.h"
 #include "codec/stationid.h"
 #include "link/bandwidth.h"
 #include "link/datamodes.h"
@@ -89,6 +91,22 @@ static void send_control(ardop_link *l, ardop_action *actions, size_t *n,
 	size_t len = ardop_encode_control(frame_type, l->session_id,
 					  l->out_frame);
 	send_frame(l, actions, n, max, frame_type, len);
+}
+
+/* Build a station ID frame into out_frame: [ID][ID^0xFF][call(6)][grid(6)][RS4].
+ * Returns the length (18) or 0 on failure. Ported from EncodeARQIDFrame. */
+static size_t build_id_frame(ardop_link *l, const ardop_stationid *call)
+{
+	l->out_frame[0] = ARDOP_FT_ID;
+	l->out_frame[1] = (uint8_t)(ARDOP_FT_ID ^ 0xFF);   /* ID: session 0xFF. */
+	if (!ardop_stationid_to_buffer(call, &l->out_frame[2]))
+		return 0;
+	const ardop_packed6 *grid = ardop_locator_as_bytes(&l->grid);
+	memcpy(&l->out_frame[2 + ARDOP_PACKED6_SIZE], grid->b,
+	       ARDOP_PACKED6_SIZE);
+	if (!l->rs || ardop_rs_append(l->rs, &l->out_frame[2], 12, 4) != 0)
+		return 0;
+	return 18;
 }
 
 /*
@@ -231,6 +249,7 @@ static size_t step_disc_conreq(ardop_link *l, const ardop_event *ev,
 	l->pending = true;
 	l->remote = caller;
 	l->local = target;
+	l->final_id_call = target;   /* ID under the call this session answered on. */
 	l->avg_quality = 0;
 	l->state = ARDOP_LINK_IRS_CON_ACK;
 	l->pending_deadline = now + ARDOP_MS_TO_SAMPLES(IRS_PENDING_TIMEOUT_MS);
@@ -540,6 +559,20 @@ static size_t step_timer(ardop_link *l, uint64_t now, ardop_action *actions,
 		l->pending_deadline = 0;
 		notify_host(l, actions, &n, max, "DISCONNECTED");
 		reset_to_disc(l);
+		return n;
+	}
+
+	/* The closing ID after END: once the hold expires, send our ID frame.
+	 * The original also waits for the busy detector to clear; that gate lands
+	 * with the BUSY_CHANGED events. */
+	if (l->final_id_deadline && now >= l->final_id_deadline) {
+		l->final_id_deadline = 0;
+		/* Use the session's local call if we captured one, else ours. */
+		const ardop_stationid *call = l->final_id_call.str[0]
+					      ? &l->final_id_call : &l->mycall;
+		size_t len = build_id_frame(l, call);
+		if (len > 0)
+			send_frame(l, actions, &n, max, ARDOP_FT_ID, len);
 		return n;
 	}
 
@@ -1055,6 +1088,21 @@ static size_t step_host_break(ardop_link *l)
 	return 0;
 }
 
+/* Host SEND_ID: transmit a station ID frame (only while disconnected, so it does
+ * not collide with an ARQ exchange). Ported from SendID. */
+static size_t step_host_id(ardop_link *l, ardop_action *actions, size_t max)
+{
+	size_t n = 0;
+
+	if (l->state != ARDOP_LINK_DISC)
+		return 0;
+
+	size_t len = build_id_frame(l, &l->mycall);
+	if (len > 0)
+		send_frame(l, actions, &n, max, ARDOP_FT_ID, len);
+	return n;
+}
+
 static size_t step_host(ardop_link *l, const ardop_host_cmd *cmd,
 			uint64_t now, ardop_action *actions, size_t max)
 {
@@ -1076,9 +1124,10 @@ static size_t step_host(ardop_link *l, const ardop_host_cmd *cmd,
 		    && cmd->arg <= ARDOP_MODE_RXO)
 			l->mode = (ardop_link_mode)cmd->arg;
 		return 0;
-	case ARDOP_CMD_FEC_SEND:
 	case ARDOP_CMD_SEND_ID:
-		/* Ported as these commands land. */
+		return step_host_id(l, actions, max);
+	case ARDOP_CMD_FEC_SEND:
+		/* Ported as FEC mode lands. */
 		return 0;
 	}
 	return 0;
