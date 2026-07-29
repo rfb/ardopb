@@ -150,6 +150,7 @@ typedef struct {
 	uint16_t leader_ms;         /**< Leader length for transmissions. */
 	uint16_t reply_leader_ms;   /**< Leader for quick ARQ replies (intARQDefaultDlyMs). */
 	bool listening;             /**< Answer incoming connections. */
+	bool enable_ping_ack;       /**< Reply to pings addressed to us (EnablePingAck). */
 
 	/* --- machine state --- */
 	ardop_link_mode mode;       /**< ARQ / FEC / RXO. */
@@ -160,6 +161,7 @@ typedef struct {
 	bool pending;               /**< Connection pending (blnPending). */
 	ardop_stationid remote;     /**< The other station (ARQStationRemote). */
 	ardop_stationid local;      /**< The local call this session uses. */
+	ardop_stationid final_id_call; /**< Callsign for the closing ID frame. */
 	int avg_quality;            /**< Running decode-quality average. */
 
 	/* --- timers, as absolute sample deadlines (0 = inactive) --- */

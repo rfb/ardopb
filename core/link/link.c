@@ -152,6 +152,50 @@ static size_t step_disc_conreq(ardop_link *l, const ardop_event *ev,
 	return n;
 }
 
+/*
+ * A received PING. If it is for us and we answer pings, reply PINGACK carrying
+ * the measured S/N and quality, tell the host, and arm a short closing-ID timer
+ * (with the ping's target as the ID call) unless one is already pending.
+ * Otherwise tell the host to cancel any pending. Ported from ProcessPingFrame's
+ * DISC arm.
+ */
+static size_t step_disc_ping(ardop_link *l, const ardop_event *ev,
+			     uint64_t now, ardop_action *actions, size_t max)
+{
+	size_t n = 0;
+	ardop_stationid caller, target;
+
+	if (ev->data_len < 2 * (int)ARDOP_PACKED6_SIZE)
+		return 0;
+	if (ardop_stationid_from_bytes(ev->data, &caller) != ARDOP_STATIONID_OK)
+		return 0;
+	if (ardop_stationid_from_bytes(ev->data + ARDOP_PACKED6_SIZE, &target)
+	    != ARDOP_STATIONID_OK)
+		return 0;
+
+	if (l->listening && l->enable_ping_ack
+	    && ardop_ping_to_me(&caller, &target, &l->mycall, l->auxcalls,
+				l->n_aux)) {
+		size_t len = ardop_encode_pingack(ARDOP_FT_PING_ACK, ev->sn,
+						  ev->quality, l->out_frame);
+		send_frame(l, actions, &n, max, ARDOP_FT_PING_ACK, len);
+		notify_host(l, actions, &n, max, "PINGREPLY");
+
+		/* Send an ID after the PingAck, under the ping's target call --
+		 * but only if a closing ID is not already scheduled. */
+		if (l->final_id_deadline == 0) {
+			l->final_id_call = target;
+			l->final_id_deadline =
+				now + ARDOP_MS_TO_SAMPLES(FINAL_ID_HOLD_MS);
+			set_timer(l, actions, &n, max, l->final_id_deadline);
+		}
+		return n;
+	}
+
+	notify_host(l, actions, &n, max, "CANCELPENDING");
+	return n;
+}
+
 static size_t step_disc_rx(ardop_link *l, const ardop_event *ev,
 			   uint64_t now, ardop_action *actions, size_t max)
 {
@@ -178,6 +222,10 @@ static size_t step_disc_rx(ardop_link *l, const ardop_event *ev,
 	if (ev->frame_type >= ARDOP_FT_CON_REQ_MIN
 	    && ev->frame_type <= ARDOP_FT_CON_REQ_MAX)
 		return step_disc_conreq(l, ev, now, actions, max);
+
+	/* A ping. */
+	if (ev->frame_type == ARDOP_FT_PING)
+		return step_disc_ping(l, ev, now, actions, max);
 
 	return n;
 }

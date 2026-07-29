@@ -64,6 +64,8 @@ typedef struct {
 	uint8_t frame_type;   /**< FRAME_DECODED / FRAME_BAD. */
 	float offset_hz;      /**< LEADER_DETECTED tuning offset. */
 	int sn;               /**< LEADER_DETECTED signal/noise, dB. */
+	int quality;          /**< Decode quality 0..100 (FRAME_DECODED); feeds the
+	                       *   ACK/NAK and PingAck a receiver sends back. */
 	int leader_ms;        /**< Received leader length, ms; feeds ConAck timing
 	                       *   (FRAME_DECODED). */
 	const uint8_t *data;  /**< FRAME_DECODED payload; points into the demod,

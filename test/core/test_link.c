@@ -267,6 +267,105 @@ static void test_disc_conreq_not_listening(void **state)
 	assert_int_equal(l.state, ARDOP_LINK_DISC);
 }
 
+static ardop_link_input ping_input(const uint8_t *payload, int sn, int quality)
+{
+	ardop_link_input in = {0};
+	in.kind = ARDOP_IN_RX;
+	in.as.rx.kind = ARDOP_EV_FRAME_DECODED;
+	in.as.rx.frame_type = ARDOP_FT_PING;
+	in.as.rx.data = payload;
+	in.as.rx.data_len = 2 * ARDOP_PACKED6_SIZE;
+	in.as.rx.sn = sn;
+	in.as.rx.quality = quality;
+	return in;
+}
+
+/*
+ * DISC + a PING to us, PingAck enabled: reply PINGACK carrying the measured S/N
+ * and quality, tell the host PINGREPLY, and arm a closing-ID timer under the
+ * ping's target call. Mirrors ProcessPingFrame's ack arm.
+ */
+static void test_disc_ping_replies(void **state)
+{
+	(void)state;
+
+	ardop_link l;
+	setup_listening(&l);
+	l.enable_ping_ack = true;
+
+	uint8_t payload[2 * ARDOP_PACKED6_SIZE];
+	build_conreq("W1ABC", "N0CALL", payload);   /* caller>target, same layout */
+
+	uint64_t now = 2000000;
+	ardop_link_input in = ping_input(payload, 15, 80);
+	ardop_action acts[8];
+	size_t n = ardop_link_step(&l, &in, now, acts, 8);
+
+	const ardop_action *send = find_action(acts, n, ARDOP_ACT_SEND_FRAME);
+	assert_non_null(send);
+	assert_int_equal(send->frame_type, ARDOP_FT_PING_ACK);
+	assert_int_equal(send->data_len, 5);
+	assert_int_equal(send->data[0], ARDOP_FT_PING_ACK);
+	assert_int_equal(send->data[1], ARDOP_FT_PING_ACK ^ 0xFF);
+	/* S/N 15 -> ((15+10)&0x1F)<<3 = 200; quality 80 -> (80-30)/10 = 5;
+	 * info = 205 = 0xCD, repeated. */
+	assert_int_equal(send->data[2], 0xCD);
+	assert_int_equal(send->data[3], 0xCD);
+
+	const ardop_action *notify = find_action(acts, n, ARDOP_ACT_NOTIFY_HOST);
+	assert_non_null(notify);
+	assert_string_equal((const char *)notify->data, "PINGREPLY");
+
+	const ardop_action *timer = find_action(acts, n, ARDOP_ACT_SET_TIMER);
+	assert_non_null(timer);
+	assert_int_equal(timer->deadline, now + 3000 * 12);
+	assert_int_equal(l.state, ARDOP_LINK_DISC);   /* a ping does not connect */
+}
+
+/* PING to us but PingAck disabled: no reply, just CANCELPENDING. */
+static void test_disc_ping_ack_disabled(void **state)
+{
+	(void)state;
+
+	ardop_link l;
+	setup_listening(&l);
+	l.enable_ping_ack = false;
+
+	uint8_t payload[2 * ARDOP_PACKED6_SIZE];
+	build_conreq("W1ABC", "N0CALL", payload);
+
+	ardop_link_input in = ping_input(payload, 10, 50);
+	ardop_action acts[8];
+	size_t n = ardop_link_step(&l, &in, 1000, acts, 8);
+
+	assert_null(find_action(acts, n, ARDOP_ACT_SEND_FRAME));
+	const ardop_action *notify = find_action(acts, n, ARDOP_ACT_NOTIFY_HOST);
+	assert_non_null(notify);
+	assert_string_equal((const char *)notify->data, "CANCELPENDING");
+}
+
+/* PING to someone else: CANCELPENDING, no reply. */
+static void test_disc_ping_not_for_us(void **state)
+{
+	(void)state;
+
+	ardop_link l;
+	setup_listening(&l);
+	l.enable_ping_ack = true;
+
+	uint8_t payload[2 * ARDOP_PACKED6_SIZE];
+	build_conreq("W1ABC", "K9XYZ", payload);   /* not N0CALL */
+
+	ardop_link_input in = ping_input(payload, 10, 50);
+	ardop_action acts[8];
+	size_t n = ardop_link_step(&l, &in, 1000, acts, 8);
+
+	assert_null(find_action(acts, n, ARDOP_ACT_SEND_FRAME));
+	const ardop_action *notify = find_action(acts, n, ARDOP_ACT_NOTIFY_HOST);
+	assert_non_null(notify);
+	assert_string_equal((const char *)notify->data, "CANCELPENDING");
+}
+
 int main(void)
 {
 	const struct CMUnitTest tests[] = {
@@ -277,6 +376,9 @@ int main(void)
 		cmocka_unit_test(test_disc_conreq_reject_bw),
 		cmocka_unit_test(test_disc_conreq_not_for_us),
 		cmocka_unit_test(test_disc_conreq_not_listening),
+		cmocka_unit_test(test_disc_ping_replies),
+		cmocka_unit_test(test_disc_ping_ack_disabled),
+		cmocka_unit_test(test_disc_ping_not_for_us),
 	};
 	return cmocka_run_group_tests(tests, NULL, NULL);
 }
