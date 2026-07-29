@@ -1352,10 +1352,24 @@ size_t ardop_link_step(ardop_link *l, const ardop_link_input *in,
 		return step_timer(l, now_samples, actions, max_actions);
 
 	case ARDOP_IN_TX_DONE:
-		/* Drives the back-to-back FEC broadcast; ARQ is ACK/timer-driven
-		 * and ignores it. */
+		/* Drives the back-to-back FEC broadcast. */
 		if (l->state == ARDOP_LINK_FEC_SEND)
 			return step_fec_tx_done(l, actions, max_actions);
+		/* ARQ: the reply/repeat window is time spent *waiting* for the
+		 * other station, so it starts when our transmission actually
+		 * finishes -- not when the frame was queued, which would count
+		 * the frame's own airtime against the timeout. The original got
+		 * this for free by blocking through the send (SoundFlush); with a
+		 * non-blocking modulator we re-arm on the observed TX completion.
+		 * Ported from the dttNextPlay/tmrSendTimeout arming after send. */
+		if (l->repeat_deadline) {
+			size_t n = 0;
+			l->repeat_deadline = now_samples
+				+ ARDOP_MS_TO_SAMPLES(l->repeat_interval_ms);
+			set_timer(l, actions, &n, max_actions,
+				  l->repeat_deadline);
+			return n;
+		}
 		return 0;
 	}
 	return 0;

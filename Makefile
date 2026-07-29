@@ -144,6 +144,7 @@ CORE_TESTS = \
 	test/core/test_link \
 	test/core/test_loopback \
 	test/core/test_runtime \
+	test/core/test_loop \
 
 # define newline for use with foreach to run tests
 define newline
@@ -225,7 +226,7 @@ core/%.o: core/%.c
 # The shell/ layer -- the I/O-free main-loop body (Stage 4, W2).  It composes
 # core/ under the same -Werror standard; it is not part of check-pure (it is the
 # app layer that will grow the impure platform backends).
-SHELL_OBJS = shell/runtime.o
+SHELL_OBJS = shell/runtime.o shell/loop.o
 
 shell/%.o: shell/%.c
 	$(CC) -I. $(CORE_CPPFLAGS) $(CFLAGS) $(CORE_CFLAGS) -c -o $@ $<
