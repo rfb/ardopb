@@ -20,6 +20,15 @@
  * (the sample clock removed the need), no `SlowCPU`, no half-duplex handle
  * juggling in the protocol path. CAT/GPIO/rigctl PTT and WinMM are follow-ups;
  * this covers the common ALSA + serial-RTS case.
+ *
+ * @par Running under WSL (WSLg)
+ * There is no separate PulseAudio backend: on WSL the Windows audio devices are
+ * reached through the ALSA -> PulseAudio plugin. Install `libasound2-plugins`
+ * and point ALSA's `default` device at pulse in `~/.asoundrc`
+ * (`pcm.!default { type pulse } ctl.!default { type pulse }`); then run with
+ * `--alsa default default`. The same works against a native PipeWire/PulseAudio
+ * server, and against a virtual loopback (a null sink and its monitor) for
+ * two-station interop tests without hardware.
  */
 typedef struct ardop_alsa_backend ardop_alsa_backend;
 
