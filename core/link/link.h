@@ -202,6 +202,7 @@ typedef struct {
 	uint16_t repeat_interval_ms;/**< Resend interval while repeating (0 = none). */
 	uint8_t repeat_frame_type;  /**< Frame type to resend on the repeat timer. */
 	size_t repeat_frame_len;    /**< Length of the frame in out_frame to resend. */
+	int disc_repeat_count;      /**< DISC resends so far while disconnecting (0 = not). */
 
 	/* --- scratch the emitted actions point into (valid until next step) --- */
 	uint8_t out_frame[ARDOP_LINK_OUT_FRAME_MAX];  /**< SEND_FRAME bytes. */

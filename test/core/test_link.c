@@ -1109,6 +1109,120 @@ static void test_idle_disc(void **state)
 	assert_int_equal(l.state, ARDOP_LINK_DISC);
 }
 
+/*
+ * Host DISCONNECT while connected: announce it and send DISC; when the peer
+ * answers END, drop to DISC and tell the host DISCONNECTED. Mirrors
+ * CheckForDisconnect + the END teardown.
+ */
+static void test_host_disconnect(void **state)
+{
+	(void)state;
+
+	ardop_link l;
+	iss_sending(&l, 40);   /* connected ISS. */
+
+	ardop_link_input dc = {0};
+	dc.kind = ARDOP_IN_HOST;
+	dc.as.host.kind = ARDOP_CMD_DISCONNECT;
+	ardop_action acts[8];
+	size_t n = ardop_link_step(&l, &dc, 1000, acts, 8);
+
+	const ardop_action *notify = find_action(acts, n, ARDOP_ACT_NOTIFY_HOST);
+	assert_non_null(notify);
+	assert_string_equal((const char *)notify->data,
+			    "STATUS INITIATING ARQ DISCONNECT");
+	const ardop_action *s = find_action(acts, n, ARDOP_ACT_SEND_FRAME);
+	assert_non_null(s);
+	assert_int_equal(s->frame_type, ARDOP_FT_DISC);
+
+	/* Peer answers END. */
+	ardop_link_input in = {0};
+	in.kind = ARDOP_IN_RX;
+	in.as.rx.kind = ARDOP_EV_FRAME_DECODED;
+	in.as.rx.frame_type = ARDOP_FT_END;
+	n = ardop_link_step(&l, &in, 2000, acts, 8);
+	notify = find_action(acts, n, ARDOP_ACT_NOTIFY_HOST);
+	assert_non_null(notify);
+	assert_string_equal((const char *)notify->data, "DISCONNECTED");
+	assert_int_equal(l.state, ARDOP_LINK_DISC);
+}
+
+/* DISCONNECT while already disconnected is ignored. */
+static void test_host_disconnect_ignored(void **state)
+{
+	(void)state;
+
+	ardop_link l;
+	ardop_link_init(&l);
+
+	ardop_link_input dc = {0};
+	dc.kind = ARDOP_IN_HOST;
+	dc.as.host.kind = ARDOP_CMD_DISCONNECT;
+	ardop_action acts[8];
+	size_t n = ardop_link_step(&l, &dc, 1000, acts, 8);
+
+	assert_null(find_action(acts, n, ARDOP_ACT_SEND_FRAME));
+	const ardop_action *notify = find_action(acts, n, ARDOP_ACT_NOTIFY_HOST);
+	assert_non_null(notify);
+	assert_string_equal((const char *)notify->data, "DISCONNECT IGNORED");
+}
+
+/* A repeated DISC gives up (forces the disconnect) after five tries. */
+static void test_host_disconnect_gives_up(void **state)
+{
+	(void)state;
+
+	ardop_link l;
+	iss_sending(&l, 40);
+
+	ardop_link_input dc = {0};
+	dc.kind = ARDOP_IN_HOST;
+	dc.as.host.kind = ARDOP_CMD_DISCONNECT;
+	ardop_action acts[8];
+	(void)ardop_link_step(&l, &dc, 1000, acts, 8);
+
+	/* Fire the repeat timer repeatedly; the fifth firing forces disconnect. */
+	ardop_link_input none = {0};
+	none.kind = ARDOP_IN_NONE;
+	uint64_t t = 1000;
+	int forced = 0;
+	for (int i = 0; i < 6; i++) {
+		t += 24000 + 1;   /* past each 2 s repeat interval. */
+		size_t n = ardop_link_step(&l, &none, t, acts, 8);
+		const ardop_action *notify =
+			find_action(acts, n, ARDOP_ACT_NOTIFY_HOST);
+		if (notify && strcmp((const char *)notify->data,
+				     "DISCONNECTED") == 0) {
+			forced = 1;
+			break;
+		}
+	}
+	assert_true(forced);
+	assert_int_equal(l.state, ARDOP_LINK_DISC);
+}
+
+/* Host ABORT drops the link immediately and clears the queue. */
+static void test_host_abort(void **state)
+{
+	(void)state;
+
+	ardop_link l;
+	iss_sending(&l, 100);
+	assert_true(l.tx_len > 0);
+
+	ardop_link_input ab = {0};
+	ab.kind = ARDOP_IN_HOST;
+	ab.as.host.kind = ARDOP_CMD_ABORT;
+	ardop_action acts[8];
+	size_t n = ardop_link_step(&l, &ab, 1000, acts, 8);
+
+	const ardop_action *notify = find_action(acts, n, ARDOP_ACT_NOTIFY_HOST);
+	assert_non_null(notify);
+	assert_string_equal((const char *)notify->data, "ABORT");
+	assert_int_equal(l.state, ARDOP_LINK_DISC);
+	assert_int_equal(l.tx_len, 0);
+}
+
 int main(void)
 {
 	const struct CMUnitTest tests[] = {
@@ -1141,6 +1255,10 @@ int main(void)
 		cmocka_unit_test(test_timer_pending_timeout),
 		cmocka_unit_test(test_idle_resumes_on_data),
 		cmocka_unit_test(test_idle_disc),
+		cmocka_unit_test(test_host_disconnect),
+		cmocka_unit_test(test_host_disconnect_ignored),
+		cmocka_unit_test(test_host_disconnect_gives_up),
+		cmocka_unit_test(test_host_abort),
 	};
 	return cmocka_run_group_tests(tests, NULL, NULL);
 }

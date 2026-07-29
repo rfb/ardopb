@@ -144,6 +144,31 @@ static void send_end_and_disconnect(ardop_link *l, uint64_t now,
 	reset_to_disc(l);
 }
 
+/*
+ * Teardown frames common to every connected state: a DISC from the peer is
+ * answered with END and returns us to DISC; an END (the peer's answer to our own
+ * DISC, or their disconnect) drops us straight to DISC. Returns true, with
+ * actions filled, if @p ev was a teardown frame.
+ */
+static bool connected_teardown(ardop_link *l, const ardop_event *ev,
+			       uint64_t now, ardop_action *actions, size_t *n,
+			       size_t max)
+{
+	if (ev->kind != ARDOP_EV_FRAME_DECODED)
+		return false;
+
+	if (ev->frame_type == ARDOP_FT_DISC) {
+		send_end_and_disconnect(l, now, actions, n, max);
+		return true;
+	}
+	if (ev->frame_type == ARDOP_FT_END) {
+		notify_host(l, actions, n, max, "DISCONNECTED");
+		reset_to_disc(l);
+		return true;
+	}
+	return false;
+}
+
 /* --- DISC: not connected ------------------------------------------------- */
 
 /*
@@ -519,6 +544,18 @@ static size_t step_timer(ardop_link *l, uint64_t now, ardop_action *actions,
 	}
 
 	if (l->repeat_deadline && now >= l->repeat_deadline) {
+		/* A DISC we are sending to disconnect gets five tries, then we
+		 * force the disconnect regardless (GetNextARQFrame's DISC path). */
+		if (l->repeat_frame_type == ARDOP_FT_DISC
+		    && l->disc_repeat_count > 0) {
+			l->disc_repeat_count++;
+			if (l->disc_repeat_count > 5) {
+				l->disc_repeat_count = 0;
+				notify_host(l, actions, &n, max, "DISCONNECTED");
+				reset_to_disc(l);
+				return n;
+			}
+		}
 		ardop_action a = {0};
 		a.kind = ARDOP_ACT_SEND_FRAME;
 		a.frame_type = l->repeat_frame_type;
@@ -598,6 +635,9 @@ static size_t step_iss_data_rx(ardop_link *l, const ardop_event *ev,
 	if (ev->kind != ARDOP_EV_FRAME_DECODED)
 		return 0;
 
+	if (connected_teardown(l, ev, now, actions, &n, max))
+		return n;
+
 	/* DataACK: confirm and advance. */
 	if (ev->frame_type >= ARDOP_FRAME_DATA_ACK_MIN) {
 		l->ack_ctr++;
@@ -626,12 +666,6 @@ static size_t step_iss_data_rx(ardop_link *l, const ardop_event *ev,
 		return n;
 	}
 
-	/* DISC from the IRS: tear down (rule 1.5). */
-	if (ev->frame_type == ARDOP_FT_DISC) {
-		send_end_and_disconnect(l, now, actions, &n, max);
-		return n;
-	}
-
 	return 0;
 }
 
@@ -652,14 +686,12 @@ static size_t step_idle_rx(ardop_link *l, const ardop_event *ev, uint64_t now,
 	if (ev->kind != ARDOP_EV_FRAME_DECODED)
 		return 0;
 
+	if (connected_teardown(l, ev, now, actions, &n, max))
+		return n;
+
 	if (ev->frame_type >= ARDOP_FRAME_DATA_ACK_MIN) {
 		if (l->tx_len > 0)
 			iss_send_next(l, now, actions, &n, max);
-		return n;
-	}
-
-	if (ev->frame_type == ARDOP_FT_DISC) {
-		send_end_and_disconnect(l, now, actions, &n, max);
 		return n;
 	}
 
@@ -747,12 +779,8 @@ static size_t step_irs_data_rx(ardop_link *l, const ardop_event *ev,
 {
 	size_t n = 0;
 
-	/* DISC from the ISS: disconnect (rule 1.5). */
-	if (ev->kind == ARDOP_EV_FRAME_DECODED
-	    && ev->frame_type == ARDOP_FT_DISC) {
-		send_end_and_disconnect(l, now, actions, &n, max);
+	if (connected_teardown(l, ev, now, actions, &n, max))
 		return n;
-	}
 
 	/* A good data frame: deliver if new, always ACK. */
 	if (ev->kind == ARDOP_EV_FRAME_DECODED
@@ -869,6 +897,45 @@ static size_t step_host_send_data(ardop_link *l, const ardop_host_cmd *cmd,
 	return n;
 }
 
+/*
+ * Host DISCONNECT: from a connected state, begin a graceful disconnect -- send
+ * DISC and repeat it (up to five tries in the timer service) until the peer
+ * answers END. From DISC there is nothing to disconnect. Ported from
+ * CheckForDisconnect.
+ */
+static size_t step_host_disconnect(ardop_link *l, uint64_t now,
+				   ardop_action *actions, size_t max)
+{
+	size_t n = 0;
+
+	if (l->state == ARDOP_LINK_DISC) {
+		notify_host(l, actions, &n, max, "DISCONNECT IGNORED");
+		return n;
+	}
+
+	notify_host(l, actions, &n, max, "STATUS INITIATING ARQ DISCONNECT");
+	send_control(l, actions, &n, max, ARDOP_FT_DISC);
+	l->disc_repeat_count = 1;
+	l->repeat_interval_ms = 2000;
+	arm_repeat(l, ARDOP_FT_DISC, 2, now);
+	return n;
+}
+
+/*
+ * Host ABORT (dirty disconnect): drop the link immediately, discard queued data,
+ * and tell the host. Ported from Abort()/GetNextARQFrame's blnAbort path.
+ */
+static size_t step_host_abort(ardop_link *l, ardop_action *actions, size_t max)
+{
+	size_t n = 0;
+
+	l->tx_len = 0;
+	l->disc_repeat_count = 0;
+	reset_to_disc(l);
+	notify_host(l, actions, &n, max, "ABORT");
+	return n;
+}
+
 static size_t step_host(ardop_link *l, const ardop_host_cmd *cmd,
 			uint64_t now, ardop_action *actions, size_t max)
 {
@@ -878,7 +945,9 @@ static size_t step_host(ardop_link *l, const ardop_host_cmd *cmd,
 	case ARDOP_CMD_SEND_DATA:
 		return step_host_send_data(l, cmd, actions, max);
 	case ARDOP_CMD_DISCONNECT:
+		return step_host_disconnect(l, now, actions, max);
 	case ARDOP_CMD_ABORT:
+		return step_host_abort(l, actions, max);
 	case ARDOP_CMD_SET_MODE:
 	case ARDOP_CMD_FEC_SEND:
 	case ARDOP_CMD_SEND_ID:
