@@ -131,6 +131,19 @@ static int conack_bandwidth(uint8_t frame_type)
 	return 0;
 }
 
+/* A DISC was received while connected: tell the host, answer END, hold the
+ * closing ID, and return to DISC keeping the session id for a late DISC
+ * (rule 1.5). Shared by the ISS, IRS and IDLE states. */
+static void send_end_and_disconnect(ardop_link *l, uint64_t now,
+				    ardop_action *actions, size_t *n, size_t max)
+{
+	notify_host(l, actions, n, max, "DISCONNECTED");
+	send_control(l, actions, n, max, ARDOP_FT_END);
+	l->final_id_deadline = now + ARDOP_MS_TO_SAMPLES(FINAL_ID_HOLD_MS);
+	set_timer(l, actions, n, max, l->final_id_deadline);
+	reset_to_disc(l);
+}
+
 /* --- DISC: not connected ------------------------------------------------- */
 
 /*
@@ -615,11 +628,38 @@ static size_t step_iss_data_rx(ardop_link *l, const ardop_event *ev,
 
 	/* DISC from the IRS: tear down (rule 1.5). */
 	if (ev->frame_type == ARDOP_FT_DISC) {
-		notify_host(l, actions, &n, max, "DISCONNECTED");
-		send_control(l, actions, &n, max, ARDOP_FT_END);
-		l->final_id_deadline = now + ARDOP_MS_TO_SAMPLES(FINAL_ID_HOLD_MS);
-		set_timer(l, actions, &n, max, l->final_id_deadline);
-		reset_to_disc(l);
+		send_end_and_disconnect(l, now, actions, &n, max);
+		return n;
+	}
+
+	return 0;
+}
+
+/* --- IDLE: connected ISS with nothing to send ---------------------------- */
+
+/*
+ * Idling: the ISS has drained its queue and is sending IDLE keep-alives. A
+ * DataACK to an IDLE resumes sending if the host has since queued data (else it
+ * keeps idling, the repeat timer resending IDLE); a DISC ends the session.
+ * Ported from ProcessRcvdARQFrame's IDLE arm. The 9-minute ID (needs the
+ * ID-frame builder) and the BREAK turnover (A5) are deferred.
+ */
+static size_t step_idle_rx(ardop_link *l, const ardop_event *ev, uint64_t now,
+			   ardop_action *actions, size_t max)
+{
+	size_t n = 0;
+
+	if (ev->kind != ARDOP_EV_FRAME_DECODED)
+		return 0;
+
+	if (ev->frame_type >= ARDOP_FRAME_DATA_ACK_MIN) {
+		if (l->tx_len > 0)
+			iss_send_next(l, now, actions, &n, max);
+		return n;
+	}
+
+	if (ev->frame_type == ARDOP_FT_DISC) {
+		send_end_and_disconnect(l, now, actions, &n, max);
 		return n;
 	}
 
@@ -707,15 +747,10 @@ static size_t step_irs_data_rx(ardop_link *l, const ardop_event *ev,
 {
 	size_t n = 0;
 
-	/* DISC from the ISS: tell the host, answer END, hold the closing ID,
-	 * and return to DISC keeping the session id for a late DISC (rule 1.5). */
+	/* DISC from the ISS: disconnect (rule 1.5). */
 	if (ev->kind == ARDOP_EV_FRAME_DECODED
 	    && ev->frame_type == ARDOP_FT_DISC) {
-		notify_host(l, actions, &n, max, "DISCONNECTED");
-		send_control(l, actions, &n, max, ARDOP_FT_END);
-		l->final_id_deadline = now + ARDOP_MS_TO_SAMPLES(FINAL_ID_HOLD_MS);
-		set_timer(l, actions, &n, max, l->final_id_deadline);
-		reset_to_disc(l);
+		send_end_and_disconnect(l, now, actions, &n, max);
 		return n;
 	}
 
@@ -893,6 +928,8 @@ size_t ardop_link_step(ardop_link *l, const ardop_link_input *in,
 			return step_iss_data_rx(l, &in->as.rx, now_samples,
 						actions, max_actions);
 		case ARDOP_LINK_IDLE:
+			return step_idle_rx(l, &in->as.rx, now_samples,
+					    actions, max_actions);
 		case ARDOP_LINK_IRS_TO_ISS:
 			/* Ported as these states land. */
 			return 0;

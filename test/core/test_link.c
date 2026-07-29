@@ -1041,6 +1041,74 @@ static void test_timer_pending_timeout(void **state)
 	assert_int_equal(l.state, ARDOP_LINK_DISC);
 }
 
+/* Drive a connected ISS to IDLE (queue empty). */
+static void iss_idle(ardop_link *l)
+{
+	iss_to_con_ack(l);
+	ardop_link_input ack = dataack(90);
+	ardop_action acts[8];
+	(void)ardop_link_step(l, &ack, 400, acts, 8);
+	assert_int_equal(l->state, ARDOP_LINK_IDLE);
+}
+
+/*
+ * Idling: a DataACK to an IDLE with nothing queued keeps idling (no data frame);
+ * once the host queues data, the next DataACK resumes sending. Mirrors the IDLE
+ * arm's "ACK with data -> ISS Data" path.
+ */
+static void test_idle_resumes_on_data(void **state)
+{
+	(void)state;
+
+	ardop_link l;
+	iss_idle(&l);
+
+	ardop_action acts[8];
+
+	/* ACK while still empty: keep idling, send nothing new. */
+	ardop_link_input ack = dataack(90);
+	size_t n = ardop_link_step(&l, &ack, 500, acts, 8);
+	assert_null(find_action(acts, n, ARDOP_ACT_SEND_FRAME));
+	assert_int_equal(l.state, ARDOP_LINK_IDLE);
+
+	/* Host queues data. */
+	const uint8_t data[] = {1, 2, 3, 4, 5, 6, 7, 8};
+	ardop_link_input q = host_send(data, sizeof(data));
+	(void)ardop_link_step(&l, &q, 600, acts, 8);
+
+	/* Next ACK resumes sending a data frame. */
+	ack = dataack(90);
+	n = ardop_link_step(&l, &ack, 700, acts, 8);
+	const ardop_action *s = find_action(acts, n, ARDOP_ACT_SEND_FRAME);
+	assert_non_null(s);
+	assert_int_equal(s->frame_type, 0x4C);   /* mode 0 data frame. */
+	assert_int_equal(l.state, ARDOP_LINK_ISS);
+}
+
+/* Idling + DISC: disconnect (DISCONNECTED + END, back to DISC). */
+static void test_idle_disc(void **state)
+{
+	(void)state;
+
+	ardop_link l;
+	iss_idle(&l);
+
+	ardop_link_input in = {0};
+	in.kind = ARDOP_IN_RX;
+	in.as.rx.kind = ARDOP_EV_FRAME_DECODED;
+	in.as.rx.frame_type = ARDOP_FT_DISC;
+	ardop_action acts[8];
+	size_t n = ardop_link_step(&l, &in, 800, acts, 8);
+
+	const ardop_action *notify = find_action(acts, n, ARDOP_ACT_NOTIFY_HOST);
+	assert_non_null(notify);
+	assert_string_equal((const char *)notify->data, "DISCONNECTED");
+	const ardop_action *end = find_action(acts, n, ARDOP_ACT_SEND_FRAME);
+	assert_non_null(end);
+	assert_int_equal(end->frame_type, ARDOP_FT_END);
+	assert_int_equal(l.state, ARDOP_LINK_DISC);
+}
+
 int main(void)
 {
 	const struct CMUnitTest tests[] = {
@@ -1071,6 +1139,8 @@ int main(void)
 		cmocka_unit_test(test_timer_repeat_resends),
 		cmocka_unit_test(test_timer_repeat_follows_latest),
 		cmocka_unit_test(test_timer_pending_timeout),
+		cmocka_unit_test(test_idle_resumes_on_data),
+		cmocka_unit_test(test_idle_disc),
 	};
 	return cmocka_run_group_tests(tests, NULL, NULL);
 }
