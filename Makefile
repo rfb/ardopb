@@ -39,7 +39,7 @@
 #		sudo apt install mingw-w64
 #		make CC_NATIVE=gcc CC=i686-w64-mingw32-gcc-posix WIN32=1
 
-.PHONY: all buildtest test golden golden-regen golden-core core check-pure check-headers check-standalone test-core ardopb
+.PHONY: all buildtest test golden golden-regen golden-core golden-shell core check-pure check-headers check-standalone test-core ardopb
 
 # list all object files and their directories
 # keep sorted by filename
@@ -370,6 +370,19 @@ test/golden/core_decode_wav: test/golden/core_decode_wav.c $(CORE_OBJS) core/mod
 
 golden-core: test/golden/core_decode_wav
 	cd test/golden && ./test_golden_core.py
+
+# `make golden-shell` runs the same frozen recordings through the assembled
+# *shell* -- ardop_runtime_rx, the RXO link path and the observation stream --
+# instead of the core demod alone, and judges the identical output against the
+# manifest.  Passing proves the shell wires the demodulator exactly as the core
+# does.  Uses -I. so the shell/ headers resolve; needs the shell objects and
+# -std=c11's POSIX-free core flags (the shell is pure, no sockets here).
+test/golden/shell_decode_wav: test/golden/shell_decode_wav.c $(CORE_OBJS) $(SHELL_OBJS) core/modem/templates.o
+	$(CC) -I. $(CORE_CPPFLAGS) $(CFLAGS) $(CORE_CFLAGS) \
+		$< $(CORE_OBJS) $(SHELL_OBJS) core/modem/templates.o -lm -o $@
+
+golden-shell: test/golden/shell_decode_wav
+	cd test/golden && GOLDEN_DECODE_BIN=./shell_decode_wav ./test_golden_core.py
 
 # rule to make test-case executables from their sources
 test/ardop/test_%: test/ardop/test_%.c $(OBJS) $(TEST_OBJS_COMMON)
