@@ -118,6 +118,7 @@ CORE_OBJS = \
 	core/link/quality.o \
 	core/link/bandwidth.o \
 	core/link/frames.o \
+	core/link/link.o \
 
 CORE_TESTS = \
 	test/core/test_crc \
@@ -134,6 +135,7 @@ CORE_TESTS = \
 	test/core/test_quality \
 	test/core/test_bandwidth \
 	test/core/test_frames \
+	test/core/test_link \
 
 # define newline for use with foreach to run tests
 define newline
