@@ -15,7 +15,10 @@
  * here rather than via SoundInput.c's headers.
  */
 void Update4FSKConstellation(int *intToneMags, int *intQuality);
+int UpdatePhaseConstellation(short *intPhases, short *intMag, char *strMod,
+			     int blnQAM);
 extern int intToneMagsLength;
+extern int intPhasesLen;
 extern int AccumulateStats;
 
 static uint32_t xorshift32(uint32_t *s)
@@ -84,10 +87,71 @@ static void test_quality_4fsk_matches_legacy(void **state)
 	}
 }
 
+/*
+ * The PSK/QAM quality must match UpdatePhaseConstellation across 4PSK, 8PSK and
+ * 16QAM over random differential phases and magnitudes. QAM magnitudes are drawn
+ * bimodally so both the inner and outer amplitude rings are populated (the ring
+ * averages would divide by zero otherwise, in the port and the original alike).
+ */
+static void test_quality_psk_matches_legacy(void **state)
+{
+	(void)state;
+
+	AccumulateStats = 0;
+	uint32_t rng = 0x9B5CAFE3u;
+
+	const struct { char mod[8]; int order; int qam; } modes[] = {
+		{"4PSK", 4, 0}, {"8PSK", 8, 0}, {"16QAM", 8, 1},
+	};
+
+	for (int trial = 0; trial < 20000; trial++) {
+		int m = (int)(xorshift32(&rng) % 3u);
+		int len = 2 + (int)(xorshift32(&rng) % 40u);
+		short phases[64], mags[64];
+
+		for (int i = 0; i < len; i++) {
+			/* Milliradians in (-pi, pi]. */
+			phases[i] = (short)((int)(xorshift32(&rng) % 6284u)
+					    - 3142);
+			if (modes[m].qam) {
+				/* Bimodal: inner (~4-8k) or outer (~14-20k). */
+				if (xorshift32(&rng) & 1u)
+					mags[i] = (short)(4000 + (int)(
+						xorshift32(&rng) % 4000u));
+				else
+					mags[i] = (short)(14000 + (int)(
+						xorshift32(&rng) % 6000u));
+			} else {
+				mags[i] = (short)(xorshift32(&rng) % 30000u);
+			}
+		}
+
+		short ophases[64], omags[64];
+		char mod[8];
+		for (int i = 0; i < len; i++) {
+			ophases[i] = phases[i];
+			omags[i] = mags[i];
+		}
+		for (int i = 0; i < 8; i++)
+			mod[i] = modes[m].mod[i];
+
+		intPhasesLen = len;
+		int oq = UpdatePhaseConstellation(ophases, omags, mod,
+						  modes[m].qam);
+		int pq = ardop_quality_psk(phases, mags, len, modes[m].order,
+					   modes[m].qam != 0);
+
+		if (oq != pq)
+			fail_msg("trial %d (%s len %d): legacy %d, port %d",
+				 trial, modes[m].mod, len, oq, pq);
+	}
+}
+
 int main(void)
 {
 	const struct CMUnitTest tests[] = {
 		cmocka_unit_test(test_quality_4fsk_matches_legacy),
+		cmocka_unit_test(test_quality_psk_matches_legacy),
 	};
 	return cmocka_run_group_tests(tests, NULL, NULL);
 }

@@ -1,6 +1,7 @@
 #ifndef ARDOP_MODEM_RXQUALITY_H_
 #define ARDOP_MODEM_RXQUALITY_H_
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #include "common/mustuse.h"
@@ -36,5 +37,26 @@
  */
 ARDOP_MUSTUSE int ardop_quality_4fsk(const int32_t *tone_mags,
 				     int tone_mags_len);
+
+/**
+ * @brief PSK/QAM decode quality from per-symbol differential phases and mags.
+ *
+ * Ported from `UpdatePhaseConstellation` (its quality path). For each symbol
+ * after the reference it measures the phase error from the nearest constellation
+ * point; quality falls as `200 * average_phase_error / phase_step` grows. For
+ * 16QAM it additionally splits the symbols into an inner and outer amplitude
+ * ring and scales the score down by the average radius error of each. The
+ * reference symbol (index 0) is excluded. Uses the reduced-precision pi the rest
+ * of the modem uses.
+ *
+ * @param phases     Differential phases, milliradians, one per symbol.
+ * @param mags       Symbol magnitudes, one per symbol.
+ * @param phases_len Number of symbols including the reference (> 1).
+ * @param psk_order  4 or 8 (the PSK order; ignored and treated as 8 for QAM).
+ * @param is_qam     True for 16QAM (adds the amplitude-ring term).
+ * @return The decode quality, >= 0 (not clamped above; ~100 for a clean frame).
+ */
+ARDOP_MUSTUSE int ardop_quality_psk(const short *phases, const short *mags,
+				    int phases_len, int psk_order, bool is_qam);
 
 #endif /* ARDOP_MODEM_RXQUALITY_H_ */
