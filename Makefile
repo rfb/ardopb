@@ -105,6 +105,7 @@ TEST_OBJS_COMMON = \
 # yet linked into ardopcf.
 CORE_OBJS = \
 	core/codec/crc.o \
+	core/codec/dataframe.o \
 	core/codec/frame.o \
 	core/codec/locator.o \
 	core/codec/packed6.o \
@@ -122,6 +123,7 @@ CORE_OBJS = \
 
 CORE_TESTS = \
 	test/core/test_crc \
+	test/core/test_dataframe \
 	test/core/test_frame \
 	test/core/test_locator \
 	test/core/test_packed6 \
