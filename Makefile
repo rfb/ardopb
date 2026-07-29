@@ -118,6 +118,7 @@ CORE_OBJS = \
 	core/link/session.o \
 	core/link/quality.o \
 	core/link/bandwidth.o \
+	core/link/datamodes.o \
 	core/link/frames.o \
 	core/link/link.o \
 
@@ -136,6 +137,7 @@ CORE_TESTS = \
 	test/core/test_session \
 	test/core/test_quality \
 	test/core/test_bandwidth \
+	test/core/test_datamodes \
 	test/core/test_frames \
 	test/core/test_link \
 
