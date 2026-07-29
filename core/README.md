@@ -118,6 +118,7 @@ core/
   codec/     frame tables, RS, CRC, Packed6, StationId   — pure, no state
   modem/     modulate / demodulate / sync / busy detect  — explicit state
   link/      ARQ + FEC + RXO state machines              — explicit state
+../shell/    runtime: the I/O-free main-loop body (Stage 4) — composes the above
 ```
 
 Dependencies point down only: `link` → `modem` → `codec`. The only thing any

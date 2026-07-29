@@ -143,6 +143,7 @@ CORE_TESTS = \
 	test/core/test_frames \
 	test/core/test_link \
 	test/core/test_loopback \
+	test/core/test_runtime \
 
 # define newline for use with foreach to run tests
 define newline
@@ -221,8 +222,16 @@ CORE_CPPFLAGS = -Icore -Isrc
 core/%.o: core/%.c
 	$(CC) $(CORE_CPPFLAGS) $(CFLAGS) $(CORE_CFLAGS) -c -o $@ $<
 
+# The shell/ layer -- the I/O-free main-loop body (Stage 4, W2).  It composes
+# core/ under the same -Werror standard; it is not part of check-pure (it is the
+# app layer that will grow the impure platform backends).
+SHELL_OBJS = shell/runtime.o
+
+shell/%.o: shell/%.c
+	$(CC) -I. $(CORE_CPPFLAGS) $(CFLAGS) $(CORE_CFLAGS) -c -o $@ $<
+
 # `make core` builds the rebuilt layers.
-core: $(CORE_OBJS)
+core: $(CORE_OBJS) $(SHELL_OBJS)
 
 # `make check-pure` enforces the rule that makes core/ testable: no mutable
 # global state.  This is a link-time fact, not a code-review habit -- see
@@ -281,13 +290,13 @@ test-core: $(CORE_TESTS)
 # Core tests link the inherited objects too, because the equivalence tests use
 # the old implementation as an oracle.  That dependency disappears when the old
 # code does.
-test/core/test_%: test/core/test_%.c $(CORE_OBJS) $(OBJS) $(TEST_OBJS_COMMON)
+test/core/test_%: test/core/test_%.c $(CORE_OBJS) $(SHELL_OBJS) $(OBJS) $(TEST_OBJS_COMMON)
 	$(CC) \
-		$(CPPFLAGS) $(CORE_CPPFLAGS) -Itest/ardop \
+		$(CPPFLAGS) $(CORE_CPPFLAGS) -I. -Itest/ardop \
 		$(CFLAGS) \
 		$(LDFLAGS) \
 		$< \
-		$(CORE_OBJS) $(OBJS) $(TEST_OBJS_COMMON) \
+		$(CORE_OBJS) $(SHELL_OBJS) $(OBJS) $(TEST_OBJS_COMMON) \
 		$(LDLIBS) -lcmocka \
 		-o $@
 
