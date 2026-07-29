@@ -142,6 +142,7 @@ CORE_TESTS = \
 	test/core/test_datamodes \
 	test/core/test_frames \
 	test/core/test_link \
+	test/core/test_loopback \
 
 # define newline for use with foreach to run tests
 define newline

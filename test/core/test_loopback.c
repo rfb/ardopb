@@ -1,0 +1,225 @@
+#include <stdarg.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <setjmp.h>
+#include <string.h>
+#include <cmocka.h>
+
+#include "setup.h"
+
+#include "link/link.h"
+#include "modem/modulate.h"
+#include "modem/demodulate.h"
+#include "codec/rs.h"
+#include "codec/stationid.h"
+
+/*
+ * The prize: two ardop_link instances wired to each other through the real
+ * modulator and demodulator. One station's SEND_FRAME action is modulated to
+ * samples, pushed through the other station's demodulator, and the resulting
+ * FRAME_DECODED events are stepped into the other station's link -- exactly the
+ * signal chain a radio would carry, but in-process and deterministic. This is
+ * analysis/10 sec.9 step 3b, and it exercises codec + modem + link composing
+ * end to end in a way no single-layer test can.
+ *
+ * The demodulators run in receive-only (session-independent) mode, so a clean
+ * two-station channel needs no session-key threading between link and demod.
+ */
+
+extern const unsigned char bytValidFrameTypesALL[];
+extern int bytValidFrameTypesLengthALL;
+
+static const int kRSLens[] = {2, 4, 8, 16, 32, 36, 50, 64};
+#define NUM_RSLENS ((int)(sizeof kRSLens / sizeof kRSLens[0]))
+
+struct station {
+	ardop_link link;
+	ardop_demod demod;
+	ardop_rs rs;
+	uint8_t tx[4096];
+};
+
+static void station_init(struct station *s, const char *call, bool listening)
+{
+	assert_true(ardop_rs_init(&s->rs, kRSLens, NUM_RSLENS));
+
+	ardop_link_init(&s->link);
+	assert_int_equal(ardop_stationid_from_str(call, &s->link.mycall),
+			 ARDOP_STATIONID_OK);
+	s->link.bw_setting = ARDOP_ARQ_BW_2000_MAX;
+	s->link.rs = &s->rs;
+	s->link.tx_data = s->tx;
+	s->link.tx_cap = sizeof(s->tx);
+	s->link.listening = listening;
+
+	ardop_demod_init(&s->demod, 100, 5);
+	s->demod.rs = &s->rs;
+	s->demod.ft_ctx.valid_types = bytValidFrameTypesALL;
+	s->demod.ft_ctx.valid_len = bytValidFrameTypesLengthALL;
+	s->demod.ft_ctx.rxo = true;
+}
+
+/* A shared elapsed-sample clock for both stations' demods. */
+static uint64_t g_now = 1000000;
+
+/*
+ * Modulate one SEND_FRAME action and push it through @p rx's demodulator,
+ * stepping @p rx's link with each decoded frame. Returns @p rx's resulting
+ * actions. This is the "over the air" hop for one frame.
+ */
+static size_t hop(struct station *rx, const ardop_action *send,
+		  ardop_action *out, size_t max_out)
+{
+	static int16_t buf[ARDOP_MOD_MAX_SAMPLES];
+	ardop_mod mod;
+
+	ardop_mod_init(&mod, 30);
+	assert_true(ardop_mod_begin(&mod, send->frame_type, send->data,
+				    send->data_len, send->leader_ms, buf,
+				    ARDOP_MOD_MAX_SAMPLES));
+	size_t nsamp = ardop_mod_pull(&mod, buf, ARDOP_MOD_MAX_SAMPLES);
+
+	/* Trailing silence flushes the streaming demod's look-ahead. */
+	size_t pad = nsamp + 4800;
+	assert_true(pad <= ARDOP_MOD_MAX_SAMPLES);
+	for (size_t i = nsamp; i < pad; i++)
+		buf[i] = 0;
+
+	size_t n_out = 0;
+	for (size_t off = 0; off < pad; off += 1200) {
+		size_t chunk = pad - off < 1200 ? pad - off : 1200;
+		ardop_event evs[8];
+		size_t ne = ardop_demod_push(&rx->demod, &buf[off], chunk,
+					     g_now, evs, 8);
+		g_now += chunk;
+		for (size_t e = 0; e < ne; e++) {
+			if (evs[e].kind == ARDOP_EV_LEADER_DETECTED)
+				continue;
+			ardop_link_input in = {0};
+			in.kind = ARDOP_IN_RX;
+			in.as.rx = evs[e];
+			n_out += ardop_link_step(&rx->link, &in, g_now,
+						 &out[n_out], max_out - n_out);
+		}
+	}
+	return n_out;
+}
+
+/* Find the (single) SEND_FRAME in an action list, or NULL. */
+static const ardop_action *find_send(const ardop_action *acts, size_t n)
+{
+	for (size_t i = 0; i < n; i++)
+		if (acts[i].kind == ARDOP_ACT_SEND_FRAME)
+			return &acts[i];
+	return NULL;
+}
+
+/*
+ * A full ARQ session over the loopback: A connects to B, B answers, they
+ * complete the four-message handshake, A sends a block of data that B delivers
+ * to its host, and A disconnects. Every frame really goes through modulate +
+ * demodulate.
+ */
+static void test_loopback_connect_data_disconnect(void **state)
+{
+	(void)state;
+
+	static struct station a, b;   /* static: ~200 KB of demod/link state. */
+	station_init(&a, "N0AAA", false);
+	station_init(&b, "N0BBB", true);
+
+	ardop_action acts[16];
+	const ardop_action *send;
+
+	/* A: host CONNECT to B -> ConReq. */
+	ardop_link_input cmd = {0};
+	cmd.kind = ARDOP_IN_HOST;
+	cmd.as.host.kind = ARDOP_CMD_CONNECT;
+	assert_int_equal(ardop_stationid_from_str("N0BBB", &cmd.as.host.target),
+			 ARDOP_STATIONID_OK);
+	cmd.as.host.bandwidth = ARDOP_ARQ_BW_UNDEFINED;
+	size_t n = ardop_link_step(&a.link, &cmd, g_now, acts, 16);
+	send = find_send(acts, n);
+	assert_non_null(send);
+	assert_int_equal(a.link.state, ARDOP_LINK_ISS_CON_REQ);
+
+	/* ConReq A->B: B answers ConAck, becomes IRS pending. */
+	n = hop(&b, send, acts, 16);
+	send = find_send(acts, n);
+	assert_non_null(send);
+	assert_int_equal(b.link.state, ARDOP_LINK_IRS_CON_ACK);
+
+	/* ConAck B->A: A adopts the width, replies ConAck. */
+	n = hop(&a, send, acts, 16);
+	send = find_send(acts, n);
+	assert_non_null(send);
+	assert_int_equal(a.link.state, ARDOP_LINK_ISS_CON_ACK);
+	assert_int_equal(a.link.session_bw, 2000);
+
+	/* ConAck A->B: B completes, sends DataACK, is connected. */
+	n = hop(&b, send, acts, 16);
+	send = find_send(acts, n);
+	assert_non_null(send);
+	assert_int_equal(b.link.state, ARDOP_LINK_IRS_DATA);
+
+	/* Queue data on A before it sees the DataACK. */
+	const uint8_t payload[] = "Hello over the air, N0BBB!";
+	int plen = (int)sizeof(payload) - 1;   /* drop the NUL. */
+	ardop_link_input data = {0};
+	data.kind = ARDOP_IN_HOST;
+	data.as.host.kind = ARDOP_CMD_SEND_DATA;
+	data.as.host.data = payload;
+	data.as.host.data_len = (size_t)plen;
+	(void)ardop_link_step(&a.link, &data, g_now, acts, 16);
+
+	/* DataACK B->A: A is connected and sends the first data frame. */
+	n = hop(&a, send, acts, 16);
+	send = find_send(acts, n);
+	assert_non_null(send);
+	assert_int_equal(a.link.state, ARDOP_LINK_ISS);
+
+	/* Data A->B: B delivers it to its host and ACKs. */
+	n = hop(&b, send, acts, 16);
+	const ardop_action *deliver = NULL;
+	for (size_t i = 0; i < n; i++)
+		if (acts[i].kind == ARDOP_ACT_DELIVER_DATA)
+			deliver = &acts[i];
+	assert_non_null(deliver);
+	assert_int_equal(deliver->data_len, plen);
+	assert_memory_equal(deliver->data, payload, (size_t)plen);
+	send = find_send(acts, n);   /* B's DataACK. */
+	assert_non_null(send);
+
+	/* DataACK B->A: queue drained, A falls to IDLE. */
+	n = hop(&a, send, acts, 16);
+	assert_int_equal(a.link.state, ARDOP_LINK_IDLE);
+	assert_int_equal(a.link.tx_len, 0);
+
+	/* A: host DISCONNECT -> DISC; B answers END; A ends. */
+	ardop_link_input dc = {0};
+	dc.kind = ARDOP_IN_HOST;
+	dc.as.host.kind = ARDOP_CMD_DISCONNECT;
+	n = ardop_link_step(&a.link, &dc, g_now, acts, 16);
+	send = find_send(acts, n);
+	assert_non_null(send);
+	assert_int_equal(send->frame_type, ARDOP_FT_DISC);
+
+	/* DISC A->B: B disconnects and sends END. */
+	n = hop(&b, send, acts, 16);
+	assert_int_equal(b.link.state, ARDOP_LINK_DISC);
+	send = find_send(acts, n);
+	assert_non_null(send);
+	assert_int_equal(send->frame_type, ARDOP_FT_END);
+
+	/* END B->A: A disconnects. */
+	(void)hop(&a, send, acts, 16);
+	assert_int_equal(a.link.state, ARDOP_LINK_DISC);
+}
+
+int main(void)
+{
+	const struct CMUnitTest tests[] = {
+		cmocka_unit_test(test_loopback_connect_data_disconnect),
+	};
+	return cmocka_run_group_tests(tests, NULL, NULL);
+}
