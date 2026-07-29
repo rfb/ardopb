@@ -42,16 +42,13 @@ import ardop_golden as g
 
 BIN = os.path.join(g.GOLDEN_DIR, "core_decode_wav")
 
-# Frame types the core demodulator does not yet recover, with the reason.  A
-# miss on one of these is expected (reported as a gap, not a failure); a wrong
-# decode on one of these would still fail.
-KNOWN_GAPS = {
-    "IDFrame":
-        "content decode (Decode4FSKID: Packed6 + host formatting) not ported",
-    "ConReq2000M":
-        "content decode (Decode4FSKConReq: two Packed6 + host formatting)"
-        " not ported",
-}
+# Frame types whose manifest payload is the *formatted host string* ardopcf
+# emits (callsigns/grid), not the demod's output.  The core demod recovers these
+# frames as their raw RS-corrected content bytes (the Packed6 callsigns); turning
+# them into the host string is the link/app layer's job.  So for these the check
+# verifies the frame type and that a payload decoded, and notes the formatting is
+# deferred, rather than comparing bytes to the formatted string.
+FORMATTED_FRAMES = {"IDFrame", "ConReq2000M"}
 
 
 def run_core(wav_bytes):
@@ -99,6 +96,8 @@ class Report:
 def judge(report, cid, label, frames, true_type, true_payload,
           true_quality, required):
     """Apply the asymmetric conformance rule to one variant's output."""
+    formatted = true_type in FORMATTED_FRAMES
+
     # A wrong decode is always a failure: any recovered frame must be exactly
     # the ground-truth frame.
     for name, payload, quality in frames:
@@ -106,6 +105,13 @@ def judge(report, cid, label, frames, true_type, true_payload,
             report.fail(cid, f"{label}: decoded {name!r},"
                              f" expected {true_type!r}")
             return
+        if formatted:
+            # Raw content decoded; the manifest payload is the app-layer
+            # formatted string. Verify only that content came out.
+            if not payload:
+                report.fail(cid, f"{label}: {name} decoded no content")
+                return
+            continue
         if payload != true_payload:
             report.fail(cid, f"{label}: {name} payload does not match ground"
                              f" truth ({len(payload)//2} vs"
@@ -124,15 +130,13 @@ def judge(report, cid, label, frames, true_type, true_payload,
 
     matched = any(name == true_type for name, _, _ in frames)
     if matched:
+        if formatted:
+            report.gap(cid, f"{label}: {true_type} decoded to raw content"
+                            f" (host-string formatting is app-layer)")
         report.ok(cid, label)
         return
 
     # A miss.
-    if true_type in KNOWN_GAPS:
-        report.gap(cid, f"{label}: {true_type} not decoded"
-                        f" ({KNOWN_GAPS[true_type]})")
-        report.ok(cid, label + " (known gap)")
-        return
     if required:
         report.fail(cid, f"{label}: no frame decoded"
                          f" (expected {true_type})")

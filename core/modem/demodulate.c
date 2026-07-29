@@ -1237,12 +1237,55 @@ static void correct_phase_for_tuning_offset(short *phase, int len, int psk_mode)
  * frame_data; PSK/QAM leave phases/mags to decode here). Turn each carrier into
  * bytes, RS-correct it, concatenate the payloads, and emit the result.
  */
+/*
+ * A content control frame (ID, ConReq, Ping, ConAck, PingAck): one 4FSK carrier
+ * carrying [data][RS] with no length byte or CRC. RS-correct the block (or pass
+ * it through when it carries no parity) and hand the raw data bytes up; turning
+ * them into callsigns or timing is the link/app layer's job. Ported from the
+ * Decode4FSK{ID,ConReq,ConAck,PingAck} structure, minus the host formatting.
+ */
+static void deliver_content_control(ardop_demod *d, ardop_event *events,
+				    size_t *nev, size_t max_events)
+{
+	ardop_event ev = {0};
+	bool ok = true;
+
+	if (d->frame_rs_len > 0) {
+		int r = ardop_rs_correct(d->rs, d->frame_data[0],
+					 d->frame_data_len + d->frame_rs_len,
+					 d->frame_rs_len, false);
+		ok = (r >= 0);
+	}
+
+	ev.frame_type = d->frame_type;
+	ev.leader_ms = d->leader_rcvd_ms;
+	ev.quality = ardop_quality_4fsk(d->frame_tone_mags, d->tone_mags_len);
+	if (ok) {
+		memcpy(d->payload, d->frame_data[0],
+		       (size_t)d->frame_data_len);
+		ev.kind = ARDOP_EV_FRAME_DECODED;
+		ev.data = d->payload;
+		ev.data_len = d->frame_data_len;
+	} else {
+		ev.kind = ARDOP_EV_FRAME_BAD;
+	}
+	emit(events, nev, max_events, &ev);
+}
+
 static void deliver_frame(ardop_demod *d, ardop_event *events, size_t *nev,
 			  size_t max_events)
 {
 	int frame_len = 0;
 	bool all_ok = true;
 	ardop_event ev = {0};
+
+	/* ID / ConReq / Ping / ConAck / PingAck carry a payload but no
+	 * length/CRC framing, so they decode differently from a data frame. */
+	if (!ardop_frame_is_data(d->frame_type)
+	    && !is_short_control_frame(d->frame_type)) {
+		deliver_content_control(d, events, nev, max_events);
+		return;
+	}
 
 	for (int c = 0; c < d->frame_num_car; c++) {
 		bool ok = false;
