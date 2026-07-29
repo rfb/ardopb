@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "codec/crc.h"
 #include "codec/dataframe.h"
 #include "codec/frame.h"
 #include "codec/locator.h"
@@ -1088,6 +1089,33 @@ static size_t step_host_break(ardop_link *l)
 	return 0;
 }
 
+static void fec_send_next(ardop_link *l, ardop_action *actions, size_t *n,
+			  size_t max);
+
+/* Host FECSEND: start (or add to) a FEC broadcast of the queued data. The frame
+ * type is cmd->arg when given, else the standing fec_frame_type. Ported from
+ * StartFEC. Only starts while idle (DISC); while already sending, data is simply
+ * queued and drains behind the current broadcast. */
+static size_t step_host_fec_send(ardop_link *l, const ardop_host_cmd *cmd,
+				 ardop_action *actions, size_t max)
+{
+	size_t n = 0;
+
+	if (cmd->arg)
+		l->fec_frame_type = (uint8_t)cmd->arg;
+
+	l->mode = ARDOP_MODE_FEC;
+	if (l->state == ARDOP_LINK_FEC_SEND)
+		return 0;   /* already broadcasting; new data was queued. */
+	if (l->state != ARDOP_LINK_DISC)
+		return 0;
+
+	l->session_id = 0;
+	l->state = ARDOP_LINK_FEC_SEND;
+	fec_send_next(l, actions, &n, max);
+	return n;
+}
+
 /* Host SEND_ID: transmit a station ID frame (only while disconnected, so it does
  * not collide with an ARQ exchange). Ported from SendID. */
 static size_t step_host_id(ardop_link *l, ardop_action *actions, size_t max)
@@ -1127,8 +1155,7 @@ static size_t step_host(ardop_link *l, const ardop_host_cmd *cmd,
 	case ARDOP_CMD_SEND_ID:
 		return step_host_id(l, actions, max);
 	case ARDOP_CMD_FEC_SEND:
-		/* Ported as FEC mode lands. */
-		return 0;
+		return step_host_fec_send(l, cmd, actions, max);
 	}
 	return 0;
 }
@@ -1145,6 +1172,97 @@ void ardop_link_init(ardop_link *l)
 	l->last_data_to_host = -1;
 	l->last_acked_type = -1;
 	l->tuning_range = 100;   /* inherited default; selects the 2000 modes. */
+}
+
+/* --- FEC: broadcast, no ACKs --------------------------------------------- */
+
+/* Encode and send the next FEC data frame from the queue's front, removing its
+ * bytes immediately (there are no ACKs to confirm them). When the queue is
+ * empty the broadcast is done: tell the host and return to DISC (still in FEC
+ * mode). Ported from GetNextFECFrame. */
+static void fec_send_next(ardop_link *l, ardop_action *actions, size_t *n,
+			  size_t max)
+{
+	if (l->tx_len == 0) {
+		notify_host(l, actions, n, max, "STATUS FEC send complete");
+		reset_to_disc(l);
+		return;
+	}
+
+	int cap = frame_capacity(l->fec_frame_type);
+	if (cap <= 0) {
+		reset_to_disc(l);
+		return;
+	}
+	int take = (int)l->tx_len < cap ? (int)l->tx_len : cap;
+	int len = ardop_encode_data_frame(l->rs, l->fec_frame_type, 0,
+					  l->tx_data, take, l->out_frame);
+	if (len <= 0) {
+		reset_to_disc(l);
+		return;
+	}
+	tx_dequeue(l, take);          /* no ACKs in FEC: consume now. */
+	l->fec_reps_sent = 0;
+	l->repeat_frame_type = l->fec_frame_type;
+	l->repeat_frame_len = (size_t)len;
+
+	ardop_action a = {0};
+	a.kind = ARDOP_ACT_SEND_FRAME;
+	a.frame_type = l->fec_frame_type;
+	a.data = l->out_frame;
+	a.data_len = (size_t)len;
+	a.leader_ms = l->leader_ms;
+	emit(actions, n, max, &a);
+}
+
+/* A FEC transmission just finished: repeat the frame if repeats remain, else
+ * advance to the next frame (or finish). Driven by the TX-done input. */
+static size_t step_fec_tx_done(ardop_link *l, ardop_action *actions, size_t max)
+{
+	size_t n = 0;
+
+	if (l->fec_reps_sent < l->fec_repeats) {
+		l->fec_reps_sent++;
+		ardop_action a = {0};
+		a.kind = ARDOP_ACT_SEND_FRAME;
+		a.frame_type = l->repeat_frame_type;
+		a.data = l->out_frame;
+		a.data_len = l->repeat_frame_len;
+		a.leader_ms = l->leader_ms;
+		emit(actions, &n, max, &a);
+		return n;
+	}
+
+	fec_send_next(l, actions, &n, max);
+	return n;
+}
+
+/*
+ * FEC receive: deliver every good data frame to the host, skipping a frame whose
+ * type and content match the last delivered (a repeat). Unlike ARQ there is no
+ * parity alternation, so identical consecutive payloads are indistinguishable
+ * from repeats and are dropped -- a known FEC limitation the original shares.
+ * Ported from ProcessRcvdFECDataFrame's dedup.
+ */
+static size_t step_fec_rx(ardop_link *l, const ardop_event *ev,
+			  ardop_action *actions, size_t max)
+{
+	size_t n = 0;
+
+	if (ev->kind != ARDOP_EV_FRAME_DECODED
+	    || !ardop_frame_is_data(ev->frame_type) || ev->data_len <= 0)
+		return 0;
+
+	uint16_t crc = ardop_crc16(ev->data, (size_t)ev->data_len);
+	if (l->fec_have_last && (int)ev->frame_type == l->last_data_to_host
+	    && crc == l->last_fec_crc)
+		return 0;   /* a repeat: already delivered. */
+
+	deliver_data(l, actions, &n, max, ev->data, ev->data_len);
+	l->last_data_to_host = ev->frame_type;
+	l->last_fec_crc = crc;
+	l->fec_have_last = true;
+	return n;
 }
 
 /* --- RXO: receive-only monitor mode -------------------------------------- */
@@ -1184,6 +1302,12 @@ size_t ardop_link_step(ardop_link *l, const ardop_link_input *in,
 		if (l->mode == ARDOP_MODE_RXO)
 			return step_rxo_rx(l, &in->as.rx, actions,
 					   max_actions);
+		/* FEC receive (a station in FEC mode that is not itself
+		 * broadcasting) delivers every good data frame. */
+		if (l->mode == ARDOP_MODE_FEC
+		    && l->state != ARDOP_LINK_FEC_SEND)
+			return step_fec_rx(l, &in->as.rx, actions,
+					   max_actions);
 		switch (l->state) {
 		case ARDOP_LINK_DISC:
 			return step_disc_rx(l, &in->as.rx, now_samples,
@@ -1214,6 +1338,9 @@ size_t ardop_link_step(ardop_link *l, const ardop_link_input *in,
 			 * first frame. It cannot break until then (rule 3.5). */
 			return step_irs_data_rx(l, &in->as.rx, now_samples,
 						actions, max_actions);
+		case ARDOP_LINK_FEC_SEND:
+			/* Broadcasting: not listening. */
+			return 0;
 		}
 		return 0;
 
@@ -1223,6 +1350,13 @@ size_t ardop_link_step(ardop_link *l, const ardop_link_input *in,
 
 	case ARDOP_IN_NONE:
 		return step_timer(l, now_samples, actions, max_actions);
+
+	case ARDOP_IN_TX_DONE:
+		/* Drives the back-to-back FEC broadcast; ARQ is ACK/timer-driven
+		 * and ignores it. */
+		if (l->state == ARDOP_LINK_FEC_SEND)
+			return step_fec_tx_done(l, actions, max_actions);
+		return 0;
 	}
 	return 0;
 }

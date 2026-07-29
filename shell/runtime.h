@@ -47,6 +47,8 @@ typedef struct {
 	ardop_mod mod;
 	int16_t tx_samples[ARDOP_MOD_MAX_SAMPLES];
 	bool tx_active;
+	bool ptt_keyed;   /* PTT edge state, so back-to-back frames don't re-key. */
+	uint64_t now;     /* last time seen, so pull_tx can step the link (TX_DONE). */
 
 	/* Outbound data queue the link drains (host SEND_DATA fills it). */
 	uint8_t tx_queue[16384];

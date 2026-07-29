@@ -23,8 +23,11 @@ static void start_tx(ardop_runtime *rt, uint8_t frame_type,
 			     rt->tx_samples, ARDOP_MOD_MAX_SAMPLES))
 		return;   /* unsupported/oversized frame: drop it. */
 	rt->tx_active = true;
-	if (rt->on_ptt)
-		rt->on_ptt(rt->ctx, true);
+	if (!rt->ptt_keyed) {
+		rt->ptt_keyed = true;
+		if (rt->on_ptt)
+			rt->on_ptt(rt->ctx, true);
+	}
 }
 
 /* Turn one link action into an effect. */
@@ -88,6 +91,7 @@ bool ardop_runtime_init(ardop_runtime *rt, const int *rslens, int n_rs)
 void ardop_runtime_rx(ardop_runtime *rt, const int16_t *samples, size_t n,
 		      uint64_t now_samples)
 {
+	rt->now = now_samples;
 	ardop_event events[MAX_EVENTS];
 	size_t ne = ardop_demod_push(&rt->demod, samples, n, now_samples,
 				     events, MAX_EVENTS);
@@ -103,6 +107,7 @@ void ardop_runtime_rx(ardop_runtime *rt, const int16_t *samples, size_t n,
 
 void ardop_runtime_timer(ardop_runtime *rt, uint64_t now_samples)
 {
+	rt->now = now_samples;
 	ardop_link_input in = {0};
 	in.kind = ARDOP_IN_NONE;
 	step_and_perform(rt, &in, now_samples);
@@ -111,6 +116,7 @@ void ardop_runtime_timer(ardop_runtime *rt, uint64_t now_samples)
 void ardop_runtime_host(ardop_runtime *rt, const ardop_host_cmd *cmd,
 			uint64_t now_samples)
 {
+	rt->now = now_samples;
 	ardop_link_input in = {0};
 	in.kind = ARDOP_IN_HOST;
 	in.as.host = *cmd;
@@ -124,7 +130,17 @@ size_t ardop_runtime_pull_tx(ardop_runtime *rt, int16_t *out, size_t max)
 
 	size_t n = ardop_mod_pull(&rt->mod, out, max);
 	if (n == 0) {
+		/* The frame's samples are exhausted. Tell the link the
+		 * transmission is done: in a FEC broadcast this triggers the
+		 * next frame (there is no ACK to drive it). If that starts a new
+		 * transmission, keep PTT keyed and drain it; otherwise unkey. */
 		rt->tx_active = false;
+		ardop_link_input in = {0};
+		in.kind = ARDOP_IN_TX_DONE;
+		step_and_perform(rt, &in, rt->now);
+		if (rt->tx_active)
+			return ardop_runtime_pull_tx(rt, out, max);
+		rt->ptt_keyed = false;
 		if (rt->on_ptt)
 			rt->on_ptt(rt->ctx, false);
 	}

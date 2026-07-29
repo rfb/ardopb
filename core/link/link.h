@@ -55,6 +55,7 @@ typedef enum {
 	ARDOP_LINK_IDLE,       /**< Connected ISS with nothing to send. */
 	ARDOP_LINK_IRS_TO_ISS, /**< Sent BREAK, awaiting the ACK to become ISS. */
 	ARDOP_LINK_IRS_FROM_ISS,/**< Just yielded the link; settling into IRS. */
+	ARDOP_LINK_FEC_SEND,   /**< Broadcasting FEC data (no ACKs). */
 } ardop_link_state;
 
 /** @brief Which protocol is running. */
@@ -95,6 +96,7 @@ typedef enum {
 	ARDOP_IN_NONE = 0,  /**< Timer service only. */
 	ARDOP_IN_RX,        /**< A demodulator event. */
 	ARDOP_IN_HOST,      /**< A host command. */
+	ARDOP_IN_TX_DONE,   /**< A transmission just finished (shell observed it). */
 } ardop_link_input_kind;
 
 /**
@@ -163,6 +165,8 @@ typedef struct {
 	bool use_600_modes;         /**< 600-baud FM data modes in play (Use600Modes). */
 	int tuning_range;           /**< Tuning range, Hz; 0 selects the 2000 FM modes. */
 	bool auto_break;            /**< Break automatically when the ISS idles (AutoBreak). */
+	uint8_t fec_frame_type;     /**< Data frame type used for FEC broadcast. */
+	int fec_repeats;            /**< Extra sends of each FEC frame (0..5, FECRepeats). */
 
 	/* --- machine state --- */
 	ardop_link_mode mode;       /**< ARQ / FEC / RXO. */
@@ -190,6 +194,9 @@ typedef struct {
 	uint8_t last_data_sent;     /**< Type of the outstanding data frame. */
 	uint8_t last_data_acked;    /**< Parity anchor for toggling (bytLastARQDataFrameAcked). */
 	int outstanding_len;        /**< Payload bytes in the outstanding frame. */
+	int fec_reps_sent;          /**< Repeats of the current FEC frame sent so far. */
+	uint16_t last_fec_crc;      /**< CRC of the last FEC payload delivered (dedup). */
+	bool fec_have_last;         /**< Whether last_fec_crc/last_data_to_host are set. */
 
 	/* --- gear-shift state (Gearshift_9) --- */
 	int ack_ctr;                /**< ACKs since the last shift (intACKctr). */

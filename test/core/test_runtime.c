@@ -28,6 +28,10 @@ struct capture {
 	uint8_t data[1024];  /* last DELIVER_DATA payload. */
 	size_t data_len;
 	bool ptt;
+	int ptt_edges;       /* count of key/unkey transitions. */
+	uint8_t acc[4096];   /* all DELIVER_DATA payloads concatenated. */
+	size_t acc_len;
+	int frames;          /* number of DELIVER_DATA callbacks. */
 };
 
 static void on_host(void *ctx, const char *msg)
@@ -42,10 +46,17 @@ static void on_data(void *ctx, const uint8_t *d, size_t n)
 		n = sizeof(c->data);
 	memcpy(c->data, d, n);
 	c->data_len = n;
+	c->frames++;
+	if (c->acc_len + n <= sizeof(c->acc)) {
+		memcpy(c->acc + c->acc_len, d, n);
+		c->acc_len += n;
+	}
 }
 static void on_ptt(void *ctx, bool key)
 {
-	((struct capture *)ctx)->ptt = key;
+	struct capture *c = ctx;
+	c->ptt = key;
+	c->ptt_edges++;
 }
 
 static uint64_t g_now = 1000000;
@@ -157,10 +168,65 @@ static void test_runtime_session(void **state)
 	assert_int_equal(b.link.state, ARDOP_LINK_DISC);
 }
 
+/*
+ * A FEC broadcast driven through the runtime: A queues a payload larger than one
+ * frame, then FECSENDs it as a sequence of 4PSK.200.100.E (0x40) frames. There is
+ * no ARQ handshake and no return path -- B is only listening, in FEC mode -- so
+ * the frames flow back-to-back on a single PTT key, and B reassembles the whole
+ * payload from the delivered frames.
+ */
+static void test_runtime_fec_broadcast(void **state)
+{
+	(void)state;
+
+	static ardop_runtime a, b;
+	struct capture ca, cb;
+	setup(&a, &ca, "N0AAA", false);
+	setup(&b, &cb, "N0BBB", true);
+
+	/* B receives in FEC mode. */
+	ardop_host_cmd bm = {0};
+	bm.kind = ARDOP_CMD_SET_MODE;
+	bm.arg = ARDOP_MODE_FEC;
+	ardop_runtime_host(&b, &bm, g_now);
+
+	/* A payload spanning three 0x40 frames (capacity 64 bytes each). */
+	uint8_t payload[150];
+	for (size_t i = 0; i < sizeof(payload); i++)
+		payload[i] = (uint8_t)(0x20 + (i % 90));
+
+	ardop_host_cmd sd = {0};
+	sd.kind = ARDOP_CMD_SEND_DATA;
+	sd.data = payload;
+	sd.data_len = sizeof(payload);
+	ardop_runtime_host(&a, &sd, g_now);
+
+	ardop_host_cmd fs = {0};
+	fs.kind = ARDOP_CMD_FEC_SEND;
+	fs.arg = 0x40;
+	ardop_runtime_host(&a, &fs, g_now);
+	assert_true(ardop_runtime_tx_active(&a));   /* first FEC frame. */
+
+	/* Carry the whole broadcast to B; the frames run on one PTT key. */
+	carry(&a, &b);
+
+	/* B reassembled the full payload from three frames; A finished and
+	 * returned to DISC (still in FEC mode), keying PTT exactly once. */
+	assert_int_equal(cb.frames, 3);
+	assert_int_equal(cb.acc_len, sizeof(payload));
+	assert_memory_equal(cb.acc, payload, sizeof(payload));
+	assert_int_equal(a.link.state, ARDOP_LINK_DISC);
+	assert_int_equal(a.link.mode, ARDOP_MODE_FEC);
+	assert_false(a.tx_active);
+	assert_false(ca.ptt);
+	assert_int_equal(ca.ptt_edges, 2);   /* one key, one unkey. */
+}
+
 int main(void)
 {
 	const struct CMUnitTest tests[] = {
 		cmocka_unit_test(test_runtime_session),
+		cmocka_unit_test(test_runtime_fec_broadcast),
 	};
 	return cmocka_run_group_tests(tests, NULL, NULL);
 }
