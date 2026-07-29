@@ -1,0 +1,388 @@
+#include "shell/host.h"
+
+#include <ctype.h>
+#include <stdarg.h>
+#include <stdbool.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "codec/locator.h"
+#include "codec/stationid.h"
+#include "link/link.h"
+
+/**
+ * @file host.c
+ * @brief The host command protocol (see host.h). Ported command-by-command from
+ *        HostInterface.c's ProcessCommandFromHost, preserving reply strings.
+ */
+
+/* The ARQ bandwidth names, in ardop_arq_bandwidth order (index == enum value).
+ * Ported verbatim from ARQ.c's ARQBandwidths so the wire strings match. */
+static const char *const kBandwidths[] = {
+	"200FORCED", "500FORCED", "1000FORCED", "2000FORCED",
+	"200MAX",    "500MAX",    "1000MAX",    "2000MAX",    "UNDEFINED",
+};
+#define NUM_BANDWIDTHS ((int)(sizeof kBandwidths / sizeof kBandwidths[0]))
+
+/* The host-facing protocol state names, from ARDOPC.c's ARDOPStates. */
+static const char *host_state_name(const ardop_runtime *rt)
+{
+	switch (rt->link.state) {
+	case ARDOP_LINK_DISC:        return "DISC";
+	case ARDOP_LINK_ISS_CON_REQ:
+	case ARDOP_LINK_ISS_CON_ACK:
+	case ARDOP_LINK_ISS:         return "ISS";
+	case ARDOP_LINK_IRS_CON_ACK:
+	case ARDOP_LINK_IRS_DATA:
+	case ARDOP_LINK_IRS_FROM_ISS:return "IRS";
+	case ARDOP_LINK_IDLE:        return "IDLE";
+	case ARDOP_LINK_IRS_TO_ISS:  return "IRStoISS";
+	case ARDOP_LINK_FEC_SEND:    return "FECSEND";
+	}
+	return "DISC";
+}
+
+/* Whether the current state is a live connection DISCONNECT can act on
+ * (IDLE/ISS/IRS/IRStoISS), matching the inherited DISCONNECT guard. */
+static bool state_is_connected(const ardop_runtime *rt)
+{
+	const char *s = host_state_name(rt);
+	return strcmp(s, "DISC") != 0 && strcmp(s, "FECSEND") != 0;
+}
+
+/* printf into the reply buffer. */
+static void replyf(char *reply, size_t cap, const char *fmt, ...)
+{
+	va_list ap;
+	va_start(ap, fmt);
+	(void)vsnprintf(reply, cap, fmt, ap);
+	va_end(ap);
+}
+
+/* A boolean TRUE/FALSE command: query echoes state, set validates and applies.
+ * Mirrors DoTrueFalseCmd, including its reply strings. */
+static void do_bool(const char *kw, const char *params, bool *value,
+		    char *reply, size_t cap)
+{
+	if (params == NULL) {
+		replyf(reply, cap, "%s %s", kw, *value ? "TRUE" : "FALSE");
+		return;
+	}
+	if (strcmp(params, "TRUE") == 0)
+		*value = true;
+	else if (strcmp(params, "FALSE") == 0)
+		*value = false;
+	else {
+		replyf(reply, cap, "FAULT Syntax Err: %s %s", kw, params);
+		return;
+	}
+	replyf(reply, cap, "%s now %s", kw, *value ? "TRUE" : "FALSE");
+}
+
+/* Feed one host action command through the runtime. */
+static void inject(ardop_runtime *rt, const ardop_host_cmd *cmd, uint64_t now)
+{
+	ardop_runtime_host(rt, cmd, now);
+}
+
+void ardop_host_command(ardop_runtime *rt, const char *line, uint64_t now,
+			char *reply, size_t cap)
+{
+	if (cap == 0)
+		return;
+	reply[0] = '\0';
+
+	/* Keep the original-case line (for the ARQCALL echo), and an uppercased
+	 * copy to match and split -- the inherited code uppercases the whole
+	 * command, params included. */
+	char orig[3000];
+	char up[3000];
+	snprintf(orig, sizeof(orig), "%s", line);
+	size_t n = 0;
+	for (; orig[n] && n < sizeof(up) - 1; n++)
+		up[n] = (char)toupper((unsigned char)orig[n]);
+	up[n] = '\0';
+
+	char *kw = up;
+	char *params = strchr(up, ' ');
+	if (params) {
+		*params++ = '\0';
+		while (*params == ' ')
+			params++;
+		if (*params == '\0')
+			params = NULL;
+	}
+
+	ardop_link *l = &rt->link;
+
+	/* --- actions ----------------------------------------------------- */
+
+	if (strcmp(kw, "ABORT") == 0 || strcmp(kw, "DD") == 0) {
+		ardop_host_cmd c = {.kind = ARDOP_CMD_ABORT};
+		inject(rt, &c, now);
+		replyf(reply, cap, "ABORT");
+		return;
+	}
+	if (strcmp(kw, "ARQCALL") == 0) {
+		if (params == NULL) {
+			replyf(reply, cap,
+			       "FAULT Syntax Err: ARQCALL: expected \"TARGET NATTEMPTS\"");
+			return;
+		}
+		char *sp = strchr(params, ' ');
+		if (sp)
+			*sp = '\0';   /* NATTEMPTS is accepted but the link
+				       * repeats on its own schedule. */
+		ardop_stationid target;
+		ardop_stationid_err e = ardop_stationid_from_str(params, &target);
+		if (e) {
+			replyf(reply, cap, "FAULT Syntax Err: ARQCALL %s: %s",
+			       params, ardop_stationid_strerror(e));
+			return;
+		}
+		if (l->mycall.str[0] == '\0') {
+			replyf(reply, cap, "FAULT MYCALL not set");
+			return;
+		}
+		if (l->mode != ARDOP_MODE_ARQ) {
+			replyf(reply, cap, "FAULT Not from mode %s",
+			       l->mode == ARDOP_MODE_FEC ? "FEC" : "RXO");
+			return;
+		}
+		ardop_host_cmd c = {.kind = ARDOP_CMD_CONNECT, .target = target,
+				    .bandwidth = ARDOP_ARQ_BW_UNDEFINED};
+		inject(rt, &c, now);
+		replyf(reply, cap, "%s", orig);   /* echo the original command. */
+		return;
+	}
+	if (strcmp(kw, "DISCONNECT") == 0) {
+		if (state_is_connected(rt)) {
+			ardop_host_cmd c = {.kind = ARDOP_CMD_DISCONNECT};
+			inject(rt, &c, now);
+			replyf(reply, cap, "DISCONNECT NOW TRUE");
+		} else {
+			replyf(reply, cap, "DISCONNECT IGNORED");
+		}
+		return;
+	}
+	if (strcmp(kw, "BREAK") == 0) {
+		ardop_host_cmd c = {.kind = ARDOP_CMD_BREAK};
+		inject(rt, &c, now);
+		return;   /* no reply, as in the original. */
+	}
+	if (strcmp(kw, "SENDID") == 0) {
+		if (l->mycall.str[0] == '\0') {
+			replyf(reply, cap, "FAULT MYCALL not set");
+			return;
+		}
+		if (rt->link.state != ARDOP_LINK_DISC) {
+			replyf(reply, cap, "FAULT Not from State %s",
+			       host_state_name(rt));
+			return;
+		}
+		ardop_host_cmd c = {.kind = ARDOP_CMD_SEND_ID};
+		inject(rt, &c, now);
+		replyf(reply, cap, "SENDID");
+		return;
+	}
+	if (strcmp(kw, "FECSEND") == 0) {
+		if (params == NULL) {
+			replyf(reply, cap, "FAULT Syntax Err: FECSEND");
+			return;
+		}
+		if (strcmp(params, "TRUE") != 0) {
+			replyf(reply, cap, "FECSEND now FALSE");
+			return;
+		}
+		if (l->mycall.str[0] == '\0') {
+			replyf(reply, cap, "FAULT MYCALL not set");
+			return;
+		}
+		if (l->tx_len == 0) {
+			replyf(reply, cap,
+			       "FAULT StartFEC failed for FECSEND TRUE.");
+			return;
+		}
+		ardop_host_cmd c = {.kind = ARDOP_CMD_FEC_SEND,
+				    .arg = l->fec_frame_type};
+		inject(rt, &c, now);
+		replyf(reply, cap, "FECSEND now TRUE");
+		return;
+	}
+
+	/* --- configuration ----------------------------------------------- */
+
+	if (strcmp(kw, "MYCALL") == 0) {
+		if (params == NULL) {
+			replyf(reply, cap, "MYCALL %s", l->mycall.str);
+			return;
+		}
+		ardop_stationid id;
+		ardop_stationid_err e = ardop_stationid_from_str(params, &id);
+		if (e)
+			replyf(reply, cap, "FAULT Syntax Err: MYCALL %s: %s",
+			       params, ardop_stationid_strerror(e));
+		else {
+			l->mycall = id;
+			replyf(reply, cap, "MYCALL now %s", l->mycall.str);
+		}
+		return;
+	}
+	if (strcmp(kw, "GRIDSQUARE") == 0) {
+		if (params == NULL) {
+			replyf(reply, cap, "GRIDSQUARE %s", l->grid.grid);
+			return;
+		}
+		ardop_locator loc;
+		ardop_locator_err e = ardop_locator_from_str(params, &loc);
+		if (e)
+			replyf(reply, cap, "FAULT Syntax Err: GRIDSQUARE %s: %s",
+			       params, ardop_locator_strerror(e));
+		else {
+			l->grid = loc;
+			replyf(reply, cap, "GRIDSQUARE now %s", l->grid.grid);
+		}
+		return;
+	}
+	if (strcmp(kw, "MYAUX") == 0) {
+		if (params == NULL) {
+			int off = snprintf(reply, cap, "MYAUX");
+			for (size_t i = 0; i < l->n_aux && off > 0
+			     && (size_t)off < cap; i++)
+				off += snprintf(reply + off, cap - (size_t)off,
+						"%s%s", i == 0 ? " " : ",",
+						l->auxcalls[i].str);
+			return;
+		}
+		size_t count = 0;
+		ardop_stationid_err e = ardop_stationid_from_str_to_array(
+			params, l->auxcalls, ARDOP_LINK_MAX_AUX, &count);
+		if (e) {
+			l->n_aux = 0;
+			replyf(reply, cap, "FAULT Syntax Err: at callsign %zu: %s",
+			       count, ardop_stationid_strerror(e));
+			return;
+		}
+		l->n_aux = count;
+		int off = snprintf(reply, cap, "MYAUX now");
+		for (size_t i = 0; i < l->n_aux && off > 0
+		     && (size_t)off < cap; i++)
+			off += snprintf(reply + off, cap - (size_t)off, "%s%s",
+					i == 0 ? " " : ",", l->auxcalls[i].str);
+		return;
+	}
+	if (strcmp(kw, "ARQBW") == 0) {
+		if (params == NULL) {
+			replyf(reply, cap, "ARQBW %s",
+			       kBandwidths[l->bw_setting]);
+			return;
+		}
+		int i = 0;
+		for (; i < NUM_BANDWIDTHS; i++)
+			if (strcmp(params, kBandwidths[i]) == 0)
+				break;
+		if (i == NUM_BANDWIDTHS)
+			replyf(reply, cap, "FAULT Syntax Err: ARQBW %s", params);
+		else {
+			l->bw_setting = (ardop_arq_bandwidth)i;
+			replyf(reply, cap, "ARQBW now %s", kBandwidths[i]);
+		}
+		return;
+	}
+	if (strcmp(kw, "PROTOCOLMODE") == 0) {
+		if (params == NULL) {
+			const char *m = l->mode == ARDOP_MODE_ARQ ? "ARQ"
+				      : l->mode == ARDOP_MODE_RXO ? "RXO" : "FEC";
+			replyf(reply, cap, "PROTOCOLMODE %s", m);
+			return;
+		}
+		ardop_link_mode m;
+		if (strcmp(params, "ARQ") == 0)      m = ARDOP_MODE_ARQ;
+		else if (strcmp(params, "FEC") == 0) m = ARDOP_MODE_FEC;
+		else if (strcmp(params, "RXO") == 0) m = ARDOP_MODE_RXO;
+		else {
+			replyf(reply, cap, "FAULT Syntax Err: PROTOCOLMODE %s",
+			       params);
+			return;
+		}
+		ardop_host_cmd c = {.kind = ARDOP_CMD_SET_MODE, .arg = (int)m};
+		inject(rt, &c, now);
+		replyf(reply, cap, "PROTOCOLMODE now %s", params);
+		return;
+	}
+	if (strcmp(kw, "FECREPEATS") == 0) {
+		if (params == NULL) {
+			replyf(reply, cap, "FECREPEATS %d", l->fec_repeats);
+			return;
+		}
+		int v = atoi(params);
+		if (v < 0 || v > 5)
+			replyf(reply, cap, "FAULT Syntax Err: FECREPEATS %s",
+			       params);
+		else {
+			l->fec_repeats = v;
+			replyf(reply, cap, "FECREPEATS now %d", l->fec_repeats);
+		}
+		return;
+	}
+	if (strcmp(kw, "DATATOSEND") == 0 || strcmp(kw, "BUFFER") == 0) {
+		if (params == NULL) {
+			replyf(reply, cap, "%s %zu", kw, l->tx_len);
+			return;
+		}
+		if (atoi(params) == 0) {
+			l->tx_len = 0;
+			replyf(reply, cap, "%s now 0", kw);
+		} else {
+			replyf(reply, cap, "FAULT Syntax Err: %s %s", kw, params);
+		}
+		return;
+	}
+	if (strcmp(kw, "PURGEBUFFER") == 0) {
+		l->tx_len = 0;
+		replyf(reply, cap, "PURGEBUFFER");
+		return;
+	}
+	if (strcmp(kw, "LISTEN") == 0) {
+		do_bool("LISTEN", params, &l->listening, reply, cap);
+		return;
+	}
+	if (strcmp(kw, "AUTOBREAK") == 0) {
+		do_bool("AUTOBREAK", params, &l->auto_break, reply, cap);
+		return;
+	}
+	if (strcmp(kw, "FSKONLY") == 0) {
+		do_bool("FSKONLY", params, &l->fsk_only, reply, cap);
+		return;
+	}
+	if (strcmp(kw, "USE600MODES") == 0) {
+		do_bool("USE600MODES", params, &l->use_600_modes, reply, cap);
+		return;
+	}
+	if (strcmp(kw, "ENABLEPINGACK") == 0) {
+		do_bool("ENABLEPINGACK", params, &l->enable_ping_ack, reply, cap);
+		return;
+	}
+
+	/* --- queries / info ---------------------------------------------- */
+
+	if (strcmp(kw, "STATE") == 0) {
+		if (params == NULL)
+			replyf(reply, cap, "STATE %s", host_state_name(rt));
+		else
+			replyf(reply, cap, "FAULT Syntax Err: STATE %s", params);
+		return;
+	}
+	if (strcmp(kw, "VERSION") == 0) {
+		replyf(reply, cap, "VERSION %s_%s", ARDOP_HOST_PRODUCT,
+		       ARDOP_HOST_VERSION);
+		return;
+	}
+	if (strcmp(kw, "RDY") == 0)
+		return;   /* no reply required. */
+
+	/* Unknown command. The reply text (typo and all) is the frozen wire
+	 * string the inherited TNC sends. */
+	replyf(reply, cap, "FAULT CMD %s not recoginized", kw);
+}

@@ -24,6 +24,8 @@ typedef struct {
 	bool ptt;              /**< current PTT state. */
 	int ptt_edges;         /**< key/unkey transitions. */
 	bool verbose;          /**< log PTT edges to stderr. */
+	bool realtime;         /**< pace capture to 12 kHz wall time (emulate a
+				*   sound card), so --host sessions run live. */
 } ardop_null_backend;
 
 /**

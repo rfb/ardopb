@@ -145,6 +145,7 @@ CORE_TESTS = \
 	test/core/test_loopback \
 	test/core/test_runtime \
 	test/core/test_loop \
+	test/core/test_host \
 
 # define newline for use with foreach to run tests
 define newline
@@ -226,7 +227,7 @@ core/%.o: core/%.c
 # The shell/ layer -- the I/O-free main-loop body (Stage 4, W2).  It composes
 # core/ under the same -Werror standard; it is not part of check-pure (it is the
 # app layer that will grow the impure platform backends).
-SHELL_OBJS = shell/runtime.o shell/loop.o
+SHELL_OBJS = shell/runtime.o shell/loop.o shell/host.o
 
 shell/%.o: shell/%.c
 	$(CC) -I. $(CORE_CPPFLAGS) $(CFLAGS) $(CORE_CFLAGS) -c -o $@ $<
@@ -237,6 +238,14 @@ shell/%.o: shell/%.c
 shell/backend_alsa.o: shell/backend_alsa.c
 	$(CC) -I. -D_GNU_SOURCE $(CORE_CPPFLAGS) $(CFLAGS) $(CORE_CFLAGS) -c -o $@ $<
 
+# The TCP host transport needs POSIX sockets/fcntl the strict -std=c11 withholds;
+# the null backend needs usleep for its optional real-time pacing.
+shell/host_tcp.o: shell/host_tcp.c
+	$(CC) -I. -D_DEFAULT_SOURCE $(CORE_CPPFLAGS) $(CFLAGS) $(CORE_CFLAGS) -c -o $@ $<
+
+shell/backend_null.o: shell/backend_null.c
+	$(CC) -I. -D_DEFAULT_SOURCE $(CORE_CPPFLAGS) $(CFLAGS) $(CORE_CFLAGS) -c -o $@ $<
+
 # `make core` builds the rebuilt layers.
 core: $(CORE_OBJS) $(SHELL_OBJS)
 
@@ -245,7 +254,8 @@ core: $(CORE_OBJS) $(SHELL_OBJS)
 # talks to real hardware and is not in the test suite (which uses the fake
 # platform); the null backend gives a hardware-free smoke path.  (Defined here,
 # below SHELL_OBJS, because make expands a rule's prerequisites as it reads them.)
-ARDOPB_OBJS = shell/main.o shell/backend_null.o shell/backend_alsa.o
+ARDOPB_OBJS = shell/main.o shell/backend_null.o shell/backend_alsa.o \
+	shell/host_tcp.o
 ardopb: $(CORE_OBJS) core/modem/templates.o $(SHELL_OBJS) $(ARDOPB_OBJS)
 	$(CC) $(LDFLAGS) $^ -o $@ -lasound -lm
 

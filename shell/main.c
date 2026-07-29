@@ -6,6 +6,7 @@
 
 #include "shell/backend_alsa.h"
 #include "shell/backend_null.h"
+#include "shell/host_tcp.h"
 #include "shell/loop.h"
 #include "shell/platform.h"
 #include "shell/runtime.h"
@@ -25,20 +26,22 @@
  * only chooses a backend and turns the crank.
  *
  * Usage:
- *   ardopb MYCALL [--listen] [--id]
+ *   ardopb MYCALL [--listen] [--id] [--host PORT]
  *          [--null [SECONDS] | --alsa CAPTURE PLAYBACK [--ptt SERIAL]]
  *
  * --id sends one ID frame at startup (a beacon), which with --null is a
- * hardware-free smoke test of the entire TX chain.
+ * hardware-free smoke test of the entire TX chain. --host opens the TCP command
+ * channel (host.h) so a host app can drive the station.
  */
 
 /* The RS parity lengths every supported frame type uses. */
 static const int kRSLens[] = {2, 4, 8, 16, 32, 36, 50, 64};
 #define NUM_RSLENS ((int)(sizeof kRSLens / sizeof kRSLens[0]))
 
-/* App context: routes the runtime's callbacks to the chosen backend / stdout. */
+/* App context: routes the runtime's callbacks to the backend / host / stdout. */
 struct app {
 	const ardop_platform_ops *ops;
+	ardop_host_tcp *host;   /* NULL unless --host is given. */
 };
 
 static void on_ptt(void *ctx, bool key)
@@ -49,9 +52,10 @@ static void on_ptt(void *ctx, bool key)
 }
 static void on_host(void *ctx, const char *msg)
 {
-	(void)ctx;
+	struct app *a = ctx;
 	printf("[host] %s\n", msg);
 	fflush(stdout);
+	ardop_host_tcp_notify(a->host, msg);   /* no-op if not connected. */
 }
 static void on_data(void *ctx, const uint8_t *d, size_t n)
 {
@@ -66,7 +70,7 @@ static void on_data(void *ctx, const uint8_t *d, size_t n)
 static void usage(const char *me)
 {
 	fprintf(stderr,
-		"usage: %s MYCALL [--listen] [--id]\n"
+		"usage: %s MYCALL [--listen] [--id] [--host PORT]\n"
 		"       [--null [SECONDS] | --alsa CAPTURE PLAYBACK [--ptt SERIAL]]\n",
 		me);
 }
@@ -82,6 +86,7 @@ int main(int argc, char **argv)
 	bool listen = false, send_id = false, use_null = true;
 	uint64_t null_seconds = 5;
 	const char *cap = NULL, *play = NULL, *ptt = NULL;
+	uint16_t host_port = 0;
 
 	for (int i = 2; i < argc; i++) {
 		if (!strcmp(argv[i], "--listen")) {
@@ -107,6 +112,12 @@ int main(int argc, char **argv)
 				return 2;
 			}
 			ptt = argv[++i];
+		} else if (!strcmp(argv[i], "--host")) {
+			if (i + 1 >= argc) {
+				usage(argv[0]);
+				return 2;
+			}
+			host_port = (uint16_t)strtoul(argv[++i], NULL, 10);
 		} else {
 			fprintf(stderr, "unknown option: %s\n", argv[i]);
 			usage(argv[0]);
@@ -135,6 +146,7 @@ int main(int argc, char **argv)
 		ardop_backend_null_init(&nb, &ops,
 					null_seconds * ARDOP_MOD_SAMPLE_RATE);
 		nb.verbose = true;
+		nb.realtime = (host_port != 0);   /* live pacing for host use. */
 		fprintf(stderr, "backend: null (%llu s)\n",
 			(unsigned long long)null_seconds);
 	} else {
@@ -147,7 +159,15 @@ int main(int argc, char **argv)
 			cap, play, ptt ? ptt : "(none)");
 	}
 
-	struct app app = {.ops = &ops};
+	struct app app = {.ops = &ops, .host = NULL};
+	if (host_port != 0) {
+		app.host = ardop_host_tcp_open(host_port);
+		if (!app.host) {
+			fprintf(stderr, "host: failed to open port %u\n",
+				(unsigned)host_port);
+			return 1;
+		}
+	}
 	rt.ctx = &app;
 	rt.on_ptt = on_ptt;
 	rt.on_host = on_host;
@@ -159,10 +179,19 @@ int main(int argc, char **argv)
 		ardop_runtime_host(&rt, &id, 0);
 	}
 
+	/* The driver loop, interleaved with servicing the host command channel
+	 * (which runs ardop_host_command against the runtime between audio
+	 * blocks). Equivalent to ardop_loop_run when there is no host server. */
 	ardop_loop lp;
 	ardop_loop_init(&lp, &rt, &ops);
-	ardop_loop_run(&lp);
+	while (!(ops.should_stop && ops.should_stop(ops.ctx))) {
+		if (app.host)
+			ardop_host_tcp_service(app.host, &rt, lp.t);
+		ardop_loop_step(&lp);
+	}
 
+	if (app.host)
+		ardop_host_tcp_close(app.host);
 	if (ab)
 		ardop_backend_alsa_close(ab);
 	fprintf(stderr, "stopped.\n");
