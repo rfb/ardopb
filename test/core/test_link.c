@@ -11,6 +11,7 @@
 #include "codec/frame.h"
 #include "codec/rs.h"
 #include "codec/stationid.h"
+#include "link/quality.h"
 #include "link/session.h"
 
 static const int kRSLens[] = {2, 4, 8, 16, 32, 36, 50, 64};
@@ -553,6 +554,68 @@ static void test_iss_conreq_rejected_bw(void **state)
 	assert_int_equal(l.state, ARDOP_LINK_DISC);
 }
 
+/* Drive a listening link through a ConReq so it is IRS awaiting the ISS ConAck. */
+static void accept_as_irs(ardop_link *l)
+{
+	setup_listening(l);
+
+	uint8_t payload[2 * ARDOP_PACKED6_SIZE];
+	build_conreq("W1ABC", "N0CALL", payload);
+
+	ardop_link_input in = {0};
+	in.kind = ARDOP_IN_RX;
+	in.as.rx.kind = ARDOP_EV_FRAME_DECODED;
+	in.as.rx.frame_type = ARDOP_FT_CON_REQ_2000M;
+	in.as.rx.data = payload;
+	in.as.rx.data_len = sizeof(payload);
+	in.as.rx.leader_ms = 240;
+
+	ardop_action acts[8];
+	(void)ardop_link_step(l, &in, 1000, acts, 8);
+	assert_int_equal(l->state, ARDOP_LINK_IRS_CON_ACK);
+}
+
+/*
+ * IRS awaiting the ISS ConAck + that ConAck: complete the handshake -- adopt the
+ * width, tell the host CONNECTED, answer with a DataACK carrying the decode
+ * quality, become IRS_DATA. Mirrors the ISS-ConAck arm of the IRS/IRSConAck
+ * state (rule 1.4).
+ */
+static void test_irs_conack_completes(void **state)
+{
+	(void)state;
+
+	ardop_link l;
+	accept_as_irs(&l);
+	uint8_t session = l.session_id;
+
+	ardop_link_input in = {0};
+	in.kind = ARDOP_IN_RX;
+	in.as.rx.kind = ARDOP_EV_FRAME_DECODED;
+	in.as.rx.frame_type = ARDOP_FT_CON_ACK_2000;
+	in.as.rx.quality = 75;
+
+	ardop_action acts[8];
+	size_t n = ardop_link_step(&l, &in, 2000, acts, 8);
+
+	const ardop_action *notify = find_action(acts, n, ARDOP_ACT_NOTIFY_HOST);
+	assert_non_null(notify);
+	assert_string_equal((const char *)notify->data, "CONNECTED W1ABC 2000");
+
+	const ardop_action *send = find_action(acts, n, ARDOP_ACT_SEND_FRAME);
+	assert_non_null(send);
+	/* DataACK carrying quality 75. */
+	uint8_t ack = ardop_quality_to_ack_type(75);
+	assert_int_equal(send->frame_type, ack);
+	assert_int_equal(send->data_len, 2);
+	assert_int_equal(send->data[0], ack);
+	assert_int_equal(send->data[1], ack ^ session);
+
+	assert_int_equal(l.state, ARDOP_LINK_IRS_DATA);
+	assert_false(l.pending);
+	assert_int_equal(l.session_bw, 2000);
+}
+
 int main(void)
 {
 	const struct CMUnitTest tests[] = {
@@ -571,6 +634,7 @@ int main(void)
 		cmocka_unit_test(test_iss_conreq_gets_conack),
 		cmocka_unit_test(test_iss_conreq_rejected_busy),
 		cmocka_unit_test(test_iss_conreq_rejected_bw),
+		cmocka_unit_test(test_irs_conack_completes),
 	};
 	return cmocka_run_group_tests(tests, NULL, NULL);
 }

@@ -7,6 +7,7 @@
 #include "codec/stationid.h"
 #include "link/bandwidth.h"
 #include "link/frames.h"
+#include "link/quality.h"
 #include "link/session.h"
 
 /**
@@ -316,6 +317,57 @@ static size_t step_iss_conreq_rx(ardop_link *l, const ardop_event *ev,
 	return 0;   /* any other frame is ignored while awaiting the ConAck. */
 }
 
+/* --- IRS_CON_ACK: sent our ConAck, awaiting the ISS's ConAck ------------- */
+
+/*
+ * The IRS has answered a ConReq with a ConAck and is awaiting the ISS's ConAck,
+ * which completes the four-message handshake. On it: commit the session, adopt
+ * the width, tell the host CONNECTED, answer with a DataACK carrying the decode
+ * quality, and become IRS_DATA ready to receive. Ported from the ISS-ConAck arm
+ * of ProcessRcvdARQFrame's IRS/IRSConAck state (rule 1.4).
+ *
+ * A repeated ConReq here (the ISS missed our ConAck) should re-send the ConAck;
+ * that robustness path is not yet ported -- noted for when the handshake is
+ * exercised over a lossy loopback.
+ */
+static size_t step_irs_conack_rx(ardop_link *l, const ardop_event *ev,
+				 uint64_t now, ardop_action *actions, size_t max)
+{
+	size_t n = 0;
+
+	if (ev->kind != ARDOP_EV_FRAME_DECODED)
+		return 0;
+
+	if (ev->frame_type >= ARDOP_FT_CON_ACK_MIN
+	    && ev->frame_type <= ARDOP_FT_CON_ACK_MAX) {
+		l->session_bw = conack_bandwidth(ev->frame_type);
+		l->pending = false;
+		l->pending_deadline = 0;
+		l->avg_quality = 0;
+		l->state = ARDOP_LINK_IRS_DATA;
+
+		char msg[64];
+		snprintf(msg, sizeof(msg), "CONNECTED %s %d", l->remote.str,
+			 l->session_bw);
+		notify_host(l, actions, &n, max, msg);
+
+		uint8_t ack = ardop_quality_to_ack_type(ev->quality);
+		size_t len = ardop_encode_control(ack, l->session_id,
+						  l->out_frame);
+		ardop_action a = {0};
+		a.kind = ARDOP_ACT_SEND_FRAME;
+		a.frame_type = ack;
+		a.data = l->out_frame;
+		a.data_len = len;
+		a.leader_ms = l->leader_ms;
+		emit(actions, &n, max, &a);
+		(void)now;
+		return n;
+	}
+
+	return 0;
+}
+
 /* --- host commands ------------------------------------------------------- */
 
 /*
@@ -417,9 +469,11 @@ size_t ardop_link_step(ardop_link *l, const ardop_link_input *in,
 		case ARDOP_LINK_ISS_CON_REQ:
 			return step_iss_conreq_rx(l, &in->as.rx, now_samples,
 						  actions, max_actions);
+		case ARDOP_LINK_IRS_CON_ACK:
+			return step_irs_conack_rx(l, &in->as.rx, now_samples,
+						  actions, max_actions);
 		case ARDOP_LINK_ISS_CON_ACK:
 		case ARDOP_LINK_ISS:
-		case ARDOP_LINK_IRS_CON_ACK:
 		case ARDOP_LINK_IRS_DATA:
 		case ARDOP_LINK_IDLE:
 		case ARDOP_LINK_IRS_TO_ISS:
