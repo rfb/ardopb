@@ -74,3 +74,4 @@ newArdopSampleArrays.c
 
 # Editor garbage
 /.vscode/**
+/ardop2

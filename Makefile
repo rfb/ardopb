@@ -39,7 +39,7 @@
 #		sudo apt install mingw-w64
 #		make CC_NATIVE=gcc CC=i686-w64-mingw32-gcc-posix WIN32=1
 
-.PHONY: all buildtest test golden golden-regen golden-core core check-pure check-headers test-core
+.PHONY: all buildtest test golden golden-regen golden-core core check-pure check-headers test-core ardop2
 
 # list all object files and their directories
 # keep sorted by filename
@@ -231,8 +231,23 @@ SHELL_OBJS = shell/runtime.o shell/loop.o
 shell/%.o: shell/%.c
 	$(CC) -I. $(CORE_CPPFLAGS) $(CFLAGS) $(CORE_CFLAGS) -c -o $@ $<
 
+# The ALSA backend needs POSIX/GNU feature macros the strict -std=c11 core flags
+# withhold (struct timespec, alloca) -- ALSA's headers assume them.  It is the
+# one impure device file; the feature macros stop at its edge.
+shell/backend_alsa.o: shell/backend_alsa.c
+	$(CC) -I. -D_GNU_SOURCE $(CORE_CPPFLAGS) $(CFLAGS) $(CORE_CFLAGS) -c -o $@ $<
+
 # `make core` builds the rebuilt layers.
 core: $(CORE_OBJS) $(SHELL_OBJS)
+
+# `make ardop2` -- the rebuilt program: the pure core, a platform backend, one
+# loop (analysis/13 W2).  Links only core/ + shell/, no src/.  The ALSA backend
+# talks to real hardware and is not in the test suite (which uses the fake
+# platform); the null backend gives a hardware-free smoke path.  (Defined here,
+# below SHELL_OBJS, because make expands a rule's prerequisites as it reads them.)
+ARDOP2_OBJS = shell/main.o shell/backend_null.o shell/backend_alsa.o
+ardop2: $(CORE_OBJS) core/modem/templates.o $(SHELL_OBJS) $(ARDOP2_OBJS)
+	$(CC) $(LDFLAGS) $^ -o $@ -lasound -lm
 
 # `make check-pure` enforces the rule that makes core/ testable: no mutable
 # global state.  This is a link-time fact, not a code-review habit -- see
