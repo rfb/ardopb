@@ -16,6 +16,8 @@ This was built using Claude Opus 4.8
 
 I've learn a lot about DSP in the process. Hopefully this freshly refactored code can help others understand the principles and even evolve the ARDOP protocol.
 
+-Ryan
+
 `------------------ END OF HUMAN MESSAGE ------------------`
 
 A rebuilt implementation of **ARDOP** — the Amateur Radio Digital Open Protocol,
