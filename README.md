@@ -1,4 +1,21 @@
-# ardopb
+# ardopb: AI driven re-implementation of ARDOP
+
+
+The radio community deserves a high quality, open-source digital modem. 
+
+In 2022 I set out to improve ardopc. I had been participating in Winlink Wednesdays, and I want to improve reliability with my local relay and perhaps introduce some automation and soon I discovered the timing issues which caused connections to fail on different hardware. 
+
+For a moment I thought I could be the person to fix these bugs, but as peeled back the layers I discovered a complexity far beyond my soft human mind. I couldn't articulate it at the time, but I could tell mess of domains and state when I saw one. 
+
+With AI I've started moving back through my mental checklist of projects which just seemed far to ambitious at the time. Last week I reached this project - I wanted to see how well Claude could articulate the problems and propose a solution. Claude did an excellent job. I encourage anyone looking at this project to review the ([`analysis/`](analysis/)) Claude produced.
+
+It turns out this is an ideal project for an AI agent - it's well bounded and tested. Data -> Audio -> Data. This took a couple of days only because I kept hitting my Pro's session limit. I sure it would have been less than 6 hours if I had been running the Pro Max. 
+
+This was built using Claude Opus 4.8
+
+I've learn a lot about DSP in the process. Hopefully this freshly refactored code can help others understand the principles and even evolve the ARDOP protocol.
+
+`------------------ END OF HUMAN MESSAGE ------------------`
 
 A rebuilt implementation of **ARDOP** — the Amateur Radio Digital Open Protocol,
 which carries digital data as audio over an HF radio channel. `ardopb` is a hard
