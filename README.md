@@ -1,5 +1,6 @@
 # ardopb: AI driven re-implementation of ARDOP
 
+`------------------ START HUMAN MESSAGE ------------------`
 
 The radio community deserves a high quality, open-source digital modem. 
 
