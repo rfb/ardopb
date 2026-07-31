@@ -42,10 +42,14 @@ ardop-chat --host 127.0.0.1:8700 --listen
 
 # FEC (connectionless broadcast; anyone in FEC receive mode hears it)
 ardop-chat --host 127.0.0.1:8515 --fec
+ardop-chat --host 127.0.0.1:8515 --fec --fecmode 4FSK.200.50S
 ```
 
 In ARQ mode, typing turns the link over (`AUTOBREAK`); Ctrl-D drains the last
-lines and hangs up. FEC mode broadcasts each line and needs no connection.
+lines and hangs up. FEC mode broadcasts each line and needs no connection;
+`--fecmode` picks the frame type it broadcasts with (default `4PSK.200.100`,
+any name the `FECMODE` host command accepts). Slower, more robust modes carry
+less per frame but survive worse conditions.
 
 ## Trying it without a radio
 

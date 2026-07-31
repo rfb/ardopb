@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "codec/frame.h"
 #include "codec/locator.h"
 #include "codec/stationid.h"
 #include "link/link.h"
@@ -199,7 +200,7 @@ void ardop_host_command(ardop_runtime *rt, const char *line, uint64_t now,
 			replyf(reply, cap, "FAULT MYCALL not set");
 			return;
 		}
-		if (l->tx_len == 0) {
+		if (l->tx_len == 0 || !ardop_frame_is_data(l->fec_frame_type)) {
 			replyf(reply, cap,
 			       "FAULT StartFEC failed for FECSEND TRUE.");
 			return;
@@ -309,6 +310,26 @@ void ardop_host_command(ardop_runtime *rt, const char *line, uint64_t now,
 		ardop_host_cmd c = {.kind = ARDOP_CMD_SET_MODE, .arg = (int)m};
 		inject(rt, &c, now);
 		replyf(reply, cap, "PROTOCOLMODE now %s", params);
+		return;
+	}
+	if (strcmp(kw, "FECMODE") == 0) {
+		char name[32];
+		if (params == NULL) {
+			if (ardop_data_frame_name(l->fec_frame_type, name,
+						  sizeof(name)))
+				replyf(reply, cap, "FECMODE %s", name);
+			else
+				replyf(reply, cap, "FECMODE UNKNOWN");
+			return;
+		}
+		uint8_t ft;
+		if (!ardop_data_frame_type_for_name(params, &ft))
+			replyf(reply, cap, "FAULT Syntax Err: FECMODE %s",
+			       params);
+		else {
+			l->fec_frame_type = ft;
+			replyf(reply, cap, "FECMODE now %s", params);
+		}
 		return;
 	}
 	if (strcmp(kw, "FECREPEATS") == 0) {

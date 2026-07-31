@@ -82,6 +82,30 @@ static void test_host_config_queries_and_sets(void **state)
 	assert_int_equal(g_rt.link.mode, ARDOP_MODE_FEC);
 	assert_string_equal(cmd("PROTOCOLMODE ARQ"), "PROTOCOLMODE now ARQ");
 
+	/* FECMODE: the default is the inherited 4PSK.200.100, and a set is
+	 * echoed back by name. */
+	assert_string_equal(cmd("FECMODE"), "FECMODE 4PSK.200.100");
+	assert_string_equal(cmd("FECMODE 8PSK.1000.100"),
+			    "FECMODE now 8PSK.1000.100");
+	assert_int_equal(g_rt.link.fec_frame_type, 0x62);
+	assert_string_equal(cmd("FECMODE"), "FECMODE 8PSK.1000.100");
+
+	/* The short "S" variants are distinct names, not prefixes of each
+	 * other, and an unknown name leaves the setting alone. */
+	assert_string_equal(cmd("FECMODE 4PSK.200.100S"),
+			    "FECMODE now 4PSK.200.100S");
+	assert_int_equal(g_rt.link.fec_frame_type, 0x42);
+	assert_string_equal(cmd("FECMODE 4PSK.200.100"),
+			    "FECMODE now 4PSK.200.100");
+	assert_int_equal(g_rt.link.fec_frame_type, 0x40);
+	assert_string_equal(cmd("FECMODE 9PSK.200.100"),
+			    "FAULT Syntax Err: FECMODE 9PSK.200.100");
+	assert_int_equal(g_rt.link.fec_frame_type, 0x40);
+
+	/* A control frame is not a FECMODE, even though it names a frame. */
+	assert_string_equal(cmd("FECMODE IDFRAME"),
+			    "FAULT Syntax Err: FECMODE IDFRAME");
+
 	/* FECREPEATS bounds. */
 	assert_string_equal(cmd("FECREPEATS 3"), "FECREPEATS now 3");
 	assert_int_equal(g_rt.link.fec_repeats, 3);
@@ -148,6 +172,39 @@ static void test_host_arqcall_connects(void **state)
 	const char *r = cmd("ARQCALL bad-call 3");
 	assert_true(strncmp(r, "FAULT Syntax Err: ARQCALL", 25) == 0);
 	assert_int_equal(g_rt.link.state, ARDOP_LINK_DISC);
+}
+
+/*
+ * FECSEND broadcasts the queued buffer without the host having to name a
+ * FECMODE first. Regression: the frame type defaulted to 0x00, which carries no
+ * payload, so the link entered FECSEND, found a zero-capacity frame, and
+ * silently returned to DISC -- the host saw "FECSEND now TRUE" and a buffer
+ * that never drained.
+ */
+static void test_host_fecsend_uses_default_fecmode(void **state)
+{
+	(void)state;
+	reset();
+
+	assert_string_equal(cmd("MYCALL N0AAA"), "MYCALL now N0AAA");
+	assert_string_equal(cmd("PROTOCOLMODE FEC"), "PROTOCOLMODE now FEC");
+
+	/* Nothing queued: FECSEND has nothing to broadcast. */
+	assert_string_equal(cmd("FECSEND TRUE"),
+			    "FAULT StartFEC failed for FECSEND TRUE.");
+
+	const uint8_t payload[] = "hello world";
+	ardop_host_cmd sd = {.kind = ARDOP_CMD_SEND_DATA, .data = payload,
+			     .data_len = sizeof(payload) - 1};
+	ardop_runtime_host(&g_rt, &sd, 0);
+	assert_int_equal(g_rt.link.tx_len, sizeof(payload) - 1);
+
+	/* Now it transmits: TX is keyed and the buffer is consumed (FEC has no
+	 * ACKs, so the bytes leave the queue as they are sent). */
+	assert_string_equal(cmd("FECSEND TRUE"), "FECSEND now TRUE");
+	assert_true(ardop_runtime_tx_active(&g_rt));
+	assert_int_equal(g_rt.link.state, ARDOP_LINK_FEC_SEND);
+	assert_int_equal(g_rt.link.tx_len, 0);
 }
 
 /* The binary data channel: TNC->host framing and host->TNC parsing. */
@@ -225,6 +282,7 @@ int main(void)
 		cmocka_unit_test(test_host_state_and_version),
 		cmocka_unit_test(test_host_actions_guarded_by_mycall),
 		cmocka_unit_test(test_host_arqcall_connects),
+		cmocka_unit_test(test_host_fecsend_uses_default_fecmode),
 		cmocka_unit_test(test_host_data_framing),
 		cmocka_unit_test(test_host_data_queues_to_runtime),
 	};

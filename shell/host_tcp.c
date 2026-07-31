@@ -196,8 +196,12 @@ static void service_data(ardop_host_tcp *h, ardop_runtime *rt, uint64_t now)
 
 void ardop_host_tcp_service(ardop_host_tcp *h, ardop_runtime *rt, uint64_t now)
 {
-	service_cmd(h, rt, now);
+	/* Data before commands. A host loads the buffer on the data channel and
+	 * then acts on it from the command channel (write data, then FECSEND);
+	 * servicing commands first would run the command against the buffer as
+	 * it stood before this tick's data arrived. */
 	service_data(h, rt, now);
+	service_cmd(h, rt, now);
 }
 
 void ardop_host_tcp_notify(ardop_host_tcp *h, const char *msg)

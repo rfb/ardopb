@@ -1171,6 +1171,7 @@ void ardop_link_init(ardop_link *l)
 	l->reply_leader_ms = 240;  /* inherited intARQDefaultDlyMs default. */
 	l->last_data_to_host = -1;
 	l->last_acked_type = -1;
+	l->fec_frame_type = 0x40;  /* 4PSK.200.100.E, the FECMODE default. */
 	l->tuning_range = 100;   /* inherited default; selects the 2000 modes. */
 }
 
@@ -1189,8 +1190,13 @@ static void fec_send_next(ardop_link *l, ardop_action *actions, size_t *n,
 		return;
 	}
 
+	/* A frame type that carries no payload cannot broadcast anything, and
+	 * silently returning to DISC would leave the host watching a buffer
+	 * that never drains. Say so. */
 	int cap = frame_capacity(l->fec_frame_type);
 	if (cap <= 0) {
+		notify_host(l, actions, n, max,
+			    "STATUS FEC send failed: invalid FECMODE");
 		reset_to_disc(l);
 		return;
 	}
@@ -1198,6 +1204,8 @@ static void fec_send_next(ardop_link *l, ardop_action *actions, size_t *n,
 	int len = ardop_encode_data_frame(l->rs, l->fec_frame_type, 0,
 					  l->tx_data, take, l->out_frame);
 	if (len <= 0) {
+		notify_host(l, actions, n, max,
+			    "STATUS FEC send failed: encode error");
 		reset_to_disc(l);
 		return;
 	}

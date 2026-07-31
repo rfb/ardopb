@@ -18,10 +18,11 @@
  *   - ARQ (default): a reliable connection to one station. One side --call TARGET,
  *     the other --listen. Half-duplex: typing turns the link over (AUTOBREAK).
  *   - FEC (--fec): connectionless broadcast; anyone in FEC receive mode hears it.
+ *     --fecmode picks the frame type to broadcast with.
  *
  *     ardop-chat --host 127.0.0.1:8515 --call N0CALL
  *     ardop-chat --host 127.0.0.1:8515 --listen
- *     ardop-chat --host 127.0.0.1:8515 --fec
+ *     ardop-chat --host 127.0.0.1:8515 --fec [--fecmode 4FSK.200.50S]
  */
 
 static void parse_host(const char *s, char *host, size_t hostcap, int *port)
@@ -63,11 +64,13 @@ static int print_incoming(hostclient *hc)
 	}
 }
 
-/* Wait for queued lines to be transmitted and acked before DISCONNECT (which
- * does not flush the queue). Settle first so the just-sent bytes are registered
- * (avoiding a BUFFER==0 read before the modem has picked them up), then wait for
- * the queue to empty and the link to return to IDLE (last frame acked). */
-static void drain_buffer(hostclient *hc)
+/* Wait for queued lines to go out before quitting: in ARQ before DISCONNECT
+ * (which does not flush the queue), in FEC before dropping the socket. Settle
+ * first so the just-sent bytes are registered (avoiding a BUFFER==0 read before
+ * the modem has picked them up), then wait for the queue to empty and the link
+ * to come to rest -- IDLE in ARQ (last frame acked), DISC in FEC (broadcast
+ * complete). */
+static void drain_buffer(hostclient *hc, const char *rest_state)
 {
 	char buf[128];
 	usleep(500000);
@@ -83,7 +86,7 @@ static void drain_buffer(hostclient *hc)
 		if (hc_query(hc, "STATE", "STATE ", buf, sizeof(buf), 3000,
 			     NULL, NULL) != 1)
 			return;
-		if (strcmp(buf, "STATE IDLE") == 0)
+		if (strcmp(buf, rest_state) == 0)
 			return;
 		usleep(200000);
 	}
@@ -92,19 +95,23 @@ static void drain_buffer(hostclient *hc)
 int main(int argc, char **argv)
 {
 	const char *hostarg = NULL, *target = NULL;
+	const char *fecmode = "4PSK.200.100";
 	bool listen = false, fec = false;
 	for (int i = 1; i < argc; i++) {
 		if (!strcmp(argv[i], "--host") && i + 1 < argc)
 			hostarg = argv[++i];
 		else if (!strcmp(argv[i], "--call") && i + 1 < argc)
 			target = argv[++i];
+		else if (!strcmp(argv[i], "--fecmode") && i + 1 < argc)
+			fecmode = argv[++i];
 		else if (!strcmp(argv[i], "--listen"))
 			listen = true;
 		else if (!strcmp(argv[i], "--fec"))
 			fec = true;
 		else {
 			fprintf(stderr, "usage: %s [--host HOST:PORT] "
-				"[--call TARGET | --listen | --fec]\n", argv[0]);
+				"[--call TARGET | --listen | --fec [--fecmode MODE]]\n",
+				argv[0]);
 			return 2;
 		}
 	}
@@ -119,8 +126,12 @@ int main(int argc, char **argv)
 
 	bool connected = fec;   /* FEC needs no connection. */
 	if (fec) {
+		char cmd[128];
 		hc_cmd(&hc, "PROTOCOLMODE FEC");
-		fprintf(stderr, "FEC broadcast chat. Type lines; Ctrl-D to quit.\n");
+		snprintf(cmd, sizeof(cmd), "FECMODE %s", fecmode);
+		hc_cmd(&hc, cmd);
+		fprintf(stderr, "FEC broadcast chat (%s). "
+			"Type lines; Ctrl-D to quit.\n", fecmode);
 	} else if (target) {
 		hc_cmd(&hc, "AUTOBREAK TRUE");
 		char cmd[128];
@@ -175,10 +186,14 @@ int main(int argc, char **argv)
 		if (connected && FD_ISSET(STDIN_FILENO, &r)) {
 			char line[512];
 			if (!fgets(line, sizeof(line), stdin)) {
-				/* stdin EOF: hang up. In ARQ, let queued lines
-				 * drain first -- DISCONNECT does not flush. */
-				if (!fec) {
-					drain_buffer(&hc);
+				/* stdin EOF: hang up, letting queued lines drain
+				 * first -- in ARQ because DISCONNECT does not
+				 * flush, in FEC because closing the socket
+				 * while a broadcast is still queued drops it. */
+				if (fec) {
+					drain_buffer(&hc, "STATE DISC");
+				} else {
+					drain_buffer(&hc, "STATE IDLE");
 					hc_cmd(&hc, "DISCONNECT");
 				}
 				done = true;

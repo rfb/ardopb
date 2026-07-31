@@ -143,6 +143,50 @@ bool ardop_frame_is_data(uint8_t frame_type)
 	       || strstr(spec->name, ".O") != NULL;
 }
 
+/* Length of the ".E"/".O" suffix every data frame name carries. */
+#define FRAME_NAME_SUFFIX_LEN 2
+
+bool ardop_data_frame_type_for_name(const char *name, uint8_t *frame_type)
+{
+	if (name == NULL || frame_type == NULL || name[0] == '\0')
+		return false;
+
+	size_t len = strlen(name);
+
+	/* Only the ranges the table covers: the NAK/ACK bytes outside them are
+	 * not data frames, and ardop_frame_spec_for() answers for all of
+	 * them. */
+	for (unsigned t = ARDOP_FRAME_DATA_NAK_MAX + 1u;
+	     t < ARDOP_FRAME_DATA_ACK_MIN; t++) {
+		if (ardop_frame_is_odd((uint8_t)t)
+		    || !ardop_frame_is_data((uint8_t)t))
+			continue;
+		const ardop_frame_spec *spec = ardop_frame_spec_for((uint8_t)t);
+		/* Length check first, so "4PSK.200.100" does not match the
+		 * name of "4PSK.200.100S.E". */
+		if (strlen(spec->name) == len + FRAME_NAME_SUFFIX_LEN
+		    && strncmp(spec->name, name, len) == 0) {
+			*frame_type = (uint8_t)t;
+			return true;
+		}
+	}
+	return false;
+}
+
+bool ardop_data_frame_name(uint8_t frame_type, char *buf, size_t cap)
+{
+	if (buf == NULL || !ardop_frame_is_data(frame_type))
+		return false;
+
+	const ardop_frame_spec *spec = ardop_frame_spec_for(frame_type);
+	size_t len = strlen(spec->name) - FRAME_NAME_SUFFIX_LEN;
+	if (cap <= len)
+		return false;
+	memcpy(buf, spec->name, len);
+	buf[len] = '\0';
+	return true;
+}
+
 uint8_t ardop_frame_type_parity(uint8_t frame_type)
 {
 	uint8_t mask = 0xC0;

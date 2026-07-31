@@ -2,6 +2,7 @@
 #define ARDOP_CODEC_FRAME_H_
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include "common/mustuse.h"
@@ -181,6 +182,33 @@ static inline uint16_t ardop_frame_rs_bytes(const ardop_frame_spec *spec)
  * from `IsDataFrame`.
  */
 bool ardop_frame_is_data(uint8_t frame_type);
+
+/**
+ * @brief Look up a data frame type by its base name, e.g. "4PSK.200.100".
+ *
+ * The base name is the spec name without the ".E"/".O" suffix, which is how the
+ * host protocol names a frame type (FECMODE). Matching is exact and
+ * case-sensitive; the table names are upper case, as are host command
+ * parameters by the time they reach this call.
+ *
+ * @param name       Base name to look up.
+ * @param frame_type Set to the *even* member of the pair on success.
+ * @return True if the name matched a data frame type.
+ */
+ARDOP_MUSTUSE bool ardop_data_frame_type_for_name(const char *name,
+						  uint8_t *frame_type);
+
+/**
+ * @brief Copy a data frame type's base name (no ".E"/".O") into @p buf.
+ *
+ * The inverse of ardop_data_frame_type_for_name(). A 20-byte buffer holds any
+ * of them; the longest is "16QAM.1000.100" at 14 characters.
+ *
+ * @return True on success, false if @p frame_type is not a data frame or the
+ *         name does not fit in @p cap bytes including its terminator.
+ */
+ARDOP_MUSTUSE bool ardop_data_frame_name(uint8_t frame_type, char *buf,
+					 size_t cap);
 
 /**
  * @brief The 2-bit parity symbol for a frame type.
