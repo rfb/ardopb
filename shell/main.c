@@ -10,6 +10,7 @@
 #include "shell/loop.h"
 #include "shell/platform.h"
 #include "shell/runtime.h"
+#include "shell/telemetry_tcp.h"
 
 #include "codec/stationid.h"
 #include "link/link.h"
@@ -31,7 +32,9 @@
  *
  * --id sends one ID frame at startup (a beacon), which with --null is a
  * hardware-free smoke test of the entire TX chain. --host opens the TCP command
- * channel (host.h) so a host app can drive the station.
+ * channel (host.h) so a host app can drive the station. --telemetry opens the
+ * one-way DSP observation stream (telemetry.h) a display attaches to; it is off
+ * unless asked for, so the headless default computes nothing extra.
  */
 
 /* The RS parity lengths every supported frame type uses. */
@@ -42,6 +45,7 @@ static const int kRSLens[] = {2, 4, 8, 16, 32, 36, 50, 64};
 struct app {
 	const ardop_platform_ops *ops;
 	ardop_host_tcp *host;   /* NULL unless --host is given. */
+	ardop_telemetry_tcp *tlm; /* NULL unless --telemetry is given. */
 	bool trace;             /* --trace: print every observation. */
 };
 
@@ -110,6 +114,7 @@ static void usage(const char *me)
 {
 	fprintf(stderr,
 		"usage: %s MYCALL [--listen] [--id] [--trace] [--host PORT]\n"
+		"       [--telemetry [PORT]]\n"
 		"       [--null [SECONDS] | --alsa CAPTURE PLAYBACK [--ptt SERIAL]]\n",
 		me);
 }
@@ -126,6 +131,8 @@ int main(int argc, char **argv)
 	uint64_t null_seconds = 5;
 	const char *cap = NULL, *play = NULL, *ptt = NULL;
 	uint16_t host_port = 0;
+	uint16_t tlm_port = 0;
+	bool want_tlm = false;
 
 	for (int i = 2; i < argc; i++) {
 		if (!strcmp(argv[i], "--listen")) {
@@ -159,6 +166,11 @@ int main(int argc, char **argv)
 				return 2;
 			}
 			host_port = (uint16_t)strtoul(argv[++i], NULL, 10);
+		} else if (!strcmp(argv[i], "--telemetry")) {
+			want_tlm = true;
+			if (i + 1 < argc && argv[i + 1][0] != '-')
+				tlm_port = (uint16_t)strtoul(argv[++i], NULL,
+							     10);
 		} else {
 			fprintf(stderr, "unknown option: %s\n", argv[i]);
 			usage(argv[0]);
@@ -211,6 +223,25 @@ int main(int argc, char **argv)
 			return 1;
 		}
 	}
+	/* Default the telemetry port to host_port + 2, clear of the command and
+	 * data ports (PORT and PORT + 1). */
+	if (want_tlm) {
+		if (tlm_port == 0) {
+			if (host_port == 0) {
+				fprintf(stderr, "--telemetry needs a port when "
+					"--host is not given\n");
+				return 2;
+			}
+			tlm_port = (uint16_t)(host_port + 2);
+		}
+		app.tlm = ardop_telemetry_tcp_open(tlm_port);
+		if (!app.tlm) {
+			fprintf(stderr, "telemetry: failed to open port %u\n",
+				(unsigned)tlm_port);
+			return 1;
+		}
+		ardop_telemetry_tcp_attach(app.tlm, &rt);
+	}
 	ardop_runtime_observe(&rt, app_observe, &app);
 
 	if (send_id) {
@@ -227,11 +258,13 @@ int main(int argc, char **argv)
 	while (!(ops.should_stop && ops.should_stop(ops.ctx))) {
 		if (app.host)
 			ardop_host_tcp_service(app.host, &rt, lp.t);
+		ardop_telemetry_tcp_service(app.tlm, &rt);
 		ardop_loop_step(&lp);
 	}
 
 	if (app.host)
 		ardop_host_tcp_close(app.host);
+	ardop_telemetry_tcp_close(app.tlm);
 	if (ab)
 		ardop_backend_alsa_close(ab);
 	fprintf(stderr, "stopped.\n");

@@ -103,6 +103,18 @@ bool ardop_busy_detect(ardop_busy_detector *b, const float *mag, int start,
 #define ARDOP_BUSY_WINDOW 1024
 
 /**
+ * @brief Geometry of the magnitude spectrum ::ardop_busy_spectrum produces.
+ *
+ * The detector searches a 206-bin slice of the 1024-point transform, which at
+ * 12 kHz is 11.719 Hz per bin covering roughly 293..2695 Hz -- the SSB passband.
+ * These are exported because a spectrum consumer (a waterfall) has to label a
+ * frequency axis, and deriving the numbers a second time invites drift.
+ */
+#define ARDOP_BUSY_FIRST_BIN 25     /**< First transform bin kept (~293 Hz). */
+#define ARDOP_BUSY_MAG_BINS  206    /**< Bins kept (~293..2695 Hz). */
+#define ARDOP_BUSY_BIN_HZ    11.719f /**< Bin width, Hz (12000/1024). */
+
+/**
  * @brief Fill the half Blackman-Harris window ::ardop_busy_analyze uses.
  *
  * The window is symmetric, so only the first 513 coefficients are stored (index
@@ -112,6 +124,42 @@ bool ardop_busy_detect(ardop_busy_detector *b, const float *mag, int start,
  * @param w  Output, at least 513 floats.
  */
 void ardop_busy_window(float *w);
+
+/**
+ * @brief Window, transform and reduce one 1024-sample block to a spectrum.
+ *
+ * The front end of ::ardop_busy_analyze, split out so a consumer that wants the
+ * spectrum itself -- a waterfall -- can have it without a second FFT, and
+ * without being tied to the busy detector's state or its DISC-only gating.
+ *
+ * @param window   The 513-coefficient half window from ardop_busy_window().
+ * @param samples  Exactly ::ARDOP_BUSY_WINDOW captured samples.
+ * @param mag_out  Receives ::ARDOP_BUSY_MAG_BINS power magnitudes (re^2 + im^2,
+ *                 not dB; the caller scales for display).
+ */
+void ardop_busy_spectrum(const float *window, const int16_t *samples,
+			 float *mag_out);
+
+/**
+ * @brief Decide busy from an already-computed spectrum.
+ *
+ * The back end of ::ardop_busy_analyze: derives the tuning-line search range
+ * from the bandwidth and tuning range, then calls ardop_busy_detect. Pair with
+ * ardop_busy_spectrum() when the spectrum is wanted for another purpose too.
+ *
+ * @param b            Detector state, updated in place.
+ * @param mag          Spectrum from ardop_busy_spectrum().
+ * @param bw_hz        Channel bandwidth in Hz (200/500/1000/2000), for the range.
+ * @param bw           Same bandwidth as the enum, selecting detector thresholds.
+ * @param tuning_range Max tuning offset searched, Hz (host TuningRange).
+ * @param busy_det     Sensitivity 0..10 (host BusyDet); 0 disables.
+ * @param now_ms       Current time, milliseconds.
+ * @return true if the channel is currently reported busy.
+ */
+bool ardop_busy_detect_spectrum(ardop_busy_detector *b, const float *mag,
+				int bw_hz, ardop_bandwidth bw,
+				int tuning_range, int busy_det,
+				uint32_t now_ms);
 
 /**
  * @brief Analyse one 1024-sample window and update the busy state.

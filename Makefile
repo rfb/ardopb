@@ -58,7 +58,7 @@ core/%.o: core/%.c
 	$(CC) $(CORE_CPPFLAGS) $(CFLAGS) $(CORE_CFLAGS) -c -o $@ $<
 
 # --- shell/ : the I/O-free runtime + the platform backends -----------------
-SHELL_OBJS = shell/runtime.o shell/loop.o shell/host.o
+SHELL_OBJS = shell/runtime.o shell/loop.o shell/host.o shell/telemetry.o
 
 shell/%.o: shell/%.c
 	$(CC) -I. $(CORE_CPPFLAGS) $(CFLAGS) $(CORE_CFLAGS) -c -o $@ $<
@@ -70,6 +70,8 @@ shell/backend_alsa.o: shell/backend_alsa.c
 	$(CC) -I. -D_GNU_SOURCE $(CORE_CPPFLAGS) $(CFLAGS) $(CORE_CFLAGS) -c -o $@ $<
 shell/host_tcp.o: shell/host_tcp.c
 	$(CC) -I. -D_DEFAULT_SOURCE $(CORE_CPPFLAGS) $(CFLAGS) $(CORE_CFLAGS) -c -o $@ $<
+shell/telemetry_tcp.o: shell/telemetry_tcp.c
+	$(CC) -I. -D_DEFAULT_SOURCE $(CORE_CPPFLAGS) $(CFLAGS) $(CORE_CFLAGS) -c -o $@ $<
 shell/backend_null.o: shell/backend_null.c
 	$(CC) -I. -D_DEFAULT_SOURCE $(CORE_CPPFLAGS) $(CFLAGS) $(CORE_CFLAGS) -c -o $@ $<
 
@@ -77,6 +79,7 @@ core: $(CORE_OBJS) $(SHELL_OBJS)
 
 # --- ardopb : the modem ----------------------------------------------------
 ARDOPB_OBJS = shell/main.o shell/backend_null.o shell/backend_alsa.o \
+	shell/telemetry_tcp.o \
 	shell/host_tcp.o
 
 ardopb: $(CORE_OBJS) $(TEMPLATES) $(SHELL_OBJS) $(ARDOPB_OBJS)
@@ -152,7 +155,8 @@ CORE_TESTS = \
 	test/core/test_loopback \
 	test/core/test_runtime \
 	test/core/test_loop \
-	test/core/test_host
+	test/core/test_host \
+	test/core/test_telemetry
 
 define newline
 
