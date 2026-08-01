@@ -93,7 +93,22 @@ static int find_pcm(const uint8_t *buf, long len, const int16_t **pcm,
 			*nsamp = n / 2;
 			return 0;
 		}
-		pos = body + sz + (sz & 1);
+		/*
+		 * Chunks are word-aligned.
+		 *
+		 * Widen deliberately instead of letting the usual arithmetic
+		 * conversions run. `sz` is uint32_t and `long` is 32 bits on
+		 * Windows (LLP64), so `body + sz` would be evaluated unsigned
+		 * and converted back to signed -- which is a warning there and
+		 * silently fine on Linux, where `long` is 64 bits and uint32_t
+		 * widens harmlessly. Rejecting a chunk that runs past the end
+		 * of the file catches a malformed header and keeps the widened
+		 * value in range on both.
+		 */
+		long remain = len - body;   /* >= 0: body <= len above. */
+		if ((uint64_t)sz > (uint64_t)remain)
+			return -1;
+		pos = body + (long)sz + (long)(sz & 1u);
 	}
 	return -1;
 }

@@ -39,7 +39,7 @@ tree is linked.
 Start the modem with a telemetry port, then attach:
 
 ```
-ardopb N0CALL --alsa default default --host 8515 --telemetry
+ardopb N0CALL --audio --host 8515 --telemetry
 ./gui/build/ardop-gui --host 127.0.0.1:8517
 ```
 

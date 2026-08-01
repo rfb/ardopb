@@ -4,8 +4,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/select.h>
 #include <unistd.h>
+
+#include "shell/net.h"
+#include "shell/sys.h"
 
 #include "hostclient.h"
 
@@ -43,6 +45,10 @@ static void parse_host(const char *s, char *host, size_t hostcap, int *port)
 
 int main(int argc, char **argv)
 {
+	/* Binary stdio before anything else: payload is written to stdout, and Windows
+	 * text mode would rewrite every 0x0A and stop at 0x1A. */
+	ardop_stdio_binary();
+
 	const char *hostarg = NULL;
 	for (int i = 1; i < argc; i++) {
 		if (!strcmp(argv[i], "--host") && i + 1 < argc)
@@ -78,17 +84,14 @@ int main(int argc, char **argv)
 	}
 
 	/* Stream data until the peer disconnects. */
-	int maxfd = (hc.cmd_fd > hc.data_fd ? hc.cmd_fd : hc.data_fd) + 1;
 	int rc = 0;
 	for (;;) {
-		fd_set r;
-		FD_ZERO(&r);
-		FD_SET(hc.cmd_fd, &r);
-		FD_SET(hc.data_fd, &r);
-		if (select(maxfd, &r, NULL, NULL, NULL) < 0)
+		const ardop_socket socks[2] = { hc.cmd_fd, hc.data_fd };
+		bool ready[2] = { false, false };
+		if (ardop_net_wait(socks, 2, -1, ready) < 0)
 			break;
 
-		if (FD_ISSET(hc.data_fd, &r)) {
+		if (ready[1]) {
 			for (;;) {
 				uint8_t payload[4096];
 				char tag[HC_TAG_LEN + 1];
@@ -105,7 +108,7 @@ int main(int argc, char **argv)
 				fflush(stdout);
 			}
 		}
-		if (FD_ISSET(hc.cmd_fd, &r)) {
+		if (ready[0]) {
 			char line[512];
 			int lr = hc_next_line(&hc, line, sizeof(line), 0);
 			if (lr < 0) {
