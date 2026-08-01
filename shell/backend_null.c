@@ -2,7 +2,8 @@
 
 #include <stdio.h>
 #include <string.h>
-#include <unistd.h>
+
+#include "shell/sys.h"
 
 #include "modem/modulate.h"   /* ARDOP_MOD_SAMPLE_RATE */
 
@@ -16,7 +17,7 @@ static size_t null_read_audio(void *ctx, int16_t *buf, size_t max)
 	ardop_null_backend *nb = ctx;
 	memset(buf, 0, max * sizeof(*buf));   /* silence. */
 	if (nb->realtime)
-		usleep((useconds_t)(max * 1000000ULL / ARDOP_MOD_SAMPLE_RATE));
+		ardop_sleep_ms((unsigned)(max * 1000ULL / ARDOP_MOD_SAMPLE_RATE));
 	nb->elapsed += max;
 	return max;
 }

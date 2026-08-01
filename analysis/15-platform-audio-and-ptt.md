@@ -362,3 +362,86 @@ radio.
   surfaces in the UI within one block period — it does not hang the modem thread.
 - On Android, an unprocessed input source is obtained and confirmed, or the
   operator is told it could not be.
+
+---
+
+## Amendments made during implementation
+
+Recorded here rather than silently worked around, because each is a place the
+design above and the code as it stood disagreed.
+
+1. **§9's table lists `backend_alsa.c` as "Unchanged". It could not be.** §6
+   makes PTT its own object, and PTT lived *inside* that file as a serial fd
+   (`ptt_fd`, `ptt_open`, `ptt_set`). Leaving it would mean two serial-RTS
+   implementations and a bug that reproduces on one backend and not the other —
+   exactly what Open decision 1 already worries about. The change is a net
+   deletion of ~30 lines; `alsa_set_ptt` keeps its `snd_pcm_drain` /
+   `snd_pcm_prepare`, which is the part only that file knows, and delegates the
+   line toggle to `shell/ptt.c`.
+
+2. **§1 says the interface "does not change", but §3 and §6 both need a fault to
+   reach the application** — and `set_ptt` returns `void`. Resolution:
+   `shell/platform.h` stays frozen; faults are latched on the concrete backend
+   (`shell/fault.h`) and polled by `shell/main.c`, which already holds the
+   backend pointer. Fault *reaction* — abort the session, unkey, tell the
+   operator — is application policy and must not enter `loop.c`.
+
+3. **§4's `ARDOP_DEV_ID_MAX 128` is too small.** miniaudio's `ma_device_id.alsa`
+   is `char[256]`. At 128 the "persist the id and resolve it exactly" rule
+   truncates and then never re-matches — precisely the failure §4 exists to
+   prevent. Raised to 264 (256 plus a terminator and rounding).
+
+4. **The interpolator's group delay is a second tail-cut, independent of the
+   ring.** §3 identifies the ring: `write_audio` returns when samples are
+   *queued*, so unkeying immediately cuts the transmission. But a linear-phase
+   FIR also holds `(ntaps-1)/2` samples that were accepted and never emitted.
+   `ardop_resample_flush()` must run *before* the ring drain, or the last
+   milliseconds of every frame are lost regardless. Not mentioned in §3.
+
+5. **Capture must be discarded during transmit.** §3 does not raise this. ARDOP
+   is half-duplex and `loop.c` does not call `read_audio` while transmitting, so
+   a capture ring silently banks the station's own signal for the whole over and
+   feeds it to the demodulator afterwards. ALSA escapes this only by accident —
+   `snd_pcm_readi` returns `-EPIPE` on overrun and `snd_pcm_prepare` throws the
+   backlog away. Fixed with an atomic `tx_active` that makes the capture
+   callback drop rather than enqueue, plus a ring reset at unkey.
+
+6. **§5's stated reason for building a resampler does not distinguish the
+   alternatives.** miniaudio would do integer-ratio conversion itself, driven by
+   the device callback, and that would *not* break Rule 2 — §5's argument is
+   against *fractional* resampling, which neither option uses. `shell/resample.c`
+   is still worth writing, for control over the anti-alias filter, for
+   unit-testability, and to satisfy §Exit criteria's corpus requirement. But
+   that is the honest reason and §5 should say so.
+
+7. **§8's "backend-declared" block size cannot live in `ardop_platform_ops`**
+   without changing `platform.h`, which §1 forbids. The application reads it
+   from the concrete backend and assigns `lp.block` — one line in `main.c`.
+
+8. **Open decision 3 is settled as *refuse*.** A device rate that is not a whole
+   multiple of 12000 fails the open with a message naming the rate, rather than
+   being approximated. More honest and far less code; Windows shared-mode WASAPI
+   gives 48000 in practice.
+
+9. **§Exit criteria's "`make golden-tx` is still bit-identical" is true by
+   construction**, not by care: `test/golden/shell_tx_wav` links `$(CORE_OBJS)`
+   and `$(TEMPLATES)` only, so nothing in `shell/` can reach it. The genuinely
+   new result is that it now also passes under MinGW — the same audio, byte for
+   byte, from a different toolchain on a different OS.
+
+10. **PTT scope for this pass**: VOX/none, serial RTS *and* DTR on both
+    platforms, and rigctld over TCP (nearly free once `shell/net.h` existed).
+    CM108 HID and libgpiod are declared in the enum and refused with a message —
+    CM108 needs a HID dependency that lands on *users* plus hardware to test
+    against, and libgpiod is Linux-only with no bearing on this port.
+
+11. **Not in this document at all**: `apps/ardop_chat.c` selected on
+    `STDIN_FILENO` alongside two sockets, and Winsock's `select()` takes sockets
+    only. Solved with `ardop_stdin_ready()` (console / pipe / file) polled next
+    to a short socket wait, rather than a reader thread.
+
+12. **A safety item neither 14 nor 15 raises**: with rigctld keying, killing the
+    process leaves the rig **transmitting**. A serial RTS line falls when the
+    handle closes; a TCP CAT link does not, because the rig never learns the
+    controller is gone. `ardop_install_signal_handlers()` plus unkey-before-close
+    ordering in `ardop_ptt_close()` covers it.

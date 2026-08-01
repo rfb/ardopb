@@ -4,12 +4,18 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "shell/backend_alsa.h"
+#ifndef _WIN32
+#  include "shell/backend_alsa.h"
+#endif
+#include "shell/audio_devices.h"
+#include "shell/backend_ma.h"
 #include "shell/backend_null.h"
 #include "shell/host_tcp.h"
 #include "shell/loop.h"
 #include "shell/platform.h"
 #include "shell/runtime.h"
+#include "shell/sys.h"
+#include "shell/ptt.h"
 #include "shell/telemetry_tcp.h"
 
 #include "codec/stationid.h"
@@ -28,7 +34,8 @@
  *
  * Usage:
  *   ardopb MYCALL [--listen] [--id] [--trace] [--host PORT]
- *          [--null [SECONDS] | --alsa CAPTURE PLAYBACK [--ptt SERIAL]]
+ *          [--null [SECONDS] | --audio [CAPTURE PLAYBACK] | --alsa CAP PLAY]
+ *          [--ptt SPEC] [--list-devices]
  *
  * --id sends one ID frame at startup (a beacon), which with --null is a
  * hardware-free smoke test of the entire TX chain. --host opens the TCP command
@@ -115,24 +122,53 @@ static void usage(const char *me)
 	fprintf(stderr,
 		"usage: %s MYCALL [--listen] [--id] [--trace] [--host PORT]\n"
 		"       [--telemetry [PORT]]\n"
-		"       [--null [SECONDS] | --alsa CAPTURE PLAYBACK [--ptt SERIAL]]\n",
+		"       [--null [SECONDS] | --audio [CAPTURE PLAYBACK]"
+#ifndef _WIN32
+		" | --alsa CAPTURE PLAYBACK"
+#endif
+		"]\n"
+		"       [--ptt SPEC] [--list-devices]\n"
+		"\n"
+		"  --audio          cross-platform audio (miniaudio). With no\n"
+		"                   arguments, the system default devices. A\n"
+		"                   device may be given by id or by name.\n"
+#ifndef _WIN32
+		"  --alsa           ALSA directly: the headless Linux path,\n"
+		"                   with the smallest dependency footprint.\n"
+#endif
+		"  --ptt SPEC       none | rts:DEV | dtr:DEV | rigctld:HOST:PORT\n"
+		"                   (a bare device path means rts:).\n"
+		"  --list-devices   print the audio devices and exit.\n",
 		me);
 }
 
+/* Which backend --null / --audio / --alsa selected. */
+enum backend_kind { BACKEND_NULL, BACKEND_MA, BACKEND_ALSA };
+
 int main(int argc, char **argv)
 {
+	for (int i = 1; i < argc; i++) {
+		if (!strcmp(argv[i], "--list-devices")) {
+			bool nulldev = (i + 1 < argc
+					&& !strcmp(argv[i + 1], "--null"));
+			return ardop_audio_print_devices(nulldev) ? 0 : 1;
+		}
+	}
+
 	if (argc < 2) {
 		usage(argv[0]);
 		return 2;
 	}
 	const char *mycall = argv[1];
 
-	bool listen = false, send_id = false, use_null = true, trace = false;
+	bool listen = false, send_id = false, trace = false;
+	enum backend_kind kind = BACKEND_NULL;
 	uint64_t null_seconds = 5;
-	const char *cap = NULL, *play = NULL, *ptt = NULL;
+	const char *cap = NULL, *play = NULL, *ptt_spec = NULL;
 	uint16_t host_port = 0;
 	uint16_t tlm_port = 0;
 	bool want_tlm = false;
+	bool ma_null_device = false;
 
 	for (int i = 2; i < argc; i++) {
 		if (!strcmp(argv[i], "--listen")) {
@@ -142,16 +178,29 @@ int main(int argc, char **argv)
 		} else if (!strcmp(argv[i], "--trace")) {
 			trace = true;
 		} else if (!strcmp(argv[i], "--null")) {
-			use_null = true;
+			kind = BACKEND_NULL;
 			if (i + 1 < argc && argv[i + 1][0] != '-')
 				null_seconds = (uint64_t)strtoul(argv[++i],
 								 NULL, 10);
+		} else if (!strcmp(argv[i], "--audio")) {
+			kind = BACKEND_MA;
+			/* Both device selectors or neither. */
+			if (i + 2 < argc && argv[i + 1][0] != '-'
+			    && argv[i + 2][0] != '-') {
+				cap = argv[++i];
+				play = argv[++i];
+			}
+		} else if (!strcmp(argv[i], "--audio-null-device")) {
+			/* Test hook: miniaudio's synthetic device, so the whole
+			 * ring / resampler / drain path runs in CI. */
+			kind = BACKEND_MA;
+			ma_null_device = true;
 		} else if (!strcmp(argv[i], "--alsa")) {
 			if (i + 2 >= argc) {
 				usage(argv[0]);
 				return 2;
 			}
-			use_null = false;
+			kind = BACKEND_ALSA;
 			cap = argv[++i];
 			play = argv[++i];
 		} else if (!strcmp(argv[i], "--ptt")) {
@@ -159,7 +208,7 @@ int main(int argc, char **argv)
 				usage(argv[0]);
 				return 2;
 			}
-			ptt = argv[++i];
+			ptt_spec = argv[++i];
 		} else if (!strcmp(argv[i], "--host")) {
 			if (i + 1 >= argc) {
 				usage(argv[0]);
@@ -178,6 +227,12 @@ int main(int argc, char **argv)
 		}
 	}
 
+	/* Before any device is opened: an interrupt must be able to unkey. PTT
+	 * over a CAT link does not fall when the process dies -- the rig never
+	 * learns the controller is gone -- so leaving on Ctrl-C would leave a
+	 * transmitter keyed. */
+	ardop_install_signal_handlers();
+
 	static ardop_runtime rt;
 	if (!ardop_runtime_init(&rt, kRSLens, NUM_RSLENS)) {
 		fprintf(stderr, "runtime init failed\n");
@@ -191,25 +246,69 @@ int main(int argc, char **argv)
 	rt.link.bw_setting = ARDOP_ARQ_BW_2000_MAX;
 	rt.link.listening = listen;
 
+	/* PTT is built first and independently: the keying method and the audio
+	 * device are unrelated in reality, so an operator can pair any
+	 * interface with any radio. */
+	ardop_ptt *ptt = NULL;
+	if (kind != BACKEND_NULL) {
+		ardop_ptt_config pc;
+		if (!ardop_ptt_parse(ptt_spec, &pc))
+			return 2;
+		ptt = ardop_ptt_open(&pc);
+		if (!ptt) {
+			fprintf(stderr, "ptt: failed to open\n");
+			return 1;
+		}
+	}
+
 	/* Build the backend and its ops. */
 	ardop_platform_ops ops;
 	ardop_null_backend nb;
+	ardop_ma_backend *mb = NULL;
+#ifndef _WIN32
 	ardop_alsa_backend *ab = NULL;
-	if (use_null) {
+#endif
+	switch (kind) {
+	case BACKEND_NULL:
 		ardop_backend_null_init(&nb, &ops,
 					null_seconds * ARDOP_MOD_SAMPLE_RATE);
 		nb.verbose = true;
 		nb.realtime = (host_port != 0);   /* live pacing for host use. */
 		fprintf(stderr, "backend: null (%llu s)\n",
 			(unsigned long long)null_seconds);
-	} else {
+		break;
+
+	case BACKEND_MA: {
+		ardop_ma_config mc = {
+			.capture_id = cap,
+			.playback_id = play,
+			.ptt = ptt,
+			.use_null_device = ma_null_device,
+		};
+		mb = ardop_backend_ma_open(&mc, &ops);
+		if (!mb) {
+			ardop_ptt_close(ptt);
+			return 1;
+		}
+		break;
+	}
+
+	case BACKEND_ALSA:
+#ifdef _WIN32
+		fprintf(stderr, "--alsa is Linux only; use --audio\n");
+		ardop_ptt_close(ptt);
+		return 2;
+#else
 		ab = ardop_backend_alsa_open(cap, play, ptt, &ops);
 		if (!ab) {
 			fprintf(stderr, "alsa backend failed to open\n");
+			ardop_ptt_close(ptt);
 			return 1;
 		}
 		fprintf(stderr, "backend: alsa cap=%s play=%s ptt=%s\n",
-			cap, play, ptt ? ptt : "(none)");
+			cap, play, ardop_ptt_describe(ptt));
+#endif
+		break;
 	}
 
 	static struct app app;
@@ -255,18 +354,50 @@ int main(int argc, char **argv)
 	 * blocks). Equivalent to ardop_loop_run when there is no host server. */
 	ardop_loop lp;
 	ardop_loop_init(&lp, &rt, &ops);
-	while (!(ops.should_stop && ops.should_stop(ops.ctx))) {
+	if (mb)
+		lp.block = ardop_backend_ma_block(mb);
+
+	while (!ardop_stop_requested()
+	       && !(ops.should_stop && ops.should_stop(ops.ctx))) {
 		if (app.host)
 			ardop_host_tcp_service(app.host, &rt, lp.t);
 		ardop_telemetry_tcp_service(app.tlm, &rt);
 		ardop_loop_step(&lp);
+
+		/*
+		 * Device faults are polled here rather than signalled through
+		 * ardop_platform_ops, because the reaction is policy and
+		 * loop.c must hold none. A modem that believes it is
+		 * transmitting into a device that has gone away must not keep
+		 * feeding the link.
+		 */
+		ardop_fault f = mb ? ardop_backend_ma_fault(mb)
+				   : ARDOP_FAULT_NONE;
+		if (f == ARDOP_FAULT_NONE)
+			f = ardop_ptt_fault(ptt);
+		if (f != ARDOP_FAULT_NONE) {
+			fprintf(stderr, "\nfault: %s -- aborting the session "
+				"and unkeying\n", ardop_fault_str(f));
+			ardop_host_cmd disc = {.kind = ARDOP_CMD_DISCONNECT};
+			ardop_runtime_host(&rt, &disc, lp.t);
+			if (ops.set_ptt)
+				ops.set_ptt(ops.ctx, false);
+			ardop_host_tcp_notify(app.host, "FAULT device lost");
+			break;
+		}
 	}
 
 	if (app.host)
 		ardop_host_tcp_close(app.host);
 	ardop_telemetry_tcp_close(app.tlm);
+	if (mb)
+		ardop_backend_ma_close(mb);
+#ifndef _WIN32
 	if (ab)
 		ardop_backend_alsa_close(ab);
+#endif
+	/* After the backends: unkeying must outlive the device that keyed. */
+	ardop_ptt_close(ptt);
 	fprintf(stderr, "stopped.\n");
 	return 0;
 }

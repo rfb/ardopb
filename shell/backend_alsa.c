@@ -2,15 +2,13 @@
 
 #include <alloca.h>
 #include <errno.h>
-#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/ioctl.h>
-#include <termios.h>
-#include <unistd.h>
 
 #include <alsa/asoundlib.h>
+
+#include "shell/ptt.h"
 
 /**
  * @file backend_alsa.c
@@ -27,8 +25,8 @@
 struct ardop_alsa_backend {
 	snd_pcm_t *capture;
 	snd_pcm_t *playback;
-	int ptt_fd;        /* serial fd for RTS PTT, or -1. */
-	bool ptt;
+	ardop_ptt *ptt;    /* borrowed; may be NULL (VOX). */
+	bool keyed;
 };
 
 /* Configure one PCM for 12000 Hz mono S16_LE. Returns 0 on success. */
@@ -63,33 +61,17 @@ fail:
 	return err;
 }
 
-/* Open a serial line and drop RTS (unkeyed). Returns fd or -1. */
-static int ptt_open(const char *dev)
-{
-	int fd = open(dev, O_RDWR | O_NOCTTY);
-	if (fd < 0) {
-		fprintf(stderr, "ptt: open %s: %s\n", dev, strerror(errno));
-		return -1;
-	}
-	int bits = 0;
-	if (ioctl(fd, TIOCMGET, &bits) == 0) {
-		bits &= ~TIOCM_RTS;
-		(void)ioctl(fd, TIOCMSET, &bits);
-	}
-	return fd;
-}
-
-static void ptt_set(int fd, bool key)
-{
-	int bits = 0;
-	if (fd < 0 || ioctl(fd, TIOCMGET, &bits) != 0)
-		return;
-	if (key)
-		bits |= TIOCM_RTS;
-	else
-		bits &= ~TIOCM_RTS;
-	(void)ioctl(fd, TIOCMSET, &bits);
-}
+/*
+ * PTT used to be a serial fd right here, toggling RTS with TIOCMGET/TIOCMSET.
+ * It moved to shell/ptt.c when the miniaudio backend arrived: two backends each
+ * carrying their own copy of serial keying is precisely the "a bug reproduces
+ * on one and not the other" problem analysis/15's own open questions worry
+ * about. This is a deliberate amendment to that document's §9, which lists this
+ * file as unchanged -- it could not be.
+ *
+ * What stays here is the part only this file knows: draining the ALSA buffer
+ * before the line drops, so the tail of a transmission is not cut.
+ */
 
 /* --- platform ops -------------------------------------------------------- */
 
@@ -133,23 +115,23 @@ static void alsa_write_audio(void *ctx, const int16_t *buf, size_t n)
 static void alsa_set_ptt(void *ctx, bool key)
 {
 	struct ardop_alsa_backend *ab = ctx;
-	ab->ptt = key;
+	ab->keyed = key;
 	if (!key)
 		snd_pcm_drain(ab->playback);   /* flush before unkeying. */
-	ptt_set(ab->ptt_fd, key);
+	ardop_ptt_set(ab->ptt, key);
 	if (key)
 		snd_pcm_prepare(ab->playback);
 }
 
 ardop_alsa_backend *ardop_backend_alsa_open(const char *capture_dev,
 					    const char *playback_dev,
-					    const char *ptt_serial,
+					    ardop_ptt *ptt,
 					    ardop_platform_ops *ops)
 {
 	struct ardop_alsa_backend *ab = calloc(1, sizeof(*ab));
 	if (!ab)
 		return NULL;
-	ab->ptt_fd = -1;
+	ab->ptt = ptt;
 
 	int err = snd_pcm_open(&ab->capture, capture_dev,
 			       SND_PCM_STREAM_CAPTURE, 0);
@@ -168,11 +150,6 @@ ardop_alsa_backend *ardop_backend_alsa_open(const char *capture_dev,
 	if (configure(ab->capture, "capture") < 0
 	    || configure(ab->playback, "playback") < 0)
 		goto fail;
-	if (ptt_serial) {
-		ab->ptt_fd = ptt_open(ptt_serial);
-		if (ab->ptt_fd < 0)
-			goto fail;
-	}
 	snd_pcm_prepare(ab->capture);
 	snd_pcm_start(ab->capture);
 
@@ -195,7 +172,5 @@ void ardop_backend_alsa_close(ardop_alsa_backend *ab)
 		snd_pcm_close(ab->capture);
 	if (ab->playback)
 		snd_pcm_close(ab->playback);
-	if (ab->ptt_fd >= 0)
-		close(ab->ptt_fd);
 	free(ab);
 }

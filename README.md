@@ -93,10 +93,11 @@ core is held to.
 | Path | What |
 |---|---|
 | [`core/`](core/) | The pure modem + protocol library: `codec` (frame table, Reed–Solomon, CRC, callsign/grid coding), `modem` (modulator, demodulator, sync, busy detector, FFT), `link` (the ARQ/FEC state machine). No I/O, no globals. |
-| [`shell/`](shell/) | The impure program around the core: the sans-I/O `runtime`, the single-clocked driver `loop`, the TCP host interface, and the platform backends (ALSA, plus a device-free `null`). |
+| [`shell/`](shell/) | The impure program around the core: the sans-I/O `runtime`, the single-clocked driver `loop`, the TCP host interface, the portable socket/system layer (`net`, `sys`), and the platform backends (ALSA, miniaudio, plus a device-free `null`). |
 | [`apps/`](apps/) | Host-client CLI tools — see [`apps/README.md`](apps/README.md). |
 | [`test/`](test/) | In-process tests (`test/core`) and the frozen golden-vector corpus (`test/golden`). |
-| [`tools/`](tools/) | `loopback.sh` — a virtual-audio-cable harness for running two stations against each other with no radio. |
+| [`tools/`](tools/) | `loopback.sh` — a virtual-audio-cable harness for running two stations against each other with no radio; `package-windows.sh` — assembles the Windows release zip. |
+| [`third_party/`](third_party/) | Vendored dependencies, pinned by version and checksum. Currently miniaudio. |
 | [`analysis/`](analysis/) | The written architecture review and rebuild design — *how we got here*. |
 | [`docs/refs/`](docs/refs/) | The ARDOP specification and host-interface reference PDFs. |
 
@@ -113,14 +114,55 @@ sudo apt install libcmocka-dev                        # to run the tests
 owns the sound card and exposes the TCP host interface:
 
 ```
-ardopb MYCALL [--listen] [--host PORT]
-       [--null [SECONDS] | --alsa CAPTURE PLAYBACK [--ptt SERIAL]]
+ardopb MYCALL [--listen] [--host PORT] [--telemetry [PORT]]
+       [--null [SECONDS] | --audio [CAPTURE PLAYBACK] | --alsa CAPTURE PLAYBACK]
+       [--ptt SPEC] [--list-devices]
 ```
+
+`--audio` is the cross-platform backend (miniaudio: WASAPI, CoreAudio, AAudio,
+ALSA); `--alsa` talks to ALSA directly and stays the headless Linux path,
+because a daemon that runs unattended for months benefits from the smaller
+dependency footprint. `--list-devices` prints what is available with the id to
+select it by.
+
+`--ptt` takes `none` (VOX), `rts:DEVICE`, `dtr:DEVICE`, or
+`rigctld:HOST:PORT` — the last keying through a running `rigctld` over TCP
+rather than by linking hamlib.
+
+**Sound-card rates must be a whole multiple of 12000 Hz** (12000, 24000, 48000,
+96000). A rate like 44100 is refused with a message rather than resampled: the
+sample clock *is* the protocol clock here, so an approximate conversion would
+break the link's timing rather than merely its audio. See
+[`shell/resample.h`](shell/resample.h).
 
 Under WSL (WSLg), reach the Windows audio devices through the ALSA→PulseAudio
 plugin: `apt install libasound2-plugins`, point ALSA's `default` at pulse, and
 run `--alsa default default` (details in
 [`shell/backend_alsa.h`](shell/backend_alsa.h)).
+
+### Windows
+
+Fresh Windows builds of every binary are published automatically from `main`:
+
+**[ardopb-windows-x86_64.zip](../../releases/download/continuous/ardopb-windows-x86_64.zip)**
+ — no GitHub account needed.
+
+`ardopb.exe` and the apps are statically linked single files; `ardop-gui.exe`
+ships with its Qt DLLs beside it. Start with `ardopb.exe --list-devices`, then
+
+```
+ardopb.exe MYCALL --audio --ptt rts:COM3 --host 8515 --telemetry
+ardop-gui.exe --host 127.0.0.1:8517
+```
+
+COM ports above COM9 work as written — the `\\.\` prefix is applied for you.
+
+To build it yourself, use an [MSYS2](https://www.msys2.org/) **MINGW64** shell
+(the package list is in [`.github/workflows/test.yml`](.github/workflows/test.yml))
+and run `make`. Binaries get a `.exe` suffix. `check-pure`, `check-headers` and
+`check-standalone` read ELF with `objdump`/`nm` and are Linux-hosted; they
+refuse to run there rather than passing vacuously, because they prove properties
+of source both platforms share and are run once on the Linux CI job.
 
 The **apps** are thin clients that connect to a running modem's host port:
 
@@ -155,6 +197,15 @@ regression net is:
   verified **bit-for-bit** (SHA-256) against the corpus for every data mode.
 - **`make check-pure` / `check-headers` / `check-standalone`** — the mechanical
   guarantees on the core.
+- **`make test-ring-tsan`** — the audio ring's lock-free ordering, under
+  ThreadSanitizer. Linux-hosted for the same reason `check-pure` is: the ring is
+  portable C11 with no platform code, so proving the ordering once proves it for
+  the Windows build too.
+
+CI runs the whole sweep on Linux and, apart from the ELF- and sanitizer-based
+checks, on Windows as well. `golden-tx` passing on both is the strongest single
+statement in the pipeline: the modulator emits byte-identical on-air audio
+compiled by a different toolchain on a different operating system.
 
 See [`test/golden/README.md`](test/golden/README.md) for what the corpus asserts
 and how strongly.
@@ -163,8 +214,20 @@ and how strongly.
 
 Interoperable ARQ and FEC sessions, the full host command + data interface, and
 the modulator/demodulator for every 2017-spec data mode are working and covered.
-Known gaps: Memory-ARQ combining is not yet ported, and the only platform
-backends are ALSA and the device-free null (no WinMM/Windows backend yet).
+Linux and Windows are both built and tested on every push, with Windows binaries
+published automatically.
+
+Known gaps, both of which matter to an operator:
+
+- **Memory-ARQ combining is not yet ported**, so low-SNR performance is below
+  the reference implementation's.
+- **On-air interop against a real `ardopcf` peer has not been validated.** The
+  golden corpus proves the waveform and the decode; it does not prove a live
+  negotiated session with a foreign implementation.
+
+That is why the Windows builds are published as a *prerelease*. macOS and
+Android are reachable through the same miniaudio backend but are not yet built
+or tested in CI.
 
 ## Provenance and license
 

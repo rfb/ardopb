@@ -4,6 +4,7 @@
 #include <stdbool.h>
 
 #include "shell/platform.h"
+#include "shell/ptt.h"
 
 /**
  * @file backend_alsa.h
@@ -18,8 +19,9 @@
  *
  * Deliberately narrow relative to the inherited backend: no `FixTiming`/`-A`
  * (the sample clock removed the need), no `SlowCPU`, no half-duplex handle
- * juggling in the protocol path. CAT/GPIO/rigctl PTT and WinMM are follow-ups;
- * this covers the common ALSA + serial-RTS case.
+ * juggling in the protocol path. Keying is delegated to shell/ptt.h, so serial
+ * RTS/DTR and rigctld all work here; the miniaudio backend (shell/backend_ma.h)
+ * covers Windows, macOS and Android.
  *
  * @par Running under WSL (WSLg)
  * There is no separate PulseAudio backend: on WSL the Windows audio devices are
@@ -37,15 +39,14 @@ typedef struct ardop_alsa_backend ardop_alsa_backend;
  *
  * @param capture_dev   ALSA capture device (e.g. "plughw:0,0" or "default").
  * @param playback_dev  ALSA playback device.
- * @param ptt_serial    Serial device to key PTT via RTS (e.g. "/dev/ttyUSB0"),
- *                      or NULL for no hardware PTT (VOX).
+ * @param ptt           Keying object from shell/ptt.h; NULL for VOX/none.
  * @param ops           Platform ops table to populate on success.
  * @return An opaque backend handle, or NULL on failure (a message is logged).
  *         Free it with ardop_backend_alsa_close() after the loop ends.
  */
 ardop_alsa_backend *ardop_backend_alsa_open(const char *capture_dev,
 					    const char *playback_dev,
-					    const char *ptt_serial,
+					    ardop_ptt *ptt,
 					    ardop_platform_ops *ops);
 
 /** @brief Close the devices and free the backend. */
