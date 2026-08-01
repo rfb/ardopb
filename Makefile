@@ -8,6 +8,12 @@
 # for the exact package list). Binaries get a .exe suffix; check-pure,
 # check-headers and check-standalone are Linux-hosted and refuse to run there.
 #
+# From Linux, cross-compiling catches Windows-only defects without waiting for
+# CI -- notably the LLP64 `long` width, where a signed/unsigned mix involving
+# uint32_t warns on Windows and is silently fine here:
+#   sudo apt install gcc-mingw-w64-x86-64
+#   make CC=x86_64-w64-mingw32-gcc
+#
 # Targets:
 #   make               ardopb + the host-client apps (the default)
 #   make ardopb        the modem
@@ -36,7 +42,18 @@ CFLAGS = -g -MMD $(PLATFORM_CPPFLAGS)
 # the strict flag set below is the same compiler's and needs no translation.
 # Only three things actually differ: the executable suffix, the socket library,
 # and which audio backend exists.
-ifeq ($(OS),Windows_NT)
+#
+# A cross-compile counts as Windows too:
+#
+#   make CC=x86_64-w64-mingw32-gcc
+#
+# which is worth having on a Linux workstation. `long` is 32 bits on Windows
+# and 64 on Linux, so a signed/unsigned mix involving uint32_t warns on one and
+# is silently fine on the other -- a class of defect that otherwise only ever
+# surfaces in CI.
+WINDOWS := $(if $(findstring mingw,$(CC)),1,$(if $(filter Windows_NT,$(OS)),1,))
+
+ifeq ($(WINDOWS),1)
 EXE = .exe
 # MinGW's printf is msvcrt's unless asked otherwise, and msvcrt has no %zu --
 # it prints the literal text "zu". shell/ and test/golden/ use %zu throughout.
@@ -189,7 +206,7 @@ all: ardopb$(EXE) apps
 # On Windows they refuse rather than pass. core/README.md is explicit that a
 # rule which cannot be mechanically enforced is only guidance -- so a developer
 # there must not be able to believe they ran the check when they did not.
-ifeq ($(OS),Windows_NT)
+ifeq ($(WINDOWS),1)
 check-pure check-headers check-standalone:
 	@echo "$@: Linux-hosted (objdump/nm on ELF sections). It proves a property"; \
 	echo "of shared source and is run once, on the Linux CI job. Not run here."; \
@@ -244,7 +261,7 @@ check-standalone: $(CORE_OBJS) $(TEMPLATES)
 		rm -rf $$tmp; exit 1; \
 	fi
 
-endif   # Windows_NT
+endif   # WINDOWS
 
 # --- in-process tests ------------------------------------------------------
 CORE_TESTS = \
