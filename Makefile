@@ -320,20 +320,21 @@ test/core/test_backend_ma$(EXE): test/core/test_backend_ma.c $(CORE_OBJS) \
 # and golden-tx checks the modulator's TX audio bit-for-bit.
 test/golden/core_decode_wav$(EXE): test/golden/core_decode_wav.c $(CORE_OBJS) $(TEMPLATES)
 	$(CC) $(CORE_CPPFLAGS) $(CFLAGS) $(CORE_CFLAGS) \
-		$< $(CORE_OBJS) $(TEMPLATES) -lm -o $@
+		$< $(CORE_OBJS) $(TEMPLATES) $(PLATFORM_LDLIBS) -lm -o $@
 golden-core: test/golden/core_decode_wav$(EXE)
 	cd test/golden && ./test_golden_core.py
 
 test/golden/shell_decode_wav$(EXE): test/golden/shell_decode_wav.c $(CORE_OBJS) \
 		$(SHELL_OBJS) $(TEMPLATES)
 	$(CC) -I. $(CORE_CPPFLAGS) $(CFLAGS) $(CORE_CFLAGS) \
-		$< $(CORE_OBJS) $(SHELL_OBJS) $(TEMPLATES) -lm -o $@
+		$< $(CORE_OBJS) $(SHELL_OBJS) $(TEMPLATES) $(PLATFORM_LDLIBS) \
+		-lm -o $@
 golden-shell: test/golden/shell_decode_wav$(EXE)
 	cd test/golden && GOLDEN_DECODE_BIN=./shell_decode_wav$(EXE) ./test_golden_core.py
 
 test/golden/shell_tx_wav$(EXE): test/golden/shell_tx_wav.c $(CORE_OBJS) $(TEMPLATES)
 	$(CC) $(CORE_CPPFLAGS) $(CFLAGS) $(CORE_CFLAGS) \
-		$< $(CORE_OBJS) $(TEMPLATES) -lm -o $@
+		$< $(CORE_OBJS) $(TEMPLATES) $(PLATFORM_LDLIBS) -lm -o $@
 golden-tx: test/golden/shell_tx_wav$(EXE)
 	cd test/golden && ./test_golden_tx.py
 
