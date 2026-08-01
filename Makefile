@@ -271,6 +271,7 @@ CORE_TESTS = \
 	test/core/test_telemetry$(EXE) \
 	test/core/test_ring$(EXE) \
 	test/core/test_resample$(EXE) \
+	test/core/test_memarq$(EXE) \
 	test/core/test_backend_ma$(EXE)
 
 define newline
