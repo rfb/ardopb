@@ -87,3 +87,7 @@ newArdopSampleArrays.c
 
 # Qt GUI build tree (cmake -S gui -B gui/build)
 /gui/build/
+
+# Windows release staging (tools/package-windows.sh)
+/dist/
+/ardopb-windows-*.zip

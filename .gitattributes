@@ -15,6 +15,12 @@ Makefile text=auto
 *.doc binary
 *.pdf binary
 
+# The golden corpus. A CRLF translation here would surface as ~130 mystery
+# conformance failures on Windows rather than as anything legible.
+*.gz binary
+*.wav binary
+manifest.json text eol=lf
+
 *.vcproj text eol=crlf
 *.{cmd,[cC][mM][dD]} text eol=crlf
 *.{bat,[bB][aA][tT]} text eol=crlf

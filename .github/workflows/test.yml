@@ -1,14 +1,33 @@
-# Build ardopb + the host-client apps and run the full verification sweep.
+# Build ardopb + the host-client apps, run the full verification sweep on Linux
+# and Windows, and publish fresh Windows builds.
 #
 # The whole tree builds at -Wall -Wextra -Werror, so there is nothing to
 # suppress and no warning census to keep -- a failed build IS the census.
+#
+# The two jobs are not redundant. The Linux job owns the mechanical guarantees
+# (check-pure, check-standalone and the ThreadSanitizer run all read ELF or need
+# a sanitizer MinGW does not have); they prove properties of source that both
+# platforms share, so proving them once is enough (analysis/14 Decision 6). The
+# Windows job proves the portable set really is portable, under a different GCC
+# major version than ubuntu-latest ships -- which catches a class of warning the
+# Linux job structurally cannot.
 
 name: test
 
 on:
   push:
+    branches: [main]
+    tags: ['v*']
   pull_request:
   workflow_dispatch:
+
+# A second push to main must not race the first for the `continuous` tag.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
 
 jobs:
   linux:
@@ -19,7 +38,8 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libasound2-dev libcmocka-dev
+          sudo apt-get install -y libcmocka-dev qt6-base-dev \
+            cmake ninja-build
 
       - name: Build (ardopb + apps)
         run: make
@@ -30,5 +50,127 @@ jobs:
       - name: Unit and integration tests
         run: make test-core
 
+      # The SPSC ring's release/acquire pairing cannot be shown from one thread,
+      # and MinGW has no ThreadSanitizer. The ring is portable C11 with no
+      # platform code, so proving the ordering here proves it everywhere.
+      - name: Ring ordering under ThreadSanitizer
+        run: make test-ring-tsan
+
       - name: Golden-corpus conformance
         run: make golden-core golden-shell golden-tx
+
+      - name: Build the GUI
+        run: |
+          cmake -S gui -B gui/build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build gui/build
+
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            make
+            zip
+            git
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-cmocka
+            mingw-w64-x86_64-python
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-qt6-base
+            mingw-w64-x86_64-qt6-tools
+
+      - name: Build (ardopb + apps)
+        run: make
+
+      - name: Unit and integration tests
+        run: make test-core
+
+      # Worth stating plainly: golden-tx passing here means the modulator emits
+      # byte-identical on-air audio compiled by a different toolchain on a
+      # different OS. If it ever diverges it is a float or integer-promotion
+      # difference in core/modem/modulate.c and a real interop defect -- do not
+      # mark it flaky.
+      - name: Golden-corpus conformance
+        run: make golden-core golden-shell golden-tx
+
+      - name: Build the GUI
+        run: |
+          cmake -S gui -B gui/build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build gui/build
+
+      - name: Package
+        run: tools/package-windows.sh dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ardopb-windows-x86_64
+          path: ardopb-windows-x86_64.zip
+          retention-days: 14
+
+  # A rolling build of main, so a Windows operator can get a current binary
+  # from a stable URL without a GitHub account:
+  #
+  #   .../releases/download/continuous/ardopb-windows-x86_64.zip
+  #
+  # `needs` is the gate: a failing test on *either* platform blocks publication.
+  publish-continuous:
+    needs: [linux, windows]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ardopb-windows-x86_64
+
+      - name: Move the continuous tag
+        run: |
+          git tag -f continuous ${{ github.sha }}
+          git push -f origin continuous
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: continuous
+          name: Continuous build
+          prerelease: true
+          make_latest: false
+          body: |
+            Automatic build of `main` at ${{ github.sha }}.
+
+            **This is not a release.** Two things are still open and both
+            matter to an operator: memory-ARQ is not ported, so low-SNR
+            performance is below the reference implementation's, and on-air
+            interop against a real `ardopcf` peer has not been validated.
+            The waveform and the decoder are checked against a frozen corpus
+            on every build; a live negotiated session with a foreign
+            implementation is not.
+
+            See `README-WINDOWS.txt` inside the zip to get started.
+          files: ardopb-windows-x86_64.zip
+
+  publish-release:
+    needs: [linux, windows]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: ardopb-windows-x86_64
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: ardopb-windows-x86_64.zip

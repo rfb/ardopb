@@ -53,5 +53,18 @@ target_link_libraries(ardop-gui PRIVATE
 	Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Network)
 
 # The shared C file is held to the same bar as the rest of core/.
-set_source_files_properties(${ARDOP_ROOT}/shell/telemetry.c PROPERTIES
-	COMPILE_OPTIONS "-std=c11;-Wall;-Wextra;-Wconversion")
+#
+# Guarded on the compiler rather than assumed: these are GCC/Clang spellings and
+# MSVC rejects them outright. MinGW -- what the Windows CI job uses -- takes them
+# unchanged, so the Windows build is held to exactly the same bar as Linux.
+if(NOT MSVC)
+	set_source_files_properties(${ARDOP_ROOT}/shell/telemetry.c PROPERTIES
+		COMPILE_OPTIONS "-std=c11;-Wall;-Wextra;-Wconversion")
+endif()
+
+if(WIN32)
+	# A GUI subsystem binary, so double-clicking it does not also open a
+	# console window behind the panel. Diagnostics go to the telemetry
+	# stream and the modem's own stderr, not to this process's.
+	set_target_properties(ardop-gui PROPERTIES WIN32_EXECUTABLE ON)
+endif()

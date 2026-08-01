@@ -29,7 +29,7 @@ import tempfile
 
 import ardop_golden as g
 
-BIN = os.path.join(g.GOLDEN_DIR, "shell_tx_wav")
+BIN = g.tool("shell_tx_wav")
 
 
 def modulate(frame_type, session_id, payload_hex, out_path):

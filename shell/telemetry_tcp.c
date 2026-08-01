@@ -1,15 +1,10 @@
 #include "shell/telemetry_tcp.h"
 
-#include <errno.h>
-#include <fcntl.h>
-#include <netinet/in.h>
-#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/socket.h>
-#include <unistd.h>
 
+#include "shell/net.h"
 #include "shell/telemetry.h"
 
 /**
@@ -30,8 +25,8 @@
 #define TLM_QUEUE_BYTES (256 * 1024)
 
 struct ardop_telemetry_tcp {
-	int listen_fd;
-	int fd;
+	ardop_socket listen_fd;
+	ardop_socket fd;
 
 	/* Ring of whole records awaiting the socket. head..tail, wrapping. */
 	uint8_t buf[TLM_QUEUE_BYTES];
@@ -42,43 +37,10 @@ struct ardop_telemetry_tcp {
 	bool warned;             /* so the drop warning is printed once. */
 };
 
-static void set_nonblock(int fd)
-{
-	int fl = fcntl(fd, F_GETFL, 0);
-	if (fl >= 0)
-		(void)fcntl(fd, F_SETFL, fl | O_NONBLOCK);
-}
-
-static int open_listener(uint16_t port)
-{
-	int fd = socket(AF_INET, SOCK_STREAM, 0);
-	if (fd < 0) {
-		perror("telemetry: socket");
-		return -1;
-	}
-	int one = 1;
-	(void)setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
-
-	struct sockaddr_in addr;
-	memset(&addr, 0, sizeof(addr));
-	addr.sin_family = AF_INET;
-	addr.sin_addr.s_addr = htonl(INADDR_ANY);
-	addr.sin_port = htons(port);
-	if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0
-	    || listen(fd, 1) < 0) {
-		perror("telemetry: bind/listen");
-		close(fd);
-		return -1;
-	}
-	set_nonblock(fd);
-	return fd;
-}
-
 static void drop_client(ardop_telemetry_tcp *t)
 {
-	if (t->fd >= 0) {
-		close(t->fd);
-		t->fd = -1;
+	if (ardop_net_valid(t->fd)) {
+		ardop_net_close(&t->fd);
 		fprintf(stderr, "telemetry: client disconnected\n");
 	}
 	t->head = 0;
@@ -136,18 +98,20 @@ static void queue_bytes(ardop_telemetry_tcp *t, const uint8_t *b, size_t n)
 /* Push whatever the socket will take right now. Never blocks. */
 static void flush(ardop_telemetry_tcp *t)
 {
-	while (t->fd >= 0 && t->len > 0) {
+	while (ardop_net_valid(t->fd) && t->len > 0) {
 		size_t run = TLM_QUEUE_BYTES - t->head;
 		if (run > t->len)
 			run = t->len;
 
-		ssize_t w = send(t->fd, t->buf + t->head, run, MSG_NOSIGNAL);
-		if (w > 0) {
-			t->head = (t->head + (size_t)w) % TLM_QUEUE_BYTES;
-			t->len -= (size_t)w;
+		size_t moved = 0;
+		ardop_net_status st = ardop_net_send(t->fd, t->buf + t->head,
+						     run, &moved);
+		if (st == ARDOP_NET_OK && moved > 0) {
+			t->head = (t->head + moved) % TLM_QUEUE_BYTES;
+			t->len -= moved;
 			continue;
 		}
-		if (w < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
+		if (st == ARDOP_NET_OK || st == ARDOP_NET_AGAIN)
 			return;   /* socket full: the rest waits. */
 		drop_client(t);
 		return;
@@ -161,7 +125,7 @@ static void on_telemetry(void *ctx, const ardop_telemetry *rec)
 	ardop_telemetry_tcp *t = ctx;
 	uint8_t enc[ARDOP_TLM_MAX_RECORD];
 
-	if (t->fd < 0)
+	if (!ardop_net_valid(t->fd))
 		return;   /* nobody watching: encode nothing. */
 
 	size_t n = ardop_tlm_encode(rec, enc, sizeof(enc));
@@ -185,10 +149,10 @@ ardop_telemetry_tcp *ardop_telemetry_tcp_open(uint16_t port)
 	ardop_telemetry_tcp *t = calloc(1, sizeof(*t));
 	if (!t)
 		return NULL;
-	t->fd = -1;
+	t->fd = ARDOP_SOCKET_INVALID;
 
-	t->listen_fd = open_listener(port);
-	if (t->listen_fd < 0) {
+	t->listen_fd = ardop_net_listen(port);
+	if (!ardop_net_valid(t->listen_fd)) {
 		free(t);
 		return NULL;
 	}
@@ -207,10 +171,9 @@ void ardop_telemetry_tcp_service(ardop_telemetry_tcp *t, ardop_runtime *rt)
 	if (!t)
 		return;
 
-	if (t->fd < 0) {
-		int fd = accept(t->listen_fd, NULL, NULL);
-		if (fd >= 0) {
-			set_nonblock(fd);
+	if (!ardop_net_valid(t->fd)) {
+		ardop_socket fd = ardop_net_accept(t->listen_fd);
+		if (ardop_net_valid(fd)) {
 			t->fd = fd;
 			t->head = 0;
 			t->len = 0;
@@ -228,10 +191,13 @@ void ardop_telemetry_tcp_service(ardop_telemetry_tcp *t, ardop_runtime *rt)
 
 	/* A one-way stream still has to notice the peer leaving: a read of 0
 	 * is the only in-band signal until a write happens to fail. */
-	if (t->fd >= 0) {
+	if (ardop_net_valid(t->fd)) {
 		uint8_t discard[64];
-		ssize_t r = recv(t->fd, discard, sizeof(discard), MSG_DONTWAIT);
-		if (r == 0) {
+		size_t got = 0;
+		/* The socket is already non-blocking, so no per-call flag is
+		 * needed -- MSG_DONTWAIT does not exist on Winsock anyway. */
+		if (ardop_net_recv(t->fd, discard, sizeof(discard), &got)
+		    == ARDOP_NET_CLOSED) {
 			drop_client(t);
 			return;
 		}
@@ -245,8 +211,7 @@ void ardop_telemetry_tcp_close(ardop_telemetry_tcp *t)
 	if (!t)
 		return;
 	drop_client(t);
-	if (t->listen_fd >= 0)
-		close(t->listen_fd);
+	ardop_net_close(&t->listen_fd);
 	if (t->dropped)
 		fprintf(stderr, "telemetry: %lu record(s) dropped\n",
 			t->dropped);

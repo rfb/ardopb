@@ -47,6 +47,17 @@ Local technical review of `ardopcf`, written to answer two questions:
 | 11 | [Demodulator design](11-demod-design.md) | The field-level `ardop_demod` context, its push/event FSM, and the stage-by-stage port order with oracles |
 | 12 | [Normative accidents](12-normative-accidents.md) | The reference-implementation bugs we preserve bit-for-bit for interop, and which ones a future `improved` mode could fix |
 | 13 | [Completing the rebuild](13-completing-the-rebuild.md) | The full remaining scope once the core ARQ loopback works: finish the link protocol, build the platform shell, validate and cut over |
+| 14 | [The station application](14-station-application.md) | **A new program on the finished core.** The embedding seam, the modem thread, and hosting the TNC ports inside an application that also drives the modem |
+| 15 | [Platform audio and PTT](15-platform-audio-and-ptt.md) | Backends beyond ALSA, device enumeration, the push/pull bridge, resampling as a *timing* question, PTT methods, Android |
+| 16 | [The user interface](16-user-interface.md) | The toolkit evaluation and its recommendation; what survives from `gui/` and what does not; the screens and the responsive layout |
+| 17 | [The application protocol](17-application-protocol.md) | Chat and file transfer as a byte-level wire spec: framing, resume, and degrading to raw text against a station that does not speak it |
+
+**Documents 14–17 are a different kind of thing from 00–13.** Those described
+`ardopcf` and planned its rebuild; the rebuild is done and `core/` is the running
+program. These design a *new* application built on top of it — one installable
+program, five platforms, its own shell — and they assume the core as it now
+stands rather than proposing changes to it. [14](14-station-application.md) is
+the umbrella; 15, 16 and 17 are its three hard sub-problems.
 
 **Short on time?** Read 03 and 04 — they contain the answers to the two
 motivating questions.

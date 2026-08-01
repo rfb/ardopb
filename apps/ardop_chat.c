@@ -1,11 +1,14 @@
-#define _DEFAULT_SOURCE
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/select.h>
-#include <unistd.h>
+
+/* Keyboard poll interval while waiting on the sockets. */
+#define CHAT_POLL_MS 50
+
+#include "shell/net.h"
+#include "shell/sys.h"
 
 #include "hostclient.h"
 
@@ -73,14 +76,14 @@ static int print_incoming(hostclient *hc)
 static void drain_buffer(hostclient *hc, const char *rest_state)
 {
 	char buf[128];
-	usleep(500000);
+	ardop_sleep_ms(500);
 	for (int i = 0; i < 300; i++) {
 		if (hc_query(hc, "BUFFER", "BUFFER ", buf, sizeof(buf), 3000,
 			     NULL, NULL) != 1)
 			return;
 		if (atoi(buf + strlen("BUFFER ")) == 0)
 			break;
-		usleep(200000);
+		ardop_sleep_ms(200);
 	}
 	for (int i = 0; i < 300; i++) {
 		if (hc_query(hc, "STATE", "STATE ", buf, sizeof(buf), 3000,
@@ -88,7 +91,7 @@ static void drain_buffer(hostclient *hc, const char *rest_state)
 			return;
 		if (strcmp(buf, rest_state) == 0)
 			return;
-		usleep(200000);
+		ardop_sleep_ms(200);
 	}
 }
 
@@ -148,29 +151,26 @@ int main(int argc, char **argv)
 		return 2;
 	}
 
-	int maxfd = hc.cmd_fd;
-	if (hc.data_fd > maxfd)
-		maxfd = hc.data_fd;
-	maxfd += 1;
-
+	/*
+	 * The sockets and the keyboard are waited on separately rather than in
+	 * one select(). Winsock's select() takes sockets only -- a console
+	 * handle, a pipe and a file are all invalid there -- so the portable
+	 * shape is a short socket wait plus a non-blocking stdin poll. The cost
+	 * is up to CHAT_POLL_MS of typing latency on a link whose round trip is
+	 * measured in seconds.
+	 */
 	bool done = false;
 	while (!done) {
-		fd_set r;
-		FD_ZERO(&r);
-		/* Only read the keyboard once we can actually send -- otherwise a
-		 * line typed (or piped) before the link is up would be dropped. */
-		if (connected)
-			FD_SET(STDIN_FILENO, &r);
-		FD_SET(hc.cmd_fd, &r);
-		FD_SET(hc.data_fd, &r);
-		if (select(maxfd, &r, NULL, NULL, NULL) < 0)
+		const ardop_socket socks[2] = { hc.cmd_fd, hc.data_fd };
+		bool ready[2] = { false, false };
+		if (ardop_net_wait(socks, 2, CHAT_POLL_MS, ready) < 0)
 			break;
 
-		if (FD_ISSET(hc.data_fd, &r)) {
+		if (ready[1]) {
 			if (print_incoming(&hc) < 0)
 				break;
 		}
-		if (FD_ISSET(hc.cmd_fd, &r)) {
+		if (ready[0]) {
 			char line[512];
 			int lr = hc_next_line(&hc, line, sizeof(line), 0);
 			if (lr < 0)
@@ -183,7 +183,10 @@ int main(int argc, char **argv)
 					break;
 			}
 		}
-		if (connected && FD_ISSET(STDIN_FILENO, &r)) {
+		/* Only read the keyboard once we can actually send -- otherwise
+		 * a line typed (or piped) before the link is up would be
+		 * dropped. */
+		if (connected && ardop_stdin_ready(0)) {
 			char line[512];
 			if (!fgets(line, sizeof(line), stdin)) {
 				/* stdin EOF: hang up, letting queued lines drain

@@ -15,17 +15,20 @@
  * framing mirrors shell/host.c, which is the authority; it is reimplemented here
  * so the apps are plain socket clients with no dependency on the modem's C API.
  *
- * All calls are blocking with an explicit millisecond timeout (via select), so a
- * caller can poll or drive its own event loop off ::hostclient::cmd_fd /
- * ::hostclient::data_fd.
+ * All calls are blocking with an explicit millisecond timeout, so a caller can
+ * poll or drive its own event loop off ::hostclient::cmd_fd /
+ * ::hostclient::data_fd -- pass those to ::ardop_net_wait rather than to
+ * select() directly, so the apps stay portable.
  */
+
+#include "shell/net.h"
 
 /** Tag length on received data messages ("ARQ"/"FEC"/"ERR"/"IDF"). */
 #define HC_TAG_LEN 3
 
 typedef struct {
-	int cmd_fd;                 /**< command channel socket. */
-	int data_fd;                /**< data channel socket (cmd port + 1). */
+	ardop_socket cmd_fd;        /**< command channel socket. */
+	ardop_socket data_fd;       /**< data channel socket (cmd port + 1). */
 	char cmd_buf[4096];         /**< partial command-line input. */
 	size_t cmd_len;
 	uint8_t data_buf[16384];    /**< partial data-message input. */

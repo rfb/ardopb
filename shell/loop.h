@@ -25,8 +25,9 @@
  * drains (observed), not when a nominal duration elapses (predicted).
  */
 
-/** Samples moved per iteration. One ARDOP symbol block is 240; a larger chunk
- *  amortises call overhead while staying well inside one frame's leader. */
+/** Upper bound on samples moved per iteration, and the size of the scratch
+ *  buffers. One ARDOP symbol block is 240; a larger chunk amortises call
+ *  overhead while staying well inside one frame's leader. */
 #define ARDOP_LOOP_BLOCK 1200
 
 /**
@@ -37,14 +38,31 @@ typedef struct {
 	ardop_runtime *rt;
 	const ardop_platform_ops *plat;
 	uint64_t t;                       /**< elapsed samples: the one clock. */
+	/**
+	 * @brief Samples per iteration; 1..::ARDOP_LOOP_BLOCK, default the max.
+	 *
+	 * A backend may lower this after ::ardop_loop_init. At 12 kHz the
+	 * default is 100 ms, and capture-to-link latency is one block plus the
+	 * device buffer -- already 40% of the 250 ms ARQ turnaround budget
+	 * before the link has seen the frame. On a platform whose device buffer
+	 * is larger that can push a peer into retrying and gear-shifting down,
+	 * which looks like a bad channel rather than a bad setting.
+	 *
+	 * The buffers stay at ::ARDOP_LOOP_BLOCK so the struct layout and the
+	 * existing tests are unaffected (analysis/15 §8).
+	 */
+	size_t block;
 	int16_t in[ARDOP_LOOP_BLOCK];
 	int16_t out[ARDOP_LOOP_BLOCK];
 } ardop_loop;
 
 /**
- * @brief Bind a driver to a runtime and platform. Does not touch the runtime's
- *        callbacks -- the caller wires `rt->on_ptt` to `plat->set_ptt` (and the
- *        host/data callbacks) so PTT and host I/O reach the device.
+ * @brief Bind a driver to a runtime and platform, with ::ardop_loop::block at
+ *        the default ::ARDOP_LOOP_BLOCK.
+ *
+ * Does not touch the runtime's callbacks. PTT is routed by the observer
+ * installed with ardop_runtime_observe() -- see the ARDOP_OBS_PTT case in
+ * shell/main.c -- not by a field on the runtime.
  */
 void ardop_loop_init(ardop_loop *lp, ardop_runtime *rt,
 		     const ardop_platform_ops *plat);

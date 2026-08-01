@@ -6,8 +6,10 @@
 # "RF cables" between two ARDOP stations on the same machine, so the rebuilt
 # ardopb can be run against the inherited ardopcf (or another ardopb) over a
 # real audio path -- the W3 on-air interop step -- with no radio or sound card.
-# Works on native PulseAudio/PipeWire and under WSL (WSLg), where the ALSA
-# devices are reached through the ALSA->pulse plugin (needs libasound2-plugins).
+#
+# ardopb reaches the sinks directly by name, so there is no ALSA config to
+# generate and no ALSA_CONFIG_PATH to export. (ardopcf, which only speaks ALSA,
+# still needs the plugin route -- see `ardopcf` in the interop note below.)
 #
 # Topology (two directed cables):
 #
@@ -26,34 +28,13 @@
 #
 # For a real interop test, `up`, then in two terminals (with the printed env):
 #   ardopcf 8515 b2a_mon a2b -H "MYCALL N0AAA"      # inherited, station A
-#   ardopb  N0BBB --listen --alsa a2b_mon b2a       # rebuilt,   station B
+#   ardopb  N0BBB --listen --audio a2b.monitor b2a       # rebuilt,   station B
 # then drive a connect from A's host port. `down` when finished.
 
 set -euo pipefail
 
-CONF="${TMPDIR:-/tmp}/ardop_loopback_asound.conf"
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 ARDOPB="$HERE/ardopb"
-
-# Locate the system-wide ALSA config to include (varies by distro).
-find_alsa_conf() {
-	for c in /usr/share/alsa/alsa.conf /etc/alsa/alsa.conf; do
-		[ -f "$c" ] && { echo "$c"; return; }
-	done
-	find /usr -name alsa.conf 2>/dev/null | head -1
-}
-
-write_conf() {
-	local sys; sys="$(find_alsa_conf)"
-	[ -n "$sys" ] || { echo "no system alsa.conf found" >&2; exit 1; }
-	cat > "$CONF" <<EOF
-<$sys>
-pcm.a2b     { type pulse  device "a2b" }
-pcm.a2b_mon { type pulse  device "a2b.monitor" }
-pcm.b2a     { type pulse  device "b2a" }
-pcm.b2a_mon { type pulse  device "b2a.monitor" }
-EOF
-}
 
 sink_exists() { pactl list short sinks 2>/dev/null | grep -qw "$1"; }
 
@@ -79,39 +60,36 @@ drop_cable() {
 cmd_up() {
 	make_cable a2b
 	make_cable b2a
-	write_conf
-	cat <<EOF
+	cat <<'EOF'
 
-virtual cables ready. Point ALSA at them with:
-    export ALSA_CONFIG_PATH=$CONF
-
-then run two stations (A initiates, B answers):
-    # A: capture=b2a_mon play=a2b     B: capture=a2b_mon play=b2a
-    ardopb N0AAA --alsa b2a_mon a2b --host 8600      # rebuilt A
-    ardopb N0BBB --listen --alsa a2b_mon b2a         # rebuilt B
-  or against the inherited tree:
-    ardopcf 8515 b2a_mon a2b -H "MYCALL N0AAA"       # inherited A
+virtual cables ready. Run two stations (A initiates, B answers):
+    # A: capture=b2a.monitor play=a2b   B: capture=a2b.monitor play=b2a
+    ardopb N0AAA --audio b2a.monitor a2b --host 8600      # rebuilt A
+    ardopb N0BBB --listen --audio a2b.monitor b2a         # rebuilt B
 and drive a connect from A's host port (ARQCALL N0BBB 5).
+
+To run against the inherited ardopcf, which speaks only ALSA, give it the
+ALSA->pulse plugin route (needs libasound2-plugins) via an ~/.asoundrc
+entry such as `pcm.b2a_mon { type pulse device "b2a.monitor" }`, then:
+    ardopcf 8515 b2a_mon a2b -H "MYCALL N0AAA"            # inherited A
 EOF
 }
 
 cmd_down() {
 	drop_cable a2b
 	drop_cable b2a
-	rm -f "$CONF"
 }
 
 cmd_demo() {
 	command -v python3 >/dev/null || { echo "demo needs python3" >&2; exit 1; }
 	[ -x "$ARDOPB" ] || { echo "build first: make ardopb" >&2; exit 1; }
 	cmd_up >/dev/null
-	export ALSA_CONFIG_PATH="$CONF"
 	local log; log="$(mktemp -d)"
 	echo "launching two ardopb stations over the cables..."
 	# --trace so the NO-CONNECT diagnostics (tx/rx frame counts) are meaningful.
-	setsid "$ARDOPB" N0AAA --trace --alsa b2a_mon a2b --host 18600 \
+	setsid "$ARDOPB" N0AAA --trace --audio b2a.monitor a2b --host 18600 \
 		>"$log/A.log" 2>&1 </dev/null &
-	setsid "$ARDOPB" N0BBB --listen --trace --alsa a2b_mon b2a --host 18700 \
+	setsid "$ARDOPB" N0BBB --listen --trace --audio a2b.monitor b2a --host 18700 \
 		>"$log/B.log" 2>&1 </dev/null &
 	sleep 3   # let both ALSA devices open + host bind
 	python3 - <<'PY'
@@ -162,12 +140,11 @@ cmd_pipe() {
 	[ -x "$ARDOPB" ] || { echo "build first: make ardopb" >&2; exit 1; }
 	[ -x "$tx" ] && [ -x "$rx" ] || { echo "build first: make apps" >&2; exit 1; }
 	cmd_up >/dev/null
-	export ALSA_CONFIG_PATH="$CONF"
 	local d; d="$(mktemp -d)"
 	echo "launching two ardopb daemons over the cables..."
-	setsid "$ARDOPB" N0AAA --host 8600 --alsa b2a_mon a2b \
+	setsid "$ARDOPB" N0AAA --host 8600 --audio b2a.monitor a2b \
 		>"$d/A.log" 2>&1 </dev/null &
-	setsid "$ARDOPB" N0BBB --listen --host 8700 --alsa a2b_mon b2a \
+	setsid "$ARDOPB" N0BBB --listen --host 8700 --audio a2b.monitor b2a \
 		>"$d/B.log" 2>&1 </dev/null &
 	sleep 3
 	head -c 500 /dev/urandom > "$d/in.bin"
@@ -202,15 +179,14 @@ cmd_check() {
 	command -v python3 >/dev/null || { echo "check needs python3" >&2; exit 1; }
 	[ -x "$ARDOPB" ] || { echo "build first: make ardopb" >&2; exit 1; }
 	cmd_up >/dev/null
-	export ALSA_CONFIG_PATH="$CONF"
 	local log; log="$(mktemp -d)"
 	echo "beaconing IDs from TX into cable a2b; RX listens on a2b.monitor..."
 	# RX first, so it is capturing before TX keys. --trace so the ptt/rx-frame
 	# observations this check counts are logged.
-	setsid "$ARDOPB" N0RX --listen --trace --alsa a2b_mon b2a \
+	setsid "$ARDOPB" N0RX --listen --trace --audio a2b.monitor b2a \
 		>"$log/RX.log" 2>&1 </dev/null &
 	sleep 1
-	setsid "$ARDOPB" N0TX --trace --alsa b2a_mon a2b --host 18600 \
+	setsid "$ARDOPB" N0TX --trace --audio b2a.monitor a2b --host 18600 \
 		>"$log/TX.log" 2>&1 </dev/null &
 	sleep 3   # let ALSA open + host bind (slower under WSL)
 	# Fire several IDs, spaced, so a single missed frame is not decisive.
