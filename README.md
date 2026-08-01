@@ -66,9 +66,9 @@ lives in caller-owned structs. Dependencies point one way.
 
 ```
   apps/     ardop-tx  ardop-rx  ardop-chat        TCP host-protocol clients
-    |  (host protocol over TCP)
-  shell/    runtime . driver loop . host iface     the impure program: audio,
-    |        . miniaudio / null backends            sockets, the wall clock
+    |  (host protocol over TCP)                   app/   the station app's spine
+  shell/    runtime . driver loop . host iface      |    -- embeds the modem
+    |        . miniaudio / null backends           /        instead of dialling it
   core/     codec -> modem -> link                  pure: no I/O, no clock,
              (frames/RS/CRC) (mod/demod) (ARQ/FEC)   no allocation, no globals
 ```
@@ -95,6 +95,7 @@ core is held to.
 | [`core/`](core/) | The pure modem + protocol library: `codec` (frame table, Reed–Solomon, CRC, callsign/grid coding), `modem` (modulator, demodulator, sync, busy detector, FFT), `link` (the ARQ/FEC state machine). No I/O, no globals. |
 | [`shell/`](shell/) | The impure program around the core: the sans-I/O `runtime`, the single-clocked driver `loop`, the TCP host interface, the portable socket/system layer (`net`, `sys`), and the platform backends (miniaudio, plus a device-free `null`). |
 | [`apps/`](apps/) | Host-client CLI tools — see [`apps/README.md`](apps/README.md). |
+| [`app/`](app/) | The station application's embedding spine: the modem embedded rather than talked to, with backpressure and a TNC-ownership rule. Phase 1 of [`analysis/14`](analysis/14-station-application.md); see [`app/README.md`](app/README.md). |
 | [`test/`](test/) | In-process tests (`test/core`) and the frozen golden-vector corpus (`test/golden`). |
 | [`tools/`](tools/) | `loopback.sh` — a virtual-audio-cable harness for running two stations against each other with no radio; `package-windows.sh` and `package-linux.sh` — assemble the release downloads. |
 | [`third_party/`](third_party/) | Vendored dependencies, pinned by version and checksum. Currently miniaudio. |

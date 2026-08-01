@@ -225,6 +225,10 @@ static void service_cmd(ardop_host_tcp *h, ardop_runtime *rt, uint64_t now)
 /* Read the data channel and queue each complete message as SEND_DATA. */
 static void service_data(ardop_host_tcp *h, ardop_runtime *rt, uint64_t now)
 {
+	/* No refusal string on this channel, unlike the command one, and that is
+	 * deliberate: it carries length-prefixed binary, so an ASCII line would
+	 * be read as a frame header by the very client it was meant to inform.
+	 * Connect-then-EOF is the only signal that cannot be misparsed. */
 	accept_into(h->data_listen_fd, &h->data_fd, "data", NULL);
 	if (!ardop_net_valid(h->data_fd))
 		return;
@@ -308,6 +312,14 @@ void ardop_host_tcp_send_data(ardop_host_tcp *h, const char *tag,
 		h->data_out_len = 0;
 		drop(&h->data_fd, "data");
 	}
+}
+
+bool ardop_host_tcp_client_connected(const ardop_host_tcp *h)
+{
+	/* Either channel, not just the command one. A client that opened only the
+	 * data port can still queue SEND_DATA through service_data(), which is
+	 * precisely the interleaving this signal exists to prevent. */
+	return h && (ardop_net_valid(h->cmd_fd) || ardop_net_valid(h->data_fd));
 }
 
 void ardop_host_tcp_close(ardop_host_tcp *h)

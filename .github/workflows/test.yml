@@ -44,7 +44,7 @@ jobs:
           sudo apt-get install -y libcmocka-dev qt6-base-dev \
             cmake ninja-build
 
-      - name: Build (ardopb + apps)
+      - name: Build (ardopb, apps, spine)
         run: make
 
       - name: Core guarantees
@@ -58,6 +58,25 @@ jobs:
       # platform code, so proving the ordering here proves it everywhere.
       - name: Ring ordering under ThreadSanitizer
         run: make test-ring-tsan
+
+      # analysis/14 Decision 2 -- "nothing outside the modem thread touches the
+      # runtime, for any reason, ever" -- is a claim about what does not happen,
+      # which no single-threaded test can support. This runs a whole ARQ session
+      # on one thread while another drives the seam, with core/ and shell/
+      # compiled from source under the sanitizer so their silence means
+      # something. It also builds app/ at -O1, which catches a class of warning
+      # the unoptimised default build structurally cannot.
+      - name: Spine threading under ThreadSanitizer
+        run: make test-app-tsan
+
+      # The spine, driven headless through a scripted command queue: connect,
+      # transfer under backpressure, verify every byte, disconnect. This is
+      # analysis/14's exit criterion for workstream A, and it needs no radio.
+      - name: Station spine, end to end
+        run: |
+          make app
+          ./app/ardop-spine --loopback --telemetry \
+            --script test/app/session.script
 
       - name: Golden-corpus conformance
         run: make golden-core golden-shell golden-tx
@@ -106,7 +125,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential libcmocka-dev
 
-      - name: Build (ardopb + apps)
+      # `make` builds app/ too, which is not shipped in the tarball -- the
+      # packaging script names its four binaries explicitly. It is built here
+      # anyway because aarch64 is the only place the spine's size_t arithmetic
+      # gets compiled for a different word layout than the developer's machine.
+      - name: Build (ardopb, apps, spine)
         run: make
 
       - name: Unit and integration tests
@@ -151,7 +174,7 @@ jobs:
             mingw-w64-x86_64-qt6-base
             mingw-w64-x86_64-qt6-tools
 
-      - name: Build (ardopb + apps)
+      - name: Build (ardopb, apps, spine)
         run: make
 
       - name: Unit and integration tests

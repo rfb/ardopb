@@ -1,0 +1,44 @@
+# A whole ARQ session over the in-memory loopback: connect, transfer,
+# disconnect, with the transmit path under backpressure throughout.
+#
+#   app/ardop-spine --loopback --telemetry --script test/app/session.script
+#
+# Lines without a leading @ are ordinary TNC commands and go to station a.
+# @peer sends one to station b instead.
+
+@echo configuring both stations
+
+MYCALL N0AAA
+ARQBW 2000MAX
+
+@peer MYCALL N0BBB
+@peer ARQBW 2000MAX
+@peer LISTEN TRUE
+
+@echo connecting
+
+ARQCALL N0BBB 2000
+@wait host=CONNECTED 60s
+
+@echo transferring
+
+# Larger than the link's 16 kB queue and than one credit chunk, so the offer has
+# to be made piecewise as the link drains. That is the whole point of the
+# exercise: @send never blocks and never assumes an offer is taken whole.
+@send 24000
+@wait rx=24000 600s
+@expect rx
+
+@echo stressing the display queue
+
+# Stop reading the lossy queue and confirm it behaves the way it is supposed to:
+# it loses rows, it says how many, and it costs the lossless queue nothing.
+@stress display 20s
+
+@echo disconnecting
+
+DISCONNECT
+@wait host=DISCONNECTED 60s
+
+@expect no-loss
+@stats

@@ -48,6 +48,17 @@ void ardop_host_tcp_notify(ardop_host_tcp *h, const char *msg);
 void ardop_host_tcp_send_data(ardop_host_tcp *h, const char *tag,
 			      const uint8_t *data, size_t len);
 
+/**
+ * @brief Whether either channel currently has a client.
+ *
+ * The station's ownership signal. There is one link, one session and one
+ * transmit queue, so a program that both embeds the modem and hosts this
+ * interface has to decide which of the two may drive a session -- and a
+ * connected client is the one that wins (analysis/14 Decision 4). The embedding
+ * application disables its own transmission for as long as this is true.
+ */
+bool ardop_host_tcp_client_connected(const ardop_host_tcp *h);
+
 /** @brief Close all clients and listening sockets and free the server. */
 void ardop_host_tcp_close(ardop_host_tcp *h);
 

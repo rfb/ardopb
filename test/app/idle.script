@@ -1,0 +1,30 @@
+# A station sitting on the TNC ports, doing nothing until a client arrives.
+#
+#   app/ardop-spine --null 600 --host 8515 --script test/app/idle.script
+#
+# Then, in another terminal:
+#
+#   telnet localhost 8515        MYCALL, VERSION, STATE, ARQBW all work
+#   telnet localhost 8515        a second one is refused with a reason
+#
+# Watch the "[a] TNC client attached; it owns the link" line: from that moment
+# @stats reports credit=0 with "TNC client owns the link", and it goes back to
+# 4096 the instant the client disconnects. That is the takeover rule
+# (analysis/14 Decision 4) with nothing else to it -- the TCP disconnect is the
+# release, so there is no claim to leak and no state to get stuck in.
+
+MYCALL N0AAA
+ARQBW 2000MAX
+LISTEN TRUE
+
+@echo waiting for a TNC client; Ctrl-C to stop
+
+@stats
+@wait secs=5
+@stats
+@wait secs=5
+@stats
+@wait secs=10
+@stats
+@wait secs=30
+@stats

@@ -25,7 +25,7 @@
 #   make golden-core / golden-shell / golden-tx   conformance vs the frozen corpus
 #   make clean
 
-.PHONY: all core apps test-core check-pure check-headers check-standalone \
+.PHONY: all core apps app test-core check-pure check-headers check-standalone \
 	golden-core golden-shell golden-tx clean
 
 # `all` is the default goal explicitly. Without this the first non-pattern rule
@@ -193,7 +193,33 @@ apps/ardop-chat$(EXE): apps/ardop_chat.o $(APP_OBJS) ; $(APP_LINK)
 
 apps: $(APPS)
 
-all: ardopb$(EXE) apps
+# --- app/ : the station application's embedding spine ----------------------
+#
+# analysis/14 workstream A. Two groups, because they have different futures.
+#
+# SPINE_OBJS is the spine itself: portable C11, no sockets, no feature-test
+# macros, no UI. It is what the eventual CMake app build compiles too, which is
+# why the TNC transport is held behind an ops table rather than linked here.
+#
+# SPINE_HARNESS is the phase-1 driver -- a script reader, an in-memory loopback
+# and the host_tcp adapter. The shipping application will not link it.
+#
+# Not APP_OBJS: that name belongs to apps/ (the host-client programs) forty
+# lines up.
+SPINE_OBJS    = app/spine.o app/ring.o
+SPINE_HARNESS = app/main.o app/script.o app/loopback.o app/tnc_host_tcp.o
+
+app/%.o: app/%.c
+	$(CC) -I. $(CORE_CPPFLAGS) $(CFLAGS) $(CORE_CFLAGS) -c -o $@ $<
+
+app/ardop-spine$(EXE): $(CORE_OBJS) $(TEMPLATES) $(SHELL_OBJS) $(SPINE_OBJS) \
+		$(SPINE_HARNESS) shell/backend_null.o shell/host_tcp.o \
+		$(AUDIO_BACKEND_OBJS)
+	$(CC) $(STATIC) $^ -o $@ $(AUDIO_LDLIBS) $(PLATFORM_LDLIBS) -lm
+
+app: app/ardop-spine$(EXE)
+
+all: ardopb$(EXE) apps app
 
 # --- mechanical guarantees on core/ ----------------------------------------
 #
@@ -271,6 +297,7 @@ CORE_TESTS = \
 	test/core/test_telemetry$(EXE) \
 	test/core/test_ring$(EXE) \
 	test/core/test_resample$(EXE) \
+	test/core/test_spine$(EXE) \
 	test/core/test_backend_ma$(EXE)
 
 define newline
@@ -292,6 +319,38 @@ test-ring-tsan: test/core/stress_ring.c shell/ring.c
 	@$(CC) -std=c11 -Wall -Wextra -Werror -I. $(CORE_CPPFLAGS) -g -O1 \
 		-fsanitize=thread $^ -o test/core/stress_ring -lpthread
 	@test/core/stress_ring
+
+# The same argument one layer out: analysis/14's "nothing outside the modem
+# thread touches the runtime, for any reason, ever" is a claim about what does
+# not happen, which no single-threaded test can support.
+#
+# Sources, not the pre-built objects, and that is the whole point. The sanitizer
+# only sees races in instrumented code, so for core/ and shell/runtime.c's
+# silence to be evidence rather than an artefact, they have to be compiled under
+# it. Everything listed is portable C11 needing no feature-test macro -- the
+# property analysis/14 asserts of this set -- which is what lets the full warning
+# bar stay on. net.c, sys.c, ring.c and resample.c are absent because none is
+# reachable from a loopback-backed, socket-free spine.
+TSAN_SRCS = $(CORE_OBJS:.o=.c) $(TEMPLATES:.o=.c) \
+	shell/runtime.c shell/loop.c shell/host.c shell/telemetry.c \
+	app/spine.c app/ring.c app/loopback.c
+
+.PHONY: test-app-tsan
+test-app-tsan: test/core/stress_spine.c $(TSAN_SRCS)
+	@$(CC) -I. $(CORE_CPPFLAGS) $(CFLAGS) $(CORE_CFLAGS) -O1 \
+		-fsanitize=thread $^ -o test/core/stress_spine -lpthread -lm
+	@test/core/stress_spine
+
+# The spine test needs app/ as well. It lives in test/core/ rather than a
+# test/app/ of its own because that directory is really "the in-process suite",
+# and a second directory would need a duplicate of the generic rule below and a
+# second CI step to run it.
+test/core/test_spine$(EXE): test/core/test_spine.c $(CORE_OBJS) $(TEMPLATES) \
+		$(SHELL_OBJS) $(SPINE_OBJS) app/loopback.o test/core/setup.o
+	$(CC) $(CORE_CPPFLAGS) -I. -Itest/core $(CFLAGS) \
+		$< $(CORE_OBJS) $(TEMPLATES) $(SHELL_OBJS) $(SPINE_OBJS) \
+		app/loopback.o test/core/setup.o \
+		-lcmocka $(PLATFORM_LDLIBS) -lm -o $@
 
 # The tests link the core, the shell runtime and the templates; no old code.
 test/core/test_%$(EXE): test/core/test_%.c $(CORE_OBJS) $(TEMPLATES) $(SHELL_OBJS) \
@@ -337,14 +396,14 @@ golden-tx: test/golden/shell_tx_wav$(EXE)
 	cd test/golden && ./test_golden_tx.py
 
 # Pull in -MMD dependency files so a changed header rebuilds its dependents.
--include core/*/*.d shell/*.d apps/*.d test/core/*.d
+-include core/*/*.d shell/*.d apps/*.d app/*.d test/core/*.d
 
 clean:
-	rm -f -- ardopb$(EXE) $(APPS) \
+	rm -f -- ardopb$(EXE) $(APPS) app/ardop-spine$(EXE) \
 		$(CORE_OBJS) $(CORE_OBJS:.o=.d) \
 		$(TEMPLATES) $(TEMPLATES:.o=.d) \
-		shell/*.o shell/*.d apps/*.o apps/*.d \
+		shell/*.o shell/*.d apps/*.o apps/*.d app/*.o app/*.d \
 		test/core/*.o test/core/*.d $(CORE_TESTS) \
-		test/core/stress_ring$(EXE) \
+		test/core/stress_ring$(EXE) test/core/stress_spine$(EXE) \
 		test/golden/core_decode_wav$(EXE) test/golden/shell_decode_wav$(EXE) \
 		test/golden/shell_tx_wav$(EXE) test/golden/*.d
