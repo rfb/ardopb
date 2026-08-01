@@ -96,7 +96,7 @@ core is held to.
 | [`shell/`](shell/) | The impure program around the core: the sans-I/O `runtime`, the single-clocked driver `loop`, the TCP host interface, the portable socket/system layer (`net`, `sys`), and the platform backends (miniaudio, plus a device-free `null`). |
 | [`apps/`](apps/) | Host-client CLI tools — see [`apps/README.md`](apps/README.md). |
 | [`test/`](test/) | In-process tests (`test/core`) and the frozen golden-vector corpus (`test/golden`). |
-| [`tools/`](tools/) | `loopback.sh` — a virtual-audio-cable harness for running two stations against each other with no radio; `package-windows.sh` — assembles the Windows release zip. |
+| [`tools/`](tools/) | `loopback.sh` — a virtual-audio-cable harness for running two stations against each other with no radio; `package-windows.sh` and `package-linux.sh` — assemble the release downloads. |
 | [`third_party/`](third_party/) | Vendored dependencies, pinned by version and checksum. Currently miniaudio. |
 | [`analysis/`](analysis/) | The written architecture review and rebuild design — *how we got here*. |
 | [`docs/refs/`](docs/refs/) | The ARDOP specification and host-interface reference PDFs. |
@@ -146,12 +146,28 @@ Under WSL (WSLg) the Windows audio devices appear through WSLg's PulseAudio
 server and need no extra configuration — `--audio` finds them, and
 `--list-devices` names them.
 
+### Prebuilt binaries
+
+Fresh builds are published automatically from `main` — no GitHub account
+needed:
+
+| download | what it is |
+| --- | --- |
+| **[ardopb-windows-x86_64.zip](../../releases/download/continuous/ardopb-windows-x86_64.zip)** | the modem and the host-client apps, for Windows |
+| **[ardopb-linux-x86_64.tar.gz](../../releases/download/continuous/ardopb-linux-x86_64.tar.gz)** | the same, for a Linux PC |
+| **[ardopb-linux-aarch64.tar.gz](../../releases/download/continuous/ardopb-linux-aarch64.tar.gz)** | the same, for a 64-bit Raspberry Pi |
+| **[ardop-gui-windows-x86_64.zip](../../releases/download/continuous/ardop-gui-windows-x86_64.zip)** | the instrument panel, and its Qt libraries |
+
+The modem download is under 300 KB; the panel is a separate one because Qt and
+ICU are two orders of magnitude larger than the modem, and you do not need the
+panel to run a link. On Linux, build the panel from source (see
+[`gui/`](gui/)) — distro Qt is one `apt` line.
+
+The Linux tarballs need glibc 2.34 or newer — Debian 12, Ubuntu 22.04 and
+later, Raspberry Pi OS bookworm. Nothing in them links an audio library:
+ALSA, PulseAudio and JACK are opened at run time if present.
+
 ### Windows
-
-Fresh Windows builds of every binary are published automatically from `main`:
-
-**[ardopb-windows-x86_64.zip](../../releases/download/continuous/ardopb-windows-x86_64.zip)**
- — no GitHub account needed.
 
 `ardopb.exe` and the apps are statically linked single files; `ardop-gui.exe`
 ships with its Qt DLLs beside it. Start with `ardopb.exe --list-devices`, then

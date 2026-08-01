@@ -1,16 +1,19 @@
 # Build ardopb + the host-client apps, run the full verification sweep on Linux
-# and Windows, and publish fresh Windows builds.
+# and Windows, and publish fresh binaries for Windows, Linux x86-64 and Linux
+# arm64.
 #
 # The whole tree builds at -Wall -Wextra -Werror, so there is nothing to
 # suppress and no warning census to keep -- a failed build IS the census.
 #
-# The two jobs are not redundant. The Linux job owns the mechanical guarantees
+# The build jobs are not redundant. The Linux job owns the mechanical guarantees
 # (check-pure, check-standalone and the ThreadSanitizer run all read ELF or need
 # a sanitizer MinGW does not have); they prove properties of source that both
 # platforms share, so proving them once is enough (analysis/14 Decision 6). The
 # Windows job proves the portable set really is portable, under a different GCC
 # major version than ubuntu-latest ships -- which catches a class of warning the
-# Linux job structurally cannot.
+# Linux job structurally cannot. The package-linux jobs own the two things only
+# they can see: what glibc the shipped tarball actually demands, and whether the
+# waveform survives a target whose baseline has FMA (see that job's comment).
 
 name: test
 
@@ -64,13 +67,73 @@ jobs:
           cmake -S gui -B gui/build -G Ninja -DCMAKE_BUILD_TYPE=Release
           cmake --build gui/build
 
+  # The Linux tarballs, built where they must be built rather than where the
+  # tests happen to run.
+  #
+  # ubuntu-22.04 and not ubuntu-latest: nothing here links beyond libm and libc
+  # -- miniaudio dlopen()s ALSA, PulseAudio and JACK at run time -- so the only
+  # thing deciding how widely the tarball runs is the build machine's glibc.
+  # 22.04 puts the floor at GLIBC_2.34, which covers Debian 12, Ubuntu 22.04+
+  # and Raspberry Pi OS bookworm. Building on ubuntu-latest would raise that
+  # floor for no gain and break machines that work today.
+  #
+  # The arm64 job is not just a second package. core/ has no architecture-
+  # specific code and no -march flag, but aarch64 has FMA in its baseline where
+  # x86-64 does not, so GCC's default -ffp-contract=fast can fuse a multiply
+  # and an add there and round differently. That is exactly the class of
+  # difference that would move the on-air waveform. Running the golden suites
+  # here is what proves it does not -- do not reduce this job to a build.
+  package-linux:
+    name: package-linux (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            arch: x86_64
+          - runner: ubuntu-22.04-arm
+            arch: aarch64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      # Unshallow: tools/package-linux.sh puts `git describe` in VERSION, and
+      # a build with no identity is a bug report nobody can act on.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libcmocka-dev
+
+      - name: Build (ardopb + apps)
+        run: make
+
+      - name: Unit and integration tests
+        run: make test-core
+
+      - name: Golden-corpus conformance
+        run: make golden-core golden-shell golden-tx
+
+      - name: Package
+        run: tools/package-linux.sh dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ardopb-linux-${{ matrix.arch }}
+          path: ardopb-linux-${{ matrix.arch }}.tar.gz
+          retention-days: 14
+
   windows:
     runs-on: windows-latest
     defaults:
       run:
         shell: msys2 {0}
     steps:
+      # Unshallow: tools/package-windows.sh puts `git describe` in VERSION.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: msys2/setup-msys2@v2
         with:
@@ -110,29 +173,45 @@ jobs:
       - name: Package
         run: tools/package-windows.sh dist
 
+      # Two artifacts, not one. The modem and the apps are statically linked
+      # and come to under 300 KB zipped; the panel drags in Qt, ICU and the
+      # rest of the chain and is about a hundred times that. Shipping them
+      # together made every headless operator download Qt to get a 600 KB
+      # modem. See tools/package-windows.sh.
       - uses: actions/upload-artifact@v4
         with:
           name: ardopb-windows-x86_64
           path: ardopb-windows-x86_64.zip
           retention-days: 14
 
-  # A rolling build of main, so a Windows operator can get a current binary
-  # from a stable URL without a GitHub account:
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ardop-gui-windows-x86_64
+          path: ardop-gui-windows-x86_64.zip
+          retention-days: 14
+
+  # A rolling build of main, so an operator can get a current binary from a
+  # stable URL without a GitHub account:
   #
   #   .../releases/download/continuous/ardopb-windows-x86_64.zip
+  #   .../releases/download/continuous/ardopb-linux-aarch64.tar.gz
   #
-  # `needs` is the gate: a failing test on *either* platform blocks publication.
+  # `needs` is the gate: a failing test on *any* platform blocks publication.
   publish-continuous:
-    needs: [linux, windows]
+    needs: [linux, package-linux, windows]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
+
+      # merge-multiple flattens every artifact into one directory, so adding a
+      # platform above needs no change here.
       - uses: actions/download-artifact@v4
         with:
-          name: ardopb-windows-x86_64
+          path: release
+          merge-multiple: true
 
       - name: Move the continuous tag
         run: |
@@ -156,11 +235,25 @@ jobs:
             on every build; a live negotiated session with a foreign
             implementation is not.
 
-            See `README-WINDOWS.txt` inside the zip to get started.
-          files: ardopb-windows-x86_64.zip
+            | download | what it is |
+            | --- | --- |
+            | `ardopb-windows-x86_64.zip` | the modem and the host-client apps |
+            | `ardopb-linux-x86_64.tar.gz` | the same, for a Linux PC |
+            | `ardopb-linux-aarch64.tar.gz` | the same, for a 64-bit Raspberry Pi |
+            | `ardop-gui-windows-x86_64.zip` | the instrument panel, and its Qt libraries |
+
+            You do not need the panel to run a link. The Linux tarballs need
+            glibc 2.34 or newer (Debian 12, Ubuntu 22.04+, Raspberry Pi OS
+            bookworm); the Linux GUI is built from source, see `gui/`.
+
+            See the `README-WINDOWS.txt` or `README-LINUX.txt` inside the
+            download to get started.
+          files: |
+            release/*.zip
+            release/*.tar.gz
 
   publish-release:
-    needs: [linux, windows]
+    needs: [linux, package-linux, windows]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
@@ -168,9 +261,12 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: ardopb-windows-x86_64
+          path: release
+          merge-multiple: true
 
       - uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
-          files: ardopb-windows-x86_64.zip
+          files: |
+            release/*.zip
+            release/*.tar.gz

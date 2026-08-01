@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Assemble the Windows release zip. Run from the repository root inside an
+# Assemble the Windows release zips. Run from the repository root inside an
 # MSYS2 MINGW64 shell, after `make` and after the GUI has been built:
 #
 #   make
@@ -8,76 +8,73 @@
 #   cmake --build gui/build
 #   tools/package-windows.sh dist
 #
-# Produces dist/ and dist.zip. This is what .github/workflows/test.yml uploads
-# and what the rolling `continuous` prerelease serves.
+# Produces two zips, not one:
+#
+#   ardopb-windows-x86_64.zip     ~300 KB   the modem and the host-client apps
+#   ardop-gui-windows-x86_64.zip  ~30 MB    the instrument panel and its Qt DLLs
+#
+# The split is not cosmetic. Every byte over about a megabyte here is Qt and its
+# dependency chain -- ICU alone is ~30 MB of locale data -- while the modem and
+# all three apps are statically linked and come to under 300 KB zipped. An
+# operator running headless behind Winlink Express needs the modem and nothing
+# else, and should not download Qt to get it.
+#
+# This is what .github/workflows/test.yml uploads and what the rolling
+# `continuous` prerelease serves.
 
 set -euo pipefail
 
 OUT="${1:-dist}"
-NAME="ardopb-windows-x86_64"
+MODEM_NAME="ardopb-windows-x86_64"
+GUI_NAME="ardop-gui-windows-x86_64"
+
+# Under MSYS2 the plain names are the right ones. Overridable so the modem half
+# of this script can be smoke-tested from a Linux cross-build:
+#
+#   make CC=x86_64-w64-mingw32-gcc
+#   STRIP=x86_64-w64-mingw32-strip tools/package-windows.sh dist
+STRIP="${STRIP:-strip}"
+
+# zip has to be run from inside $OUT so the archive has one top-level folder
+# rather than a loose spray of files. Resolve the destination first, so the
+# zips land in the working directory whether $OUT was given as a relative path
+# or an absolute one -- the workflow uploads them from here by name.
+DEST=$PWD
 
 if [ ! -f ardopb.exe ]; then
 	echo "package-windows: ardopb.exe not found -- run make first" >&2
 	exit 1
 fi
 
-rm -rf "$OUT" "$NAME.zip"
-mkdir -p "$OUT"
+rm -rf "$OUT" "$DEST/$MODEM_NAME.zip" "$DEST/$GUI_NAME.zip"
+mkdir -p "$OUT/$MODEM_NAME"
 
-# The modem and the host-client apps are linked -static (see the Makefile), so
-# they are single copyable files with no DLL beside them. That matters for the
-# daemon: an operator can drop ardopb.exe anywhere and run it.
-cp ardopb.exe "$OUT/"
-cp apps/ardop-tx.exe apps/ardop-rx.exe apps/ardop-chat.exe "$OUT/"
+# A build with no identity is a bug report nobody can act on. Computed once and
+# copied into both zips, so a mixed pair is obvious from the two VERSION files.
+VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo unknown)
 
-if [ -f gui/build/ardop-gui.exe ]; then
-	cp gui/build/ardop-gui.exe "$OUT/"
+# Both zips carry the project's own README and licence.
+stamp() {
+	printf '%s\n' "$VERSION" > "$1/VERSION"
+	cp README.md LICENSE "$1/" 2>/dev/null || true
+}
 
-	# windeployqt copies Qt's own DLLs and the platform plugin.
-	if command -v windeployqt6 >/dev/null 2>&1; then
-		windeployqt6 --release --no-translations --no-system-d3d-compiler \
-			--no-opengl-sw "$OUT/ardop-gui.exe"
-	elif command -v windeployqt >/dev/null 2>&1; then
-		windeployqt --release --no-translations --no-system-d3d-compiler \
-			--no-opengl-sw "$OUT/ardop-gui.exe"
-	else
-		echo "package-windows: windeployqt not found; the GUI will not" >&2
-		echo "                 run on a machine without Qt installed" >&2
-	fi
+# --- the modem ------------------------------------------------------------
+#
+# These are linked -static (see the Makefile), so they are single copyable
+# files with no DLL beside them: an operator can drop ardopb.exe anywhere and
+# run it.
+#
+# Stripping is done here rather than by dropping -g from CFLAGS, so a developer
+# who builds locally keeps a debuggable binary. It is worth roughly 3x: the
+# four binaries go from 2.6 MB to 756 KB.
+cp ardopb.exe "$OUT/$MODEM_NAME/"
+cp apps/ardop-tx.exe apps/ardop-rx.exe apps/ardop-chat.exe "$OUT/$MODEM_NAME/"
+"$STRIP" "$OUT/$MODEM_NAME"/*.exe
 
-	# windeployqt handles Qt but is unreliable about MinGW's own runtime and
-	# Qt's transitive dependencies -- libgcc_s_seh-1, libstdc++-6,
-	# libwinpthread-1, and the zlib/pcre2/harfbuzz/freetype chain. Sweep with
-	# ldd, which reads PE under MSYS2, until nothing new appears. Missing one
-	# of these is the classic "works on the build machine only" failure.
-	#
-	# Every step is failure-tolerant on purpose: ldd exits non-zero on a file
-	# it cannot parse, and under `set -e` that would abort the packaging run
-	# rather than the copy it actually affects.
-	shopt -s nullglob
-	for _pass in 1 2 3 4; do
-		before=$(find "$OUT" -maxdepth 1 -type f | wc -l)
-		mapfile -t deps < <(
-			for f in "$OUT"/*.exe "$OUT"/*.dll; do
-				ldd "$f" 2>/dev/null || true
-			done | awk '/=> \/(mingw64|clang64)/ {print $3}' | sort -u
-		)
-		for dll in "${deps[@]}"; do
-			[ -f "$dll" ] && cp -n "$dll" "$OUT/" 2>/dev/null || true
-		done
-		after=$(find "$OUT" -maxdepth 1 -type f | wc -l)
-		[ "$before" = "$after" ] && break
-	done
-	shopt -u nullglob
-fi
+stamp "$OUT/$MODEM_NAME"
 
-# A build with no identity is a bug report nobody can act on.
-git describe --tags --always --dirty 2>/dev/null > "$OUT/VERSION" \
-	|| echo "unknown" > "$OUT/VERSION"
-
-cp README.md LICENSE "$OUT/" 2>/dev/null || true
-
-cat > "$OUT/README-WINDOWS.txt" <<'EOF'
+cat > "$OUT/$MODEM_NAME/README-WINDOWS.txt" <<'EOF'
 ardopb for Windows
 ==================
 
@@ -85,7 +82,14 @@ ardopb for Windows
   ardop-chat.exe    keyboard-to-keyboard chat over a link
   ardop-tx.exe      pipe a file or stream into a link
   ardop-rx.exe      receive a stream to stdout
-  ardop-gui.exe     the instrument panel (waterfall, constellation, gauges)
+
+Nothing here needs installing and nothing needs a DLL beside it. Copy the
+files anywhere and run them.
+
+The graphical instrument panel -- waterfall, constellation, gauges -- is a
+separate download, ardop-gui-windows-x86_64.zip, because it carries the Qt
+libraries and is about a hundred times the size of this one. You do not need
+it to run a link.
 
 Quick start
 -----------
@@ -105,10 +109,6 @@ Quick start
                 rigctld:HOST:PORT   key through a running rigctld
 
    Ports above COM9 work as written -- the \\.\ prefix is applied for you.
-
-3. Attach the panel:
-
-       ardop-gui.exe --host 127.0.0.1:8517
 
 Sound card rates
 ----------------
@@ -136,6 +136,102 @@ Please include the contents of VERSION (in this folder) and the modem's
 console output.
 EOF
 
-zip -qr "$NAME.zip" "$OUT"
-echo "package-windows: wrote $NAME.zip"
-ls -la "$OUT"
+(cd "$OUT" && zip -qr "$DEST/$MODEM_NAME.zip" "$MODEM_NAME")
+echo "package-windows: wrote $MODEM_NAME.zip"
+
+# --- the GUI --------------------------------------------------------------
+if [ -f gui/build/ardop-gui.exe ]; then
+	mkdir -p "$OUT/$GUI_NAME"
+	cp gui/build/ardop-gui.exe "$OUT/$GUI_NAME/"
+	"$STRIP" "$OUT/$GUI_NAME/ardop-gui.exe"
+
+	# windeployqt copies Qt's own DLLs and the platform plugin.
+	if command -v windeployqt6 >/dev/null 2>&1; then
+		windeployqt6 --release --no-translations --no-system-d3d-compiler \
+			--no-opengl-sw "$OUT/$GUI_NAME/ardop-gui.exe"
+	elif command -v windeployqt >/dev/null 2>&1; then
+		windeployqt --release --no-translations --no-system-d3d-compiler \
+			--no-opengl-sw "$OUT/$GUI_NAME/ardop-gui.exe"
+	else
+		echo "package-windows: windeployqt not found; the GUI will not" >&2
+		echo "                 run on a machine without Qt installed" >&2
+	fi
+
+	# windeployqt handles Qt but is unreliable about MinGW's own runtime and
+	# Qt's transitive dependencies -- libgcc_s_seh-1, libstdc++-6,
+	# libwinpthread-1, and the zlib/pcre2/harfbuzz/freetype chain. Sweep with
+	# ldd, which reads PE under MSYS2, until nothing new appears. Missing one
+	# of these is the classic "works on the build machine only" failure.
+	#
+	# Every step is failure-tolerant on purpose: ldd exits non-zero on a file
+	# it cannot parse, and under `set -e` that would abort the packaging run
+	# rather than the copy it actually affects.
+	shopt -s nullglob
+	for _pass in 1 2 3 4; do
+		before=$(find "$OUT/$GUI_NAME" -maxdepth 1 -type f | wc -l)
+		mapfile -t deps < <(
+			for f in "$OUT/$GUI_NAME"/*.exe "$OUT/$GUI_NAME"/*.dll; do
+				ldd "$f" 2>/dev/null || true
+			done | awk '/=> \/(mingw64|clang64)/ {print $3}' | sort -u
+		)
+		for dll in "${deps[@]}"; do
+			[ -f "$dll" ] && cp -n "$dll" "$OUT/$GUI_NAME/" 2>/dev/null || true
+		done
+		after=$(find "$OUT/$GUI_NAME" -maxdepth 1 -type f | wc -l)
+		[ "$before" = "$after" ] && break
+	done
+	shopt -u nullglob
+
+	stamp "$OUT/$GUI_NAME"
+
+	cat > "$OUT/$GUI_NAME/README-WINDOWS.txt" <<'EOF'
+ardop-gui for Windows
+=====================
+
+  ardop-gui.exe     the instrument panel (waterfall, constellation, gauges)
+
+The panel is a viewer. It does not contain a modem and cannot key a radio --
+it connects to a running ardopb and draws what that modem reports. Get the
+modem from ardopb-windows-x86_64.zip if you do not have it already.
+
+Keep the DLLs in this folder next to ardop-gui.exe. They are Qt and its
+dependencies, and the panel will not start without them.
+
+Quick start
+-----------
+
+1. Start the modem with telemetry enabled -- without --telemetry there is
+   nothing for the panel to connect to:
+
+       ardopb.exe MYCALL --audio --ptt rts:COM3 --host 8515 --telemetry
+
+2. Attach the panel:
+
+       ardop-gui.exe --host 127.0.0.1:8517
+
+   The modem may be on another machine; give that machine's address instead.
+
+No console window opens behind the panel -- it is built as a GUI-subsystem
+binary. Diagnostics go to the modem's own console, not this one.
+
+Antivirus
+---------
+
+These are unsigned binaries from a continuous build, so SmartScreen may warn
+about them. Check the SHA-256 against the release page if that matters to you.
+
+Bug reports
+-----------
+
+Please include the contents of VERSION (in this folder) and the modem's
+console output.
+EOF
+
+	(cd "$OUT" && zip -qr "$DEST/$GUI_NAME.zip" "$GUI_NAME")
+	echo "package-windows: wrote $GUI_NAME.zip"
+else
+	echo "package-windows: gui/build/ardop-gui.exe not found; skipping the" >&2
+	echo "                 GUI zip. Build it with cmake first." >&2
+fi
+
+ls -la "$OUT"/*/
