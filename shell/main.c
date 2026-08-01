@@ -4,9 +4,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#ifndef _WIN32
-#  include "shell/backend_alsa.h"
-#endif
 #include "shell/audio_devices.h"
 #include "shell/backend_ma.h"
 #include "shell/backend_null.h"
@@ -34,8 +31,8 @@
  *
  * Usage:
  *   ardopb MYCALL [--listen] [--id] [--trace] [--host PORT]
- *          [--null [SECONDS] | --audio [CAPTURE PLAYBACK] | --alsa CAP PLAY]
- *          [--ptt SPEC] [--list-devices]
+ *          [--null [SECONDS] | --audio [CAPTURE PLAYBACK]]
+ *          [--audio-backend NAME] [--ptt SPEC] [--list-devices]
  *
  * --id sends one ID frame at startup (a beacon), which with --null is a
  * hardware-free smoke test of the entire TX chain. --host opens the TCP command
@@ -122,36 +119,33 @@ static void usage(const char *me)
 	fprintf(stderr,
 		"usage: %s MYCALL [--listen] [--id] [--trace] [--host PORT]\n"
 		"       [--telemetry [PORT]]\n"
-		"       [--null [SECONDS] | --audio [CAPTURE PLAYBACK]"
-#ifndef _WIN32
-		" | --alsa CAPTURE PLAYBACK"
-#endif
-		"]\n"
-		"       [--ptt SPEC] [--list-devices]\n"
+		"       [--null [SECONDS] | --audio [CAPTURE PLAYBACK]]\n"
+		"       [--audio-backend NAME] [--ptt SPEC] [--list-devices]\n"
 		"\n"
-		"  --audio          cross-platform audio (miniaudio). With no\n"
-		"                   arguments, the system default devices. A\n"
-		"                   device may be given by id or by name.\n"
-#ifndef _WIN32
-		"  --alsa           ALSA directly: the headless Linux path,\n"
-		"                   with the smallest dependency footprint.\n"
-#endif
+		"  --audio          the sound card. With no arguments, the\n"
+		"                   system defaults; a device may be given by\n"
+		"                   id or by name (see --list-devices).\n"
+		"  --audio-backend  force one audio API: alsa, pulseaudio,\n"
+		"                   jack, wasapi, coreaudio ... Auto-selected\n"
+		"                   otherwise; use alsa to bypass PulseAudio.\n"
 		"  --ptt SPEC       none | rts:DEV | dtr:DEV | rigctld:HOST:PORT\n"
 		"                   (a bare device path means rts:).\n"
 		"  --list-devices   print the audio devices and exit.\n",
 		me);
 }
 
-/* Which backend --null / --audio / --alsa selected. */
-enum backend_kind { BACKEND_NULL, BACKEND_MA, BACKEND_ALSA };
+/* Which backend --null / --audio selected. */
+enum backend_kind { BACKEND_NULL, BACKEND_MA };
 
 int main(int argc, char **argv)
 {
 	for (int i = 1; i < argc; i++) {
 		if (!strcmp(argv[i], "--list-devices")) {
-			bool nulldev = (i + 1 < argc
-					&& !strcmp(argv[i + 1], "--null"));
-			return ardop_audio_print_devices(nulldev) ? 0 : 1;
+			const char *be = NULL;
+			for (int j = 1; j < argc - 1; j++)
+				if (!strcmp(argv[j], "--audio-backend"))
+					be = argv[j + 1];
+			return ardop_audio_print_devices(be) ? 0 : 1;
 		}
 	}
 
@@ -169,6 +163,7 @@ int main(int argc, char **argv)
 	uint16_t tlm_port = 0;
 	bool want_tlm = false;
 	bool ma_null_device = false;
+	const char *audio_backend = NULL;
 
 	for (int i = 2; i < argc; i++) {
 		if (!strcmp(argv[i], "--listen")) {
@@ -195,14 +190,12 @@ int main(int argc, char **argv)
 			 * ring / resampler / drain path runs in CI. */
 			kind = BACKEND_MA;
 			ma_null_device = true;
-		} else if (!strcmp(argv[i], "--alsa")) {
-			if (i + 2 >= argc) {
+		} else if (!strcmp(argv[i], "--audio-backend")) {
+			if (i + 1 >= argc) {
 				usage(argv[0]);
 				return 2;
 			}
-			kind = BACKEND_ALSA;
-			cap = argv[++i];
-			play = argv[++i];
+			audio_backend = argv[++i];
 		} else if (!strcmp(argv[i], "--ptt")) {
 			if (i + 1 >= argc) {
 				usage(argv[0]);
@@ -265,9 +258,6 @@ int main(int argc, char **argv)
 	ardop_platform_ops ops;
 	ardop_null_backend nb;
 	ardop_ma_backend *mb = NULL;
-#ifndef _WIN32
-	ardop_alsa_backend *ab = NULL;
-#endif
 	switch (kind) {
 	case BACKEND_NULL:
 		ardop_backend_null_init(&nb, &ops,
@@ -284,6 +274,7 @@ int main(int argc, char **argv)
 			.playback_id = play,
 			.ptt = ptt,
 			.use_null_device = ma_null_device,
+			.backend_name = audio_backend,
 		};
 		mb = ardop_backend_ma_open(&mc, &ops);
 		if (!mb) {
@@ -292,23 +283,6 @@ int main(int argc, char **argv)
 		}
 		break;
 	}
-
-	case BACKEND_ALSA:
-#ifdef _WIN32
-		fprintf(stderr, "--alsa is Linux only; use --audio\n");
-		ardop_ptt_close(ptt);
-		return 2;
-#else
-		ab = ardop_backend_alsa_open(cap, play, ptt, &ops);
-		if (!ab) {
-			fprintf(stderr, "alsa backend failed to open\n");
-			ardop_ptt_close(ptt);
-			return 1;
-		}
-		fprintf(stderr, "backend: alsa cap=%s play=%s ptt=%s\n",
-			cap, play, ardop_ptt_describe(ptt));
-#endif
-		break;
 	}
 
 	static struct app app;
@@ -392,10 +366,6 @@ int main(int argc, char **argv)
 	ardop_telemetry_tcp_close(app.tlm);
 	if (mb)
 		ardop_backend_ma_close(mb);
-#ifndef _WIN32
-	if (ab)
-		ardop_backend_alsa_close(ab);
-#endif
 	/* After the backends: unkeying must outlive the device that keyed. */
 	ardop_ptt_close(ptt);
 	fprintf(stderr, "stopped.\n");

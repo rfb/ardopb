@@ -13,10 +13,11 @@
  * @file backend_ma.h
  * @brief The cross-platform audio backend: WASAPI, CoreAudio, AAudio, ALSA.
  *
- * Built on the vendored miniaudio (`third_party/README.md`), behind the same
- * six function pointers ALSA sits behind. `backend_alsa.c` remains what the
- * headless Linux daemon uses; this is what everything else uses, and what
- * Windows uses exclusively.
+ * Built on the vendored miniaudio (`third_party/README.md`), behind the six
+ * function pointers of ::ardop_platform_ops. This is the only audio backend:
+ * a dedicated ALSA one existed and was removed, because two Linux paths meant
+ * two implementations of the transmit-tail drain and only one of them was
+ * covered by the tests (analysis/15 Open decision 1).
  *
  * The handle is opaque so that no translation unit outside `backend_ma.c` and
  * `audio_devices.c` ever names a miniaudio type.
@@ -42,6 +43,17 @@ typedef struct {
 	const char *playback_id;
 	ardop_ptt *ptt;            /**< Borrowed, may be NULL (VOX). */
 	bool use_null_device;      /**< miniaudio's synthetic device, for tests. */
+	/**
+	 * @brief Force one miniaudio backend by name, or NULL to auto-select.
+	 *
+	 * "alsa", "pulseaudio", "wasapi", "coreaudio", "jack" ... The reason
+	 * this exists: auto-selection prefers PulseAudio on Linux, and an
+	 * operator who wants to bypass the sound server -- for latency, or
+	 * because their interface is exposed more directly by ALSA -- needs a
+	 * way to say so. That was the one thing the dedicated ALSA backend
+	 * could do that this could not.
+	 */
+	const char *backend_name;
 } ardop_ma_config;
 
 /**

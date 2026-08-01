@@ -38,7 +38,7 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libasound2-dev libcmocka-dev qt6-base-dev \
+          sudo apt-get install -y libcmocka-dev qt6-base-dev \
             cmake ninja-build
 
       - name: Build (ardopb + apps)

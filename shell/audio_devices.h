@@ -44,17 +44,17 @@ typedef struct {
 /**
  * @brief List up to @p max devices for @p dir into @p out.
  *
- * @param use_null_backend Enumerate miniaudio's synthetic null device instead
- *                         of real hardware. For tests and CI.
+ * @param backend_name Force one miniaudio backend ("alsa", "pulseaudio",
+ *                     "null", ...), or NULL to auto-select.
  * @return Devices written (0..@p max). 0 also means "could not enumerate".
  */
 size_t ardop_audio_enumerate(ardop_audio_dir dir, ardop_audio_device *out,
-			     size_t max, bool use_null_backend);
+			     size_t max, const char *backend_name);
 
 /**
  * @brief Print the device list to stderr, as `--list-devices` does.
  * @return true if enumeration worked.
  */
-bool ardop_audio_print_devices(bool use_null_backend);
+bool ardop_audio_print_devices(const char *backend_name);
 
 #endif /* ARDOP_SHELL_AUDIO_DEVICES_H_ */

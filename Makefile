@@ -1,7 +1,7 @@
 # ardopb -- a rebuilt ARDOP HF data modem (see README.md).
 #
 # Build requirements (Debian/Ubuntu):
-#   sudo apt install build-essential libasound2-dev   # ardopb + apps
+#   sudo apt install build-essential                  # ardopb + apps
 #   sudo apt install libcmocka-dev                     # to run `make test-core`
 #
 # On Windows, build in an MSYS2 MINGW64 shell (see .github/workflows/test.yml
@@ -71,12 +71,12 @@ PLATFORM_CPPFLAGS =
 # sys.c uses pthreads for the timed semaphore the audio callbacks post to.
 PLATFORM_LDLIBS = -lpthread
 STATIC =
-# Both backends are built on Linux and chosen at run time: ALSA stays the
-# headless daemon's path (its dependency footprint is a feature), miniaudio is
-# what the desktop app and every other platform use. miniaudio dlopen()s ALSA
-# and PulseAudio, hence -ldl.
-AUDIO_BACKEND_OBJS = shell/backend_alsa.o $(MA_OBJS)
-AUDIO_LDLIBS = -lasound -ldl
+# One audio backend on every platform. miniaudio dlopen()s ALSA, PulseAudio and
+# JACK at run time rather than linking them, so there is no -lasound and no
+# libasound2-dev build dependency -- a smaller footprint than the dedicated
+# ALSA backend this replaced, not a larger one.
+AUDIO_BACKEND_OBJS = $(MA_OBJS)
+AUDIO_LDLIBS = -ldl
 endif
 
 # The miniaudio backend and everything it needs. ptt.o is here rather than in
@@ -126,11 +126,9 @@ SHELL_OBJS = shell/runtime.o shell/loop.o shell/host.o shell/telemetry.o \
 shell/%.o: shell/%.c
 	$(CC) -I. $(CORE_CPPFLAGS) $(CFLAGS) $(CORE_CFLAGS) -c -o $@ $<
 
-# The ALSA backend needs POSIX/GNU feature macros the strict -std=c11 withholds
-# (struct timespec, alloca); the host transport and null backend need sockets /
-# usleep.  These impure device files are the only place the macros appear.
-shell/backend_alsa.o: shell/backend_alsa.c
-	$(CC) -I. -D_GNU_SOURCE $(CORE_CPPFLAGS) $(CFLAGS) $(CORE_CFLAGS) -c -o $@ $<
+# The impure device files need POSIX/GNU feature macros the strict -std=c11
+# withholds: sockets, usleep, struct timespec, CLOCK_MONOTONIC. These are the
+# only place the macros appear.
 shell/host_tcp.o: shell/host_tcp.c
 	$(CC) -I. -D_DEFAULT_SOURCE $(CORE_CPPFLAGS) $(CFLAGS) $(CORE_CFLAGS) -c -o $@ $<
 shell/telemetry_tcp.o: shell/telemetry_tcp.c

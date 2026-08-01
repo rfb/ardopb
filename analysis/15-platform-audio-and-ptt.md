@@ -445,3 +445,30 @@ design above and the code as it stood disagreed.
     handle closes; a TCP CAT link does not, because the rig never learns the
     controller is gone. `ardop_install_signal_handlers()` plus unkey-before-close
     ordering in `ardop_ptt_close()` covers it.
+
+13. **Open decision 1 is settled: `backend_alsa.c` is removed.** The document
+    weighed "two Linux audio paths and a class of bug that reproduces on one and
+    not the other" against `ardopb`'s dependency footprint. Two things decided
+    it once both backends existed:
+
+    - The footprint argument turned out to point the *other* way. miniaudio
+      opens ALSA, PulseAudio and JACK with `dlopen`, so removing the dedicated
+      backend removed the `-lasound` link and the `libasound2-dev` build
+      dependency. `ardopb` went from five shared-library dependencies to four.
+    - The duplication was not cosmetic. Each backend carried its own answer to
+      the transmit-tail question -- `snd_pcm_drain()` in one, ring drain plus
+      resampler flush plus guard interval in the other -- and only the
+      miniaudio one is covered by `test/core/test_backend_ma`. Keeping a second,
+      untested implementation of the hazard the design calls "the sharpest
+      correctness hazard in the port" is the wrong trade.
+
+    The one capability that was genuinely ALSA-only -- bypassing the sound
+    server, which auto-selection will not do because it prefers PulseAudio --
+    is preserved as `--audio-backend alsa`.
+
+    Validated before removing, over the `tools/loopback.sh` virtual cables:
+    two stations completed an ARQ connect and a bit-exact file transfer through
+    the miniaudio backend at 12 kHz native (m = 1) and again at 48 kHz with
+    4:1 decimation (m = 4), the latter decoding at quality 100 and S/N 23-24 dB.
+    `tools/loopback.sh` lost its generated `asound.conf` and `ALSA_CONFIG_PATH`
+    machinery in the process, which is a simplification in its own right.

@@ -9,10 +9,10 @@
  * @file resample.h
  * @brief Anti-aliased integer rate conversion between a device and the modem.
  *
- * `backend_alsa.c` asks for exactly 12000 Hz and fails the open if the device
- * will not do it, which works because Linux has `plughw`. Windows shared-mode
- * WASAPI hands you the mix format and Android will not give you 12000 Hz at
- * all, so conversion becomes mandatory
+ * Sound cards do not generally run at 12000 Hz. Windows shared-mode WASAPI
+ * hands you the mix format, Android will not give you 12000 Hz at all, and on
+ * Linux only the ALSA `plug` layer hides it -- at the cost of a resampler
+ * whose quality varies by configuration. So conversion is ours to do
  * ([analysis/15](../analysis/15-platform-audio-and-ptt.md) §5).
  *
  * **Only integer ratios, deliberately.** [analysis/06](../analysis/06-target-architecture.md)

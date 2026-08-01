@@ -32,7 +32,7 @@ unchanged.
 
 ```
 make                 # builds ardopb + the host-client apps
-./ardopb N0CALL --alsa default default --host 8515
+./ardopb N0CALL --audio --host 8515
 ```
 
 ## Why this fork exists
@@ -68,7 +68,7 @@ lives in caller-owned structs. Dependencies point one way.
   apps/     ardop-tx  ardop-rx  ardop-chat        TCP host-protocol clients
     |  (host protocol over TCP)
   shell/    runtime . driver loop . host iface     the impure program: audio,
-    |        . ALSA / null backends                 sockets, the wall clock
+    |        . miniaudio / null backends            sockets, the wall clock
   core/     codec -> modem -> link                  pure: no I/O, no clock,
              (frames/RS/CRC) (mod/demod) (ARQ/FEC)   no allocation, no globals
 ```
@@ -93,7 +93,7 @@ core is held to.
 | Path | What |
 |---|---|
 | [`core/`](core/) | The pure modem + protocol library: `codec` (frame table, Reed–Solomon, CRC, callsign/grid coding), `modem` (modulator, demodulator, sync, busy detector, FFT), `link` (the ARQ/FEC state machine). No I/O, no globals. |
-| [`shell/`](shell/) | The impure program around the core: the sans-I/O `runtime`, the single-clocked driver `loop`, the TCP host interface, the portable socket/system layer (`net`, `sys`), and the platform backends (ALSA, miniaudio, plus a device-free `null`). |
+| [`shell/`](shell/) | The impure program around the core: the sans-I/O `runtime`, the single-clocked driver `loop`, the TCP host interface, the portable socket/system layer (`net`, `sys`), and the platform backends (miniaudio, plus a device-free `null`). |
 | [`apps/`](apps/) | Host-client CLI tools — see [`apps/README.md`](apps/README.md). |
 | [`test/`](test/) | In-process tests (`test/core`) and the frozen golden-vector corpus (`test/golden`). |
 | [`tools/`](tools/) | `loopback.sh` — a virtual-audio-cable harness for running two stations against each other with no radio; `package-windows.sh` — assembles the Windows release zip. |
@@ -106,7 +106,7 @@ core is held to.
 Requirements (Debian/Ubuntu):
 
 ```
-sudo apt install build-essential libasound2-dev     # ardopb + apps
+sudo apt install build-essential                     # ardopb + apps
 sudo apt install libcmocka-dev                        # to run the tests
 ```
 
@@ -115,15 +115,22 @@ owns the sound card and exposes the TCP host interface:
 
 ```
 ardopb MYCALL [--listen] [--host PORT] [--telemetry [PORT]]
-       [--null [SECONDS] | --audio [CAPTURE PLAYBACK] | --alsa CAPTURE PLAYBACK]
-       [--ptt SPEC] [--list-devices]
+       [--null [SECONDS] | --audio [CAPTURE PLAYBACK]]
+       [--audio-backend NAME] [--ptt SPEC] [--list-devices]
 ```
 
-`--audio` is the cross-platform backend (miniaudio: WASAPI, CoreAudio, AAudio,
-ALSA); `--alsa` talks to ALSA directly and stays the headless Linux path,
-because a daemon that runs unattended for months benefits from the smaller
-dependency footprint. `--list-devices` prints what is available with the id to
-select it by.
+`--audio` is the sound card, on every platform: one backend (miniaudio) over
+WASAPI, CoreAudio, AAudio, ALSA, PulseAudio and JACK. `--list-devices` prints
+what is available with the id to select it by.
+
+There is deliberately no second Linux audio path. A dedicated ALSA backend
+existed and was removed: two implementations meant two versions of the
+transmit-tail drain and a class of bug that reproduces on one and not the
+other, and only one of them was covered by the tests. It also cost more than
+it saved — miniaudio opens ALSA, PulseAudio and JACK with `dlopen`, so
+`ardopb` no longer links `libasound` at all and no longer needs
+`libasound2-dev` to build. Where the choice matters, `--audio-backend alsa`
+pins it and bypasses the sound server.
 
 `--ptt` takes `none` (VOX), `rts:DEVICE`, `dtr:DEVICE`, or
 `rigctld:HOST:PORT` — the last keying through a running `rigctld` over TCP
@@ -135,10 +142,9 @@ sample clock *is* the protocol clock here, so an approximate conversion would
 break the link's timing rather than merely its audio. See
 [`shell/resample.h`](shell/resample.h).
 
-Under WSL (WSLg), reach the Windows audio devices through the ALSA→PulseAudio
-plugin: `apt install libasound2-plugins`, point ALSA's `default` at pulse, and
-run `--alsa default default` (details in
-[`shell/backend_alsa.h`](shell/backend_alsa.h)).
+Under WSL (WSLg) the Windows audio devices appear through WSLg's PulseAudio
+server and need no extra configuration — `--audio` finds them, and
+`--list-devices` names them.
 
 ### Windows
 

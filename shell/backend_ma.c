@@ -386,14 +386,21 @@ ardop_ma_backend *ardop_backend_ma_open(const ardop_ma_config *cfg,
 	b->ptt = cfg->ptt;
 	atomic_store(&b->fault, (int)ARDOP_FAULT_NONE);
 
+	ma_backend forced[1];
+	bool have_forced = false;
 	if (cfg->use_null_device) {
-		ma_backend only[1] = { ma_backend_null };
-		if (ma_context_init(only, 1, NULL, &b->ctx) != MA_SUCCESS) {
-			fprintf(stderr, "audio: null context init failed\n");
+		forced[0] = ma_backend_null;
+		have_forced = true;
+	} else if (cfg->backend_name && *cfg->backend_name) {
+		if (!ardop_ma_backend_from_name(cfg->backend_name, &forced[0])) {
 			free(b);
 			return NULL;
 		}
-	} else if (ma_context_init(NULL, 0, NULL, &b->ctx) != MA_SUCCESS) {
+		have_forced = true;
+	}
+
+	if (ma_context_init(have_forced ? forced : NULL, have_forced ? 1u : 0u,
+			    NULL, &b->ctx) != MA_SUCCESS) {
 		fprintf(stderr, "audio: no usable audio backend on this "
 			"system\n");
 		free(b);

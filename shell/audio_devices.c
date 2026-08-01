@@ -1,5 +1,6 @@
 #include "shell/audio_devices.h"
 
+#include <ctype.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -98,24 +99,71 @@ void ardop_ma_id_to_str(const ma_device_id *id, ma_backend backend, char *out,
 	snprintf(out, cap, "?");
 }
 
-/* Bring up a context, optionally forcing the synthetic null backend. */
-static bool context_init(ma_context *ctx, bool use_null_backend)
+/* Strip case, spaces, dashes and underscores so "core audio", "CoreAudio" and
+ * "core-audio" all match the display name "Core Audio". */
+static void normalise(const char *in, char *out, size_t cap)
 {
-	if (use_null_backend) {
-		ma_backend only[1] = { ma_backend_null };
+	size_t w = 0;
+	for (; *in && w + 1 < cap; in++) {
+		if (*in == ' ' || *in == '-' || *in == '_')
+			continue;
+		out[w++] = (char)tolower((unsigned char)*in);
+	}
+	out[w] = '\0';
+}
+
+bool ardop_ma_backend_from_name(const char *name, ma_backend *out)
+{
+	char want[64], have[64];
+	normalise(name, want, sizeof(want));
+
+	for (int i = 0; i <= (int)ma_backend_null; i++) {
+		ma_backend b = (ma_backend)i;
+		const char *n = ma_get_backend_name(b);
+		if (!n)
+			continue;
+		normalise(n, have, sizeof(have));
+		if (strcmp(want, have) == 0) {
+			if (!ma_is_backend_enabled(b)) {
+				fprintf(stderr, "audio: backend '%s' is not "
+					"available on this platform\n", name);
+				return false;
+			}
+			*out = b;
+			return true;
+		}
+	}
+
+	fprintf(stderr, "audio: unknown backend '%s'. Available here:", name);
+	for (int i = 0; i <= (int)ma_backend_null; i++) {
+		ma_backend b = (ma_backend)i;
+		if (ma_is_backend_enabled(b))
+			fprintf(stderr, " %s", ma_get_backend_name(b));
+	}
+	fprintf(stderr, "\n");
+	return false;
+}
+
+/* Bring up a context, optionally pinned to one named backend. */
+static bool context_init(ma_context *ctx, const char *backend_name)
+{
+	if (backend_name && *backend_name) {
+		ma_backend only[1];
+		if (!ardop_ma_backend_from_name(backend_name, &only[0]))
+			return false;
 		return ma_context_init(only, 1, NULL, ctx) == MA_SUCCESS;
 	}
 	return ma_context_init(NULL, 0, NULL, ctx) == MA_SUCCESS;
 }
 
 size_t ardop_audio_enumerate(ardop_audio_dir dir, ardop_audio_device *out,
-			     size_t max, bool use_null_backend)
+			     size_t max, const char *backend_name)
 {
 	if (max == 0)
 		return 0;
 
 	ma_context ctx;
-	if (!context_init(&ctx, use_null_backend)) {
+	if (!context_init(&ctx, backend_name)) {
 		fprintf(stderr, "audio: cannot initialise an audio context\n");
 		return 0;
 	}
@@ -146,7 +194,7 @@ size_t ardop_audio_enumerate(ardop_audio_dir dir, ardop_audio_device *out,
 	return n;
 }
 
-bool ardop_audio_print_devices(bool use_null_backend)
+bool ardop_audio_print_devices(const char *backend_name)
 {
 	static ardop_audio_device devs[64];
 
@@ -155,7 +203,7 @@ bool ardop_audio_print_devices(bool use_null_backend)
 					: ARDOP_AUDIO_CAPTURE;
 		size_t n = ardop_audio_enumerate(dir, devs,
 						 sizeof(devs) / sizeof(devs[0]),
-						 use_null_backend);
+						 backend_name);
 		fprintf(stderr, "\n%s devices:\n",
 			d ? "Playback" : "Capture");
 		if (n == 0) {
