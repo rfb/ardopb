@@ -121,8 +121,12 @@ def main():
                               ctrl_hits, args.seeds, one_hits, args.seeds),
                           flush=True)
 
+    # lineterminator is explicit: csv defaults to CRLF, and this file is
+    # committed, so the default would guarantee a spurious whole-file diff the
+    # first time git normalised it.
     with open(args.out, "w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+        w = csv.DictWriter(f, fieldnames=list(rows[0].keys()),
+                           lineterminator="\n")
         w.writeheader()
         w.writerows(rows)
     print("\nwrote %s (%d rows)" % (args.out, len(rows)))
