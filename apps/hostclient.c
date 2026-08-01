@@ -1,64 +1,24 @@
-#define _DEFAULT_SOURCE
 #include "hostclient.h"
 
-#include <errno.h>
-#include <netdb.h>
 #include <stdio.h>
 #include <string.h>
-#include <sys/select.h>
-#include <sys/socket.h>
-#include <unistd.h>
+
+#include "shell/net.h"
 
 /**
  * @file hostclient.c
  * @brief The ARDOP host-protocol client (see hostclient.h).
  */
 
-/* Connect a TCP socket to host:port. Returns fd or -1. */
-static int dial(const char *host, int port)
-{
-	char portstr[16];
-	snprintf(portstr, sizeof(portstr), "%d", port);
-
-	struct addrinfo hints;
-	memset(&hints, 0, sizeof(hints));
-	hints.ai_family = AF_UNSPEC;
-	hints.ai_socktype = SOCK_STREAM;
-
-	struct addrinfo *res = NULL;
-	int e = getaddrinfo(host, portstr, &hints, &res);
-	if (e != 0) {
-		fprintf(stderr, "host %s:%d: %s\n", host, port, gai_strerror(e));
-		return -1;
-	}
-
-	int fd = -1;
-	for (struct addrinfo *ai = res; ai; ai = ai->ai_next) {
-		fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
-		if (fd < 0)
-			continue;
-		if (connect(fd, ai->ai_addr, ai->ai_addrlen) == 0)
-			break;
-		close(fd);
-		fd = -1;
-	}
-	freeaddrinfo(res);
-	if (fd < 0)
-		fprintf(stderr, "connect %s:%d: %s\n", host, port,
-			strerror(errno));
-	return fd;
-}
-
 int hc_open(hostclient *hc, const char *host, int port)
 {
 	memset(hc, 0, sizeof(*hc));
-	hc->cmd_fd = dial(host, port);
-	if (hc->cmd_fd < 0)
+	hc->cmd_fd = ardop_net_connect(host, (uint16_t)port);
+	if (!ardop_net_valid(hc->cmd_fd))
 		return -1;
-	hc->data_fd = dial(host, port + 1);
-	if (hc->data_fd < 0) {
-		close(hc->cmd_fd);
-		hc->cmd_fd = -1;
+	hc->data_fd = ardop_net_connect(host, (uint16_t)(port + 1));
+	if (!ardop_net_valid(hc->data_fd)) {
+		ardop_net_close(&hc->cmd_fd);
 		return -1;
 	}
 	return 0;
@@ -66,26 +26,27 @@ int hc_open(hostclient *hc, const char *host, int port)
 
 void hc_close(hostclient *hc)
 {
-	if (hc->cmd_fd >= 0)
-		close(hc->cmd_fd);
-	if (hc->data_fd >= 0)
-		close(hc->data_fd);
-	hc->cmd_fd = hc->data_fd = -1;
+	ardop_net_close(&hc->cmd_fd);
+	ardop_net_close(&hc->data_fd);
 }
 
-/* Write all @p len bytes to @p fd. Returns 0 or -1. */
-static int write_all(int fd, const void *data, size_t len)
+/* Write all @p len bytes. Returns 0 or -1.
+ *
+ * The loop is the point: these sockets are blocking, but send() may still take
+ * less than offered, and a partial write on the length-prefixed data channel
+ * desynchronises it for good. */
+static int write_all(ardop_socket s, const void *data, size_t len)
 {
 	const uint8_t *p = data;
 	while (len > 0) {
-		ssize_t w = write(fd, p, len);
-		if (w < 0) {
-			if (errno == EINTR)
-				continue;
+		size_t moved = 0;
+		ardop_net_status st = ardop_net_send(s, p, len, &moved);
+		if (st == ARDOP_NET_AGAIN)
+			continue;
+		if (st != ARDOP_NET_OK)
 			return -1;
-		}
-		p += w;
-		len -= (size_t)w;
+		p += moved;
+		len -= moved;
 	}
 	return 0;
 }
@@ -99,23 +60,11 @@ int hc_cmd(hostclient *hc, const char *text)
 	return write_all(hc->cmd_fd, line, (size_t)n);
 }
 
-/* Wait up to timeout_ms for @p fd to be readable. 1 ready, 0 timeout, -1 err. */
-static int wait_readable(int fd, int timeout_ms)
+/* Wait up to timeout_ms for @p s to be readable. 1 ready, 0 timeout, -1 err. */
+static int wait_readable(ardop_socket s, int timeout_ms)
 {
-	fd_set r;
-	FD_ZERO(&r);
-	FD_SET(fd, &r);
-	struct timeval tv;
-	struct timeval *tvp = NULL;
-	if (timeout_ms >= 0) {
-		tv.tv_sec = timeout_ms / 1000;
-		tv.tv_usec = (timeout_ms % 1000) * 1000;
-		tvp = &tv;
-	}
-	int s = select(fd + 1, &r, NULL, NULL, tvp);
-	if (s < 0 && errno == EINTR)
-		return 0;
-	return s;
+	bool ready = false;
+	return ardop_net_wait(&s, 1, timeout_ms, &ready);
 }
 
 int hc_next_line(hostclient *hc, char *buf, size_t cap, int timeout_ms)
@@ -143,11 +92,12 @@ int hc_next_line(hostclient *hc, char *buf, size_t cap, int timeout_ms)
 			return -1;
 		if (hc->cmd_len >= sizeof(hc->cmd_buf))
 			hc->cmd_len = 0;   /* overlong line: resync. */
-		ssize_t got = read(hc->cmd_fd, hc->cmd_buf + hc->cmd_len,
-				   sizeof(hc->cmd_buf) - hc->cmd_len);
-		if (got <= 0)
+		size_t got = 0;
+		if (ardop_net_recv(hc->cmd_fd, hc->cmd_buf + hc->cmd_len,
+				   sizeof(hc->cmd_buf) - hc->cmd_len, &got)
+		    != ARDOP_NET_OK)
 			return -1;
-		hc->cmd_len += (size_t)got;
+		hc->cmd_len += got;
 	}
 }
 
@@ -189,11 +139,12 @@ int hc_recv_data(hostclient *hc, uint8_t *out, size_t cap, char *tag,
 			return -1;
 		if (hc->data_len >= sizeof(hc->data_buf))
 			hc->data_len = 0;   /* oversized: resync. */
-		ssize_t got = read(hc->data_fd, hc->data_buf + hc->data_len,
-				   sizeof(hc->data_buf) - hc->data_len);
-		if (got <= 0)
+		size_t got = 0;
+		if (ardop_net_recv(hc->data_fd, hc->data_buf + hc->data_len,
+				   sizeof(hc->data_buf) - hc->data_len, &got)
+		    != ARDOP_NET_OK)
 			return -1;
-		hc->data_len += (size_t)got;
+		hc->data_len += got;
 	}
 }
 

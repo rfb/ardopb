@@ -44,8 +44,9 @@ import ardop_golden as g
 # GOLDEN_DECODE_BIN to shell_decode_wav to run the same check through the
 # assembled shell (make golden-shell). Both print the identical line format, so
 # the judging below is unchanged.
-BIN = os.environ.get("GOLDEN_DECODE_BIN",
-                     os.path.join(g.GOLDEN_DIR, "core_decode_wav"))
+# An explicit GOLDEN_DECODE_BIN is used verbatim -- the Makefile supplies the
+# .exe suffix there, since it is the side that knows the host.
+BIN = os.environ.get("GOLDEN_DECODE_BIN", g.tool("core_decode_wav"))
 
 # Frame types whose manifest payload is the *formatted host string* ardopcf
 # emits (callsigns/grid), not the demod's output.  The core demod recovers these

@@ -175,10 +175,6 @@ bool ardop_busy_detect(ardop_busy_detector *b, const float *mag, int start,
 /* The reduced pi, as elsewhere; see [[ardop-mpi-normative-accident]]. */
 #define ARDOP_BUSY_PI 3.1415926f
 
-/* First bin of the 206-bin magnitude window (~293 Hz at 12000/1024 per bin). */
-#define BUSY_FIRST_BIN 25
-/* Number of magnitude bins the detector searches (~293..2695 Hz). */
-#define BUSY_MAG_BINS 206
 /* Centre bin of the tuning-line range (bin 128 = 1500 Hz, offset by 25). */
 #define BUSY_CENTRE_BIN 103
 
@@ -195,14 +191,12 @@ void ardop_busy_window(float *w)
 	}
 }
 
-bool ardop_busy_analyze(ardop_busy_detector *b, const float *window,
-			const int16_t *samples, int bw_hz, ardop_bandwidth bw,
-			int tuning_range, int busy_det, uint32_t now_ms)
+void ardop_busy_spectrum(const float *window, const int16_t *samples,
+			 float *mag_out)
 {
 	float windowed[ARDOP_BUSY_WINDOW];
 	float re[ARDOP_BUSY_WINDOW];
 	float im[ARDOP_BUSY_WINDOW];
-	float mag[BUSY_MAG_BINS];
 
 	/* Apply the symmetric Blackman-Harris window (as UpdateBusyDetector). */
 	windowed[0] = (float)samples[0] * window[0];
@@ -214,10 +208,15 @@ bool ardop_busy_analyze(ardop_busy_detector *b, const float *window,
 
 	ardop_fft(ARDOP_BUSY_WINDOW, windowed, re, im, false);
 
-	for (int i = 0; i < BUSY_MAG_BINS; i++)
-		mag[i] = powf(re[i + BUSY_FIRST_BIN], 2)
-			 + powf(im[i + BUSY_FIRST_BIN], 2);
+	for (int i = 0; i < ARDOP_BUSY_MAG_BINS; i++)
+		mag_out[i] = powf(re[i + ARDOP_BUSY_FIRST_BIN], 2)
+			     + powf(im[i + ARDOP_BUSY_FIRST_BIN], 2);
+}
 
+bool ardop_busy_detect_spectrum(ardop_busy_detector *b, const float *mag,
+				int bw_hz, ardop_bandwidth bw,
+				int tuning_range, int busy_det, uint32_t now_ms)
+{
 	/* The tuning-line search range, widened by bandwidth and tuning range.
 	 * 11.719 Hz is one FFT bin (12000/1024). */
 	int delta = (int)((float)(bw_hz / 2 + tuning_range) / 11.719f);
@@ -229,4 +228,15 @@ bool ardop_busy_analyze(ardop_busy_detector *b, const float *window,
 		high = 203;
 
 	return ardop_busy_detect(b, mag, low, high, bw, busy_det, now_ms);
+}
+
+bool ardop_busy_analyze(ardop_busy_detector *b, const float *window,
+			const int16_t *samples, int bw_hz, ardop_bandwidth bw,
+			int tuning_range, int busy_det, uint32_t now_ms)
+{
+	float mag[ARDOP_BUSY_MAG_BINS];
+
+	ardop_busy_spectrum(window, samples, mag);
+	return ardop_busy_detect_spectrum(b, mag, bw_hz, bw, tuning_range,
+					  busy_det, now_ms);
 }

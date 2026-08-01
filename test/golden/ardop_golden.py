@@ -34,6 +34,16 @@ GOLDEN_DIR = os.path.join(REPO_ROOT, "test", "golden")
 AUDIO_DIR = os.path.join(GOLDEN_DIR, "audio")
 MANIFEST_PATH = os.path.join(GOLDEN_DIR, "manifest.json")
 
+# Executable suffix.  subprocess would resolve "foo" -> "foo.exe" on Windows by
+# itself, but the drivers check os.path.exists() first to give a useful message,
+# and that check needs the real filename.
+EXE = ".exe" if os.name == "nt" else ""
+
+
+def tool(name):
+    """Absolute path to a harness binary built by the Makefile into GOLDEN_DIR."""
+    return os.path.join(GOLDEN_DIR, name + EXE)
+
 # Bumped when the manifest schema changes in a way older checkers cannot read.
 FORMAT_VERSION = 1
 

@@ -84,3 +84,10 @@ newArdopSampleArrays.c
 # golden harness binaries (built by golden-shell / golden-tx)
 /test/golden/shell_decode_wav
 /test/golden/shell_tx_wav
+
+# Qt GUI build tree (cmake -S gui -B gui/build)
+/gui/build/
+
+# Windows release staging (tools/package-windows.sh)
+/dist/
+/ardopb-windows-*.zip

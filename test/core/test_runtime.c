@@ -272,12 +272,188 @@ static void test_runtime_busy(void **state)
 	assert_true(cap.busy_changes >= 2);   /* at least one set and one clear. */
 }
 
+/* --- telemetry ------------------------------------------------------------ */
+
+struct tlm_capture {
+	int spectrum;
+	int constellation;
+	int status;
+	int audio;
+	float last_peak_bin_power;
+	int peak_bin;
+	uint8_t con_frame_type;
+	uint8_t con_mod;
+	uint16_t con_points;
+	int quadrant[4];   /* constellation points per pi/2 sector. */
+	int16_t last_sn;
+};
+
+static void tlm_observe(void *ctx, const ardop_telemetry *t)
+{
+	struct tlm_capture *c = ctx;
+
+	switch (t->kind) {
+	case ARDOP_TLM_SPECTRUM: {
+		c->spectrum++;
+		/* Remember the strongest bin of the loudest row seen. */
+		for (int i = 0; i < ARDOP_BUSY_MAG_BINS; i++) {
+			if (t->mag[i] > c->last_peak_bin_power) {
+				c->last_peak_bin_power = t->mag[i];
+				c->peak_bin = i;
+			}
+		}
+		break;
+	}
+	case ARDOP_TLM_CONSTELLATION:
+		c->constellation++;
+		c->con_frame_type = t->frame_type;
+		c->con_mod = t->modulation;
+		c->con_points = t->n_points;
+		for (uint16_t i = 0; i < t->n_points; i++) {
+			/* Fold the differential phase into one of four
+			 * quadrants, as the 4PSK slicer does. */
+			double a = (double)t->phase_mrad[i] / 1000.0;
+			while (a < 0.0)
+				a += 2.0 * M_PI;
+			int q = (int)(a / (M_PI / 2.0)) & 3;
+			c->quadrant[q]++;
+		}
+		break;
+	case ARDOP_TLM_STATUS:
+		c->status++;
+		c->last_sn = t->sn;
+		break;
+	case ARDOP_TLM_AUDIO:
+		c->audio++;
+		break;
+	}
+}
+
+/*
+ * Telemetry carries what a display needs, from real modulated audio.
+ *
+ * The constellation is the interesting assertion: the points are the
+ * *differential phases the decoder slices*, so for a clean 4PSK frame they must
+ * land in the four quadrants rather than scatter. If the scaling or the units
+ * were wrong they would smear, and a display would show noise for a perfect
+ * signal.
+ */
+static void test_runtime_telemetry(void **state)
+{
+	(void)state;
+
+	static ardop_runtime a, b;
+	struct capture ca, cb;
+	static struct tlm_capture tc;
+
+	setup(&a, &ca, "N0AAA", false);
+	setup(&b, &cb, "N0BBB", true);
+	memset(&tc, 0, sizeof(tc));
+	ardop_runtime_set_telemetry(&b, tlm_observe, &tc);
+
+	/* B receives in FEC mode. */
+	ardop_host_cmd bm = {0};
+	bm.kind = ARDOP_CMD_SET_MODE;
+	bm.arg = ARDOP_MODE_FEC;
+	ardop_runtime_host(&b, &bm, g_now);
+
+	uint8_t payload[150];
+	for (size_t i = 0; i < sizeof(payload); i++)
+		payload[i] = (uint8_t)(0x20 + (i % 90));
+
+	ardop_host_cmd sd = {0};
+	sd.kind = ARDOP_CMD_SEND_DATA;
+	sd.data = payload;
+	sd.data_len = sizeof(payload);
+	ardop_runtime_host(&a, &sd, g_now);
+
+	ardop_host_cmd fs = {0};
+	fs.kind = ARDOP_CMD_FEC_SEND;
+	fs.arg = 0x40;   /* 4PSK.200.100: four constellation clusters. */
+	ardop_runtime_host(&a, &fs, g_now);
+	carry(&a, &b);
+
+	/* The payload arrived, so the audio really was decoded. */
+	assert_int_equal(cb.acc_len, sizeof(payload));
+
+	/* A spectrum row per 1024 captured samples, ungated by link state. */
+	assert_true(tc.spectrum > 0);
+	/* 4PSK.200.100 is a single carrier centred on 1500 Hz. The strongest
+	 * bin must land there (bin 128 of the transform, 103 of the slice),
+	 * which is what proves the row is a real spectrum and not zeroes. */
+	int centre = 128 - ARDOP_BUSY_FIRST_BIN;
+	assert_true(tc.peak_bin > centre - 12 && tc.peak_bin < centre + 12);
+
+	/* One constellation per decoded frame (three frames of payload). */
+	assert_int_equal(tc.constellation, cb.frames);
+	assert_int_equal(tc.con_frame_type, 0x40);
+	assert_int_equal(tc.con_mod, ARDOP_MOD_4PSK);
+	assert_true(tc.con_points > 0);
+
+	/* Every quadrant used, and none holding a wild share: a clean 4PSK
+	 * frame slices into four roughly equal clusters. */
+	int total = 0;
+	for (int q = 0; q < 4; q++) {
+		assert_true(tc.quadrant[q] > 0);
+		total += tc.quadrant[q];
+	}
+	for (int q = 0; q < 4; q++)
+		assert_true(tc.quadrant[q] < total * 3 / 4);
+
+	/* The status mirror ran and carried this frame's S/N. */
+	assert_true(tc.status > 0);
+	assert_true(tc.last_sn > 0);
+}
+
+/* With no sink registered, nothing is gathered and -- the property that
+ * matters -- the busy detector behaves exactly as it did before telemetry
+ * existed, because it keeps its own accumulator. */
+static void test_runtime_telemetry_off_by_default(void **state)
+{
+	(void)state;
+
+	static ardop_runtime a, b;
+	struct capture ca, cb;
+	static struct tlm_capture tc;
+
+	setup(&a, &ca, "N0AAA", false);
+	setup(&b, &cb, "N0BBB", true);
+	memset(&tc, 0, sizeof(tc));
+	/* Deliberately no ardop_runtime_set_telemetry. */
+
+	ardop_host_cmd bm = {0};
+	bm.kind = ARDOP_CMD_SET_MODE;
+	bm.arg = ARDOP_MODE_FEC;
+	ardop_runtime_host(&b, &bm, g_now);
+
+	uint8_t payload[64];
+	memset(payload, 'x', sizeof(payload));
+	ardop_host_cmd sd = {0};
+	sd.kind = ARDOP_CMD_SEND_DATA;
+	sd.data = payload;
+	sd.data_len = sizeof(payload);
+	ardop_runtime_host(&a, &sd, g_now);
+
+	ardop_host_cmd fs = {0};
+	fs.kind = ARDOP_CMD_FEC_SEND;
+	fs.arg = 0x40;
+	ardop_runtime_host(&a, &fs, g_now);
+	carry(&a, &b);
+
+	assert_int_equal(cb.acc_len, sizeof(payload));
+	assert_int_equal(tc.spectrum, 0);
+	assert_int_equal(tc.constellation, 0);
+	assert_int_equal(tc.status, 0);
+}
+
 int main(void)
 {
 	const struct CMUnitTest tests[] = {
 		cmocka_unit_test(test_runtime_session),
 		cmocka_unit_test(test_runtime_fec_broadcast),
 		cmocka_unit_test(test_runtime_busy),
+		cmocka_unit_test(test_runtime_telemetry),
+		cmocka_unit_test(test_runtime_telemetry_off_by_default),
 	};
 	return cmocka_run_group_tests(tests, NULL, NULL);
 }

@@ -1,10 +1,10 @@
-#define _DEFAULT_SOURCE
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
+
+#include "shell/sys.h"
 
 #include "hostclient.h"
 
@@ -70,6 +70,10 @@ static int query_buffer(hostclient *hc, struct state *st)
 
 int main(int argc, char **argv)
 {
+	/* Binary stdio before anything else: payload is read from stdin, and Windows
+	 * text mode would rewrite every 0x0A and stop at 0x1A. */
+	ardop_stdio_binary();
+
 	const char *hostarg = NULL, *target = NULL;
 	for (int i = 1; i < argc; i++) {
 		if (!strcmp(argv[i], "--host") && i + 1 < argc)
@@ -133,22 +137,22 @@ int main(int argc, char **argv)
 		if (queued < 0)
 			break;
 		if (queued >= TX_WINDOW) {
-			usleep(100000);
+			ardop_sleep_ms(100);
 			continue;
 		}
 		size_t want = TX_WINDOW - (size_t)queued;
 		if (want > sizeof(chunk))
 			want = sizeof(chunk);
-		ssize_t got = read(STDIN_FILENO, chunk, want);
-		if (got < 0) {
-			fprintf(stderr, "stdin read error\n");
-			break;
-		}
+		size_t got = fread(chunk, 1, want, stdin);
 		if (got == 0) {
+			if (ferror(stdin)) {
+				fprintf(stderr, "stdin read error\n");
+				break;
+			}
 			eof = true;
 			break;
 		}
-		if (hc_send_data(&hc, chunk, (size_t)got) != 0) {
+		if (hc_send_data(&hc, chunk, got) != 0) {
 			fprintf(stderr, "send error\n");
 			break;
 		}
@@ -159,7 +163,7 @@ int main(int argc, char **argv)
 		/* Wait for the queue to drain and the last frame to be acked. */
 		int queued;
 		while ((queued = query_buffer(&hc, &st)) > 0)
-			usleep(150000);
+			ardop_sleep_ms(150);
 		while (queued == 0 && !st.disconnected) {
 			char sbuf[128];
 			int r = hc_query(&hc, "STATE", "STATE ", sbuf,
@@ -168,7 +172,7 @@ int main(int argc, char **argv)
 				break;
 			if (strcmp(sbuf, "STATE IDLE") == 0)
 				break;
-			usleep(200000);
+			ardop_sleep_ms(200);
 		}
 		fprintf(stderr, "sent; disconnecting ...\n");
 		hc_cmd(&hc, "DISCONNECT");

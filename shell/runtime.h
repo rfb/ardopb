@@ -10,6 +10,7 @@
 #include "modem/busy.h"
 #include "modem/demodulate.h"
 #include "modem/modulate.h"
+#include "shell/telemetry.h"
 
 /**
  * @file runtime.h
@@ -36,9 +37,13 @@
  * The runtime is the single point that sees every demod event, link action, and
  * state change, so it is where observation is generalised. A consumer -- a
  * logger, the TCP host interface, a metrics sink, a future UI, a test -- reads
- * this instead of reaching into the DSP/protocol. Bulk DSP visualisation
- * (spectrum, constellation) is deliberately not here: it exists only to paint a
- * waterfall, which this rebuild does not carry.
+ * this instead of reaching into the DSP/protocol.
+ *
+ * Bulk DSP visualisation (spectrum, constellation) is deliberately *not* here.
+ * It is high rate, display-shaped, and meaningless to every consumer but a
+ * panel, so it travels on its own channel -- see telemetry.h and
+ * ardop_runtime_set_telemetry(). Keeping the two apart is what lets this remain
+ * a small, presentation-agnostic event bus.
  */
 typedef enum {
 	ARDOP_OBS_STATE,        /**< Link state changed (state, remote). */
@@ -124,7 +129,55 @@ typedef struct {
 	ardop_link_mode last_mode;
 	int last_bw;
 	size_t last_buffer;
+
+	/* Telemetry sink (see telemetry.h). NULL -- the default -- means the
+	 * spectrum is never computed outside the busy detector's own use and
+	 * no constellation is gathered, so a headless daemon pays nothing. */
+	ardop_telemetry_fn tlm_fn;
+	void *tlm_ctx;
+	int16_t tlm_accum[ARDOP_BUSY_WINDOW]; /* own accumulator: see feed_busy. */
+	size_t tlm_accum_len;
+	float tlm_mag[ARDOP_BUSY_MAG_BINS];   /* scratch for one spectrum row. */
+	int16_t tlm_phase[ARDOP_TLM_MAX_POINTS];
+	int16_t tlm_pmag[ARDOP_TLM_MAX_POINTS];
+	int16_t last_sn;      /* last frame's S/N, for the status mirror. */
+	int16_t last_quality; /* last frame's decode quality. */
 } ardop_runtime;
+
+/**
+ * @brief Register the telemetry sink, or NULL to disable.
+ *
+ * Enabling it makes ardop_runtime_rx() compute a spectrum row per 1024 samples
+ * and gather a constellation snapshot per decoded frame. The sink is called
+ * from the audio path and must not block; ::ardop_telemetry pointers are
+ * borrowed and valid only for the call.
+ */
+void ardop_runtime_set_telemetry(ardop_runtime *rt, ardop_telemetry_fn fn,
+				 void *ctx);
+
+/**
+ * @brief Emit a ::ARDOP_TLM_STATUS record summarising the current state.
+ *
+ * The discrete-state mirror the telemetry stream carries so a display needs
+ * only one connection (see telemetry.h). Call after state may have changed, and
+ * periodically so a newly attached display fills in promptly.
+ */
+void ardop_runtime_telemetry_status(ardop_runtime *rt);
+
+/**
+ * @brief Report the capture level to the telemetry sink.
+ *
+ * Computed by the caller's loop over each captured block rather than inside the
+ * runtime, because it describes the *device*, not the protocol: a level that is
+ * clipping or inaudible is a mis-set mixer, and the runtime never sees the gain
+ * staging that caused it.
+ *
+ * @param rt       Runtime.
+ * @param samples  Captured samples.
+ * @param n        Number of samples.
+ */
+void ardop_runtime_telemetry_audio(ardop_runtime *rt, const int16_t *samples,
+				   size_t n);
 
 /**
  * @brief Register an observer. Up to ::ARDOP_MAX_OBSERVERS; extras are ignored.
