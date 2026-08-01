@@ -239,9 +239,8 @@ static void ma_set_ptt(void *ctx, bool key)
 	ardop_ma_backend *b = ctx;
 
 	if (key) {
-		/* Discard anything stale before keying, as backend_alsa.c's
-		 * snd_pcm_prepare does, so the first thing radiated is the
-		 * leader and not the tail of a previous over. */
+		/* Discard anything stale before keying, so the first thing
+		 * radiated is the leader and not the tail of a previous over. */
 		ardop_ring_reset(&b->play_ring);
 		ardop_resample_reset(&b->tx_rs);
 		b->written = 0;
