@@ -383,6 +383,155 @@ pull, which is a change in `shell/`, not here.
 
 ---
 
+## 10. Proposal: session history at two resolutions
+
+*Not built. Proposed here so the reasoning survives whoever picks it up.*
+
+### What it is for
+
+An ARDOP session succeeds or fails slowly, and the interesting part is the
+shape: how many frames were repeated, whether the link gear-shifted up or down,
+how long each turnaround took, where the quality fell away. None of that is
+visible in an instrument panel, which shows the present and forgets it.
+
+Four questions this answers that nothing currently does:
+
+- **Why is this slow?** A wall of repeats says "the channel", a clean run at a
+  low data rate says "the negotiation", and they need different responses.
+- **Is the link adapting?** Gear-shifting is a sequence, not a state.
+- **What happened before it dropped?** A post-mortem needs the frames leading up
+  to the failure, which by definition are gone by the time anyone looks.
+- **Does our session look like `ardopcf`'s?** The interop validation
+  [13](13-completing-the-rebuild.md) W3 still owes is far easier to judge from
+  two histories side by side than from two logs.
+
+### The gap: this data does not currently reach the interface
+
+The runtime emits everything needed — `ARDOP_OBS_RX_FRAME` carries frame type,
+quality and S/N, `ARDOP_OBS_TX_FRAME` the type, `ARDOP_OBS_RX_FRAME_BAD` a
+failure. But neither queue delivers it:
+
+- The **lossless event queue** deliberately excludes them. That was right: the
+  state they describe is mirrored into `ARDOP_TLM_STATUS`, and duplicating it
+  would have been two sources for one truth (`app/spine.c`).
+- The **display queue** carries that mirror, and a mirror is *coalesced* — last
+  value wins. Which is correct for a status lamp and destroys a history.
+
+So a history needs a new record. It belongs on the **lossy display queue**,
+following the `ARDOP_TLM_SPECTRUM` rule rather than the status rule: **deliver
+every one, in order, and never coalesce** — each is a distinct event, and merging
+two frames is exactly the information the view exists to show. Losing one under
+extreme load is acceptable in a way that losing payload is not, which is why this
+is not on the lossless queue.
+
+```c
+ARDOP_TLM_FRAME = 5
+
+uint64_t at;          /* elapsed samples -- see "turn time" below */
+uint8_t  frame_type;  /* everything else derives from this */
+uint8_t  direction;   /* transmitted / received / failed to decode */
+int16_t  quality;     /* 0..100, received only */
+int16_t  sn;          /* dB, received only */
+```
+
+**The frame type is enough for the rest.** `ardop_frame_spec_for()` gives the
+name, the modulation, the baud, the carrier count and the payload bytes
+(`core/codec/frame.h`), so mode and data rate are computed at the display end
+from a byte. Nothing about the protocol is written down in the interface — the
+rule §5 already sets.
+
+### Turn time, and the clock to measure it against
+
+Stamp each record with the **elapsed sample count**, not a wall clock.
+
+Turn time then falls out as the difference between the end of the last received
+frame and the start of the next transmission — and it is measured against the
+*protocol* clock, which is the one the deadline is actually expressed in.
+[15](15-platform-audio-and-ptt.md) §8 puts the ARQ turnaround budget at 250 ms
+and ends "then measure it"; nothing has. This measures it, on every frame, for
+free, as a side effect of a view somebody wanted anyway.
+
+A wall clock would be the wrong instrument here. If the sound card runs at
+11 997 Hz every protocol deadline stretches with it, and a turnaround measured in
+milliseconds would drift against the budget it is being compared to while a
+turnaround measured in samples would not.
+
+### The macro view: one cell per frame
+
+```
+   ▉▉▉▉▉▉▉▉░▉▉  ▓▓  ▉▉▉▉▉▉▉▉▉▉▉▉  ▓▓  ▉▉▉▉▉✗▉▉▉▉▉▉  ▓▓  ▉▉▉▉
+   └── receiving ──┘ └TX┘ └──── receiving ────┘ └TX┘  ↑
+                                                   failed decode
+```
+
+One cell per frame rather than per unit of time, because ARDOP frames differ in
+length by more than an order of magnitude and the question an operator has is
+"how many repeats", which is a count. The grid wraps; a long session is a block
+of texture whose *pattern* is readable before any individual cell is.
+
+Encoding, and the constraint that shapes it is colour blindness:
+
+| | |
+|---|---|
+| hue | direction — received one hue, transmitted another. **Not red/green.** |
+| lightness | decode quality, received frames only |
+| a distinct mark | a failed decode: different *shape* as well as colour, so it is not carried by hue alone |
+| gaps | dead air, proportional to the turnaround |
+
+A run of repeats reads as a stripe of one hue. A gear-shift reads as a texture
+change. A retry storm reads as a rash of failure marks. None of that needs a
+legend to notice, which is the point of a macro view.
+
+### The micro view: the same events, as a table
+
+| at | dir | mode | bytes | Q | S/N | turn |
+|---|---|---|---|---|---|---|
+| 00:41.3 | RX | 4PSK.200.100.E | 128 | 92 | 14 | — |
+| 00:42.1 | TX | ACK | — | — | — | 180 ms |
+| 00:42.4 | RX | 16QAM.500.100.E | 512 | 61 | 9 | — |
+| 00:43.2 | RX | 16QAM.500.100.E | — | ✗ | 8 | — |
+
+Sortable, scrollable, and selectable. Everything in it is derived from the five
+fields above plus the frame table.
+
+### Linking the two
+
+Clicking a cell scrolls the table to that frame and selects it; selecting a row
+highlights its cell. That is the whole of "two resolutions" — one dataset, two
+projections, and a cursor shared between them. Without the link the macro view is
+decoration.
+
+### Bounded, like everything else here
+
+A ring of frames with a fixed capacity, in the interface rather than the spine.
+The spine's job is to deliver events, not to remember them, and keeping the
+history at the display end means `--remote` gets it for nothing — the record
+travels the telemetry wire like every other, so a panel watching a station across
+the shack builds the same history as one embedding the modem.
+
+At roughly sixteen bytes a record, ten thousand frames is 160 kB and covers a
+long Winlink session. When it wraps, the oldest go; a session longer than the
+ring is one where the recent part is what matters.
+
+### Open questions
+
+1. **Does the history survive a disconnect?** Per-session is the obvious
+   framing, but the useful comparison is often *across* sessions — "it was fine
+   yesterday". A session boundary marker in a continuous ring may be better than
+   clearing.
+2. **Should it be exportable?** A CSV of this is exactly what a bug report about
+   a bad link should contain, and exactly what an interop comparison against
+   `ardopcf` needs. Cheap to add, and easy to forget until somebody needs it.
+3. **Does the TX side get a quality figure?** It cannot: a transmitter has no
+   measurement of its own signal. The table's blank cells for TX rows are honest
+   and will still look like missing data. Worth a legend rather than a workaround.
+4. **What marks a repeat?** The link knows it is repeating a frame; the frame
+   type does not say so. Distinguishing "sent twice" from "sent two frames of the
+   same type" would need a flag from the link, which is a `core/` change and
+   should not be made casually.
+
+---
+
 ## Open decisions
 
 1. **QML for the instrument panel too, or only for the chrome?** The panels could
