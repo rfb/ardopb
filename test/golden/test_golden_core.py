@@ -34,6 +34,7 @@ Usage:
 
 import argparse
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -45,8 +46,11 @@ import ardop_golden as g
 # assembled shell (make golden-shell). Both print the identical line format, so
 # the judging below is unchanged.
 # An explicit GOLDEN_DECODE_BIN is used verbatim -- the Makefile supplies the
-# .exe suffix there, since it is the side that knows the host.
+# .exe suffix there, since it is the side that knows the host. It may carry
+# arguments ("./resample_decode_wav -m 4"), so it is split like a command line
+# rather than treated as a single path.
 BIN = os.environ.get("GOLDEN_DECODE_BIN", g.tool("core_decode_wav"))
+ARGV = shlex.split(BIN)
 
 # Frame types whose manifest payload is the *formatted host string* ardopcf
 # emits (callsigns/grid), not the demod's output.  The core demod recovers these
@@ -63,7 +67,7 @@ def run_core(wav_bytes):
         tf.write(wav_bytes)
         path = tf.name
     try:
-        out = subprocess.run([BIN, path], capture_output=True, text=True,
+        out = subprocess.run(ARGV + [path], capture_output=True, text=True,
                              check=True)
     finally:
         os.unlink(path)
@@ -184,8 +188,8 @@ def main():
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
 
-    if not os.path.exists(BIN):
-        sys.exit(f"{BIN} not found; run `make golden-core` (or make it first)")
+    if not os.path.exists(ARGV[0]):
+        sys.exit(f"{ARGV[0]} not found; run `make golden-core` (or make it first)")
     if not os.path.exists(g.MANIFEST_PATH):
         sys.exit(f"no corpus at {g.MANIFEST_PATH}")
 

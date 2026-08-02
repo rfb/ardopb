@@ -1,0 +1,44 @@
+# ASP over a real ARQ session: real modulator, real demodulator, real retries.
+#
+#   ./app/ardop-spine --loopback --asp /tmp/asp-a /tmp/asp-b \
+#       --script test/app/asp.script
+#
+# This is the end-to-end proof: a file offered, accepted, transferred, checksummed
+# and renamed, over a link that really modulates, demodulates, retries and turns
+# over. test_asp.c drives the protocol over a byte queue that never loses
+# anything, which makes it a good test of the protocol and no test at all of the
+# stack underneath it -- and the two defects this script found were both in that
+# stack (analysis/17 amendment 7).
+#
+# Kept small on purpose. The interesting behaviour is the turnovers and the
+# collisions, which happen in the first few kilobytes; a bigger payload buys more
+# runtime and no more coverage.
+
+@echo configuring both stations
+
+MYCALL N0AAA
+ARQBW 2000MAX
+AUTOBREAK TRUE
+@peer MYCALL N0BBB
+@peer ARQBW 2000MAX
+@peer LISTEN TRUE
+@peer AUTOBREAK TRUE
+
+@echo connecting
+ARQCALL N0BBB 2000
+@wait host=CONNECTED 60
+
+# Both HELLOs. Not instant: the answering station is the IRS and cannot send
+# until it gets a turn, which is what AUTOBREAK is for (analysis/17 §7).
+@asp-wait link 120
+
+@echo chat
+@asp-text hello from the script
+@asp-wait text=hello 60
+
+@echo the file
+@asp-send test/app/asp-payload.txt
+@asp-wait file 900
+
+@echo done
+DISCONNECT

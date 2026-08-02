@@ -172,7 +172,7 @@ void ardop_telemetry_tcp_service(ardop_telemetry_tcp *t, ardop_runtime *rt)
 		return;
 
 	if (!ardop_net_valid(t->fd)) {
-		ardop_socket fd = ardop_net_accept(t->listen_fd);
+		ardop_socket fd = ardop_net_accept(t->listen_fd, NULL, 0);
 		if (ardop_net_valid(fd)) {
 			t->fd = fd;
 			t->head = 0;

@@ -100,6 +100,12 @@ struct ardop_ma_backend {
 
 	ardop_ptt *ptt;          /**< Borrowed. */
 
+	/* How each selection resolved, and what was actually opened. The pair is
+	 * what lets an application write the *new* id back after a renumber; with
+	 * only the match, the rule would degrade to name-matching forever. */
+	ardop_audio_match cap_match, play_match;
+	ardop_audio_device cap_dev, play_dev;
+
 	_Atomic bool tx_active;
 	_Atomic int fault;       /**< ardop_fault, latched. */
 
@@ -317,51 +323,70 @@ static uint64_t ma_wall_ms(void *ctx)
  * default when a USB interface has been renumbered would transmit through
  * whatever is now first in the list, which on a laptop is usually the built-in
  * speakers -- silently, and into a radio.
+ *
+ * The rule itself lives in ardop_audio_match_device so that a settings screen
+ * and a unit test get the same answer; this is the adapter that renders
+ * miniaudio's list into the form that rule takes and maps the answer back to a
+ * device handle. It prints nothing: the outcome is recorded and reported
+ * upward, because an operator running a graphical program never sees stderr.
  */
 static bool resolve_device(ma_context *ctx, ardop_audio_dir dir,
-			   const char *want, ma_device_id *out, bool *exact)
+			   const char *want, ma_device_id *out,
+			   ardop_audio_match *how, ardop_audio_device *chosen)
 {
-	*exact = false;
-	if (!want || !*want)
-		return false;   /* caller uses the default. */
+	static ardop_audio_device devs[64];   /* open-time only, one thread */
+
+	*how = ARDOP_AUDIO_MATCH_NONE;
+	memset(chosen, 0, sizeof(*chosen));
 
 	ma_device_info *play = NULL, *cap = NULL;
 	ma_uint32 nplay = 0, ncap = 0;
 	if (ma_context_get_devices(ctx, &play, &nplay, &cap, &ncap)
-	    != MA_SUCCESS)
+	    != MA_SUCCESS) {
+		fprintf(stderr, "audio: cannot enumerate devices\n");
 		return false;
+	}
 
 	const ma_device_info *list = (dir == ARDOP_AUDIO_CAPTURE) ? cap : play;
-	ma_uint32 n = (dir == ARDOP_AUDIO_CAPTURE) ? ncap : nplay;
+	size_t n = (dir == ARDOP_AUDIO_CAPTURE) ? ncap : nplay;
+	if (n > sizeof(devs) / sizeof(devs[0]))
+		n = sizeof(devs) / sizeof(devs[0]);
 
-	char id[ARDOP_DEV_ID_MAX];
-	for (ma_uint32 i = 0; i < n; i++) {
-		ardop_ma_id_to_str(&list[i].id, ctx->backend, id, sizeof(id));
-		if (strcmp(id, want) == 0) {
-			*out = list[i].id;
-			*exact = true;
-			return true;
-		}
-	}
-	for (ma_uint32 i = 0; i < n; i++) {
-		if (strcmp(list[i].name, want) == 0) {
-			*out = list[i].id;
-			*exact = true;
-			return true;
-		}
+	for (size_t i = 0; i < n; i++) {
+		memset(&devs[i], 0, sizeof(devs[i]));
+		ardop_ma_id_to_str(&list[i].id, ctx->backend, devs[i].id,
+				   sizeof(devs[i].id));
+		snprintf(devs[i].name, sizeof(devs[i].name), "%s", list[i].name);
+		devs[i].is_default = list[i].isDefault ? true : false;
 	}
 
-	fprintf(stderr,
-		"audio: no %s device matches '%s'; falling back to the system\n"
-		"       default. Run with --list-devices to see what is here.\n",
-		dir == ARDOP_AUDIO_CAPTURE ? "capture" : "playback", want);
-	return false;
+	size_t idx = 0;
+	*how = ardop_audio_match_device(devs, n, want, want, &idx);
+	if (*how == ARDOP_AUDIO_MATCH_NONE)
+		return false;
+
+	/* Both fields come from the enumeration entry even in the default case:
+	 * ma_device.capture.id is zeroed when the default was used, so asking the
+	 * opened device afterwards would give an empty id and the application
+	 * would have nothing to persist. */
+	*chosen = devs[idx];
+	*out = list[idx].id;
+	return true;
 }
 
 void ardop_backend_ma_close(ardop_ma_backend *b)
 {
 	if (!b)
 		return;
+	/* Unkey first, and mean it. The header has always said this happens; it
+	 * did not, and got away with it only because ardopb closes the PTT object
+	 * immediately afterwards. The device manager rebuilds a backend while the
+	 * same PTT object stays open, which is exactly the case the promise was
+	 * for -- without this, a device change during a transmission would leave
+	 * the line asserted with the backend that raised it already gone. */
+	if (b->ptt)
+		ardop_ptt_set(b->ptt, false);
+
 	if (b->capture_started)
 		ma_device_uninit(&b->capture);
 	if (b->playback_started)
@@ -407,11 +432,12 @@ ardop_ma_backend *ardop_backend_ma_open(const ardop_ma_config *cfg,
 	}
 
 	ma_device_id cap_id, play_id;
-	bool have_cap = false, have_play = false;
-	(void)resolve_device(&b->ctx, ARDOP_AUDIO_CAPTURE, cfg->capture_id,
-			     &cap_id, &have_cap);
-	(void)resolve_device(&b->ctx, ARDOP_AUDIO_PLAYBACK, cfg->playback_id,
-			     &play_id, &have_play);
+	bool have_cap = resolve_device(&b->ctx, ARDOP_AUDIO_CAPTURE,
+				       cfg->capture_id, &cap_id,
+				       &b->cap_match, &b->cap_dev);
+	bool have_play = resolve_device(&b->ctx, ARDOP_AUDIO_PLAYBACK,
+					cfg->playback_id, &play_id,
+					&b->play_match, &b->play_dev);
 
 	/* sampleRate 0 asks for the device's native rate: we would rather see
 	 * the truth and refuse than have miniaudio quietly convert for us. */
@@ -455,15 +481,34 @@ ardop_ma_backend *ardop_backend_ma_open(const ardop_ma_config *cfg,
 		 * is more honest than a session that mysteriously underperforms.
 		 */
 		fprintf(stderr,
-			"audio: device runs at %u Hz, which is not a whole "
+			"audio: this device runs at %u Hz, which is not a whole "
 			"multiple of %d Hz\n"
-			"       (up to %ux). Pick a device or a system format "
-			"of 12000, 24000,\n"
-			"       48000 or 96000 Hz. Rates like 44100 are "
-			"refused rather than\n"
-			"       resampled, because approximate timing here "
-			"breaks the protocol\n"
-			"       clock rather than just the audio.\n",
+			"       (up to %ux). 44100 is refused rather than "
+			"resampled, because in this\n"
+			"       modem the sample clock IS the protocol clock -- "
+			"an approximate\n"
+			"       conversion would break the link's timing, not "
+			"just the audio.\n"
+			"\n"
+			"       Set the device to 48000 Hz, which is what "
+			"nearly every sound card\n"
+			"       and every radio codec does natively:\n"
+			"\n"
+#ifdef _WIN32
+			"         Sound Control Panel -> the device -> "
+			"Properties -> Advanced,\n"
+			"         and choose a 48000 Hz format.\n",
+#else
+			"         PipeWire:   ~/.config/pipewire/pipewire.conf.d/"
+			"10-rate.conf\n"
+			"                     context.properties = "
+			"{ default.clock.rate = 48000 }\n"
+			"         PulseAudio: /etc/pulse/daemon.conf, "
+			"default-sample-rate = 48000\n"
+			"                     then: pulseaudio -k\n"
+			"         Or bypass the sound server entirely: "
+			"--audio-backend alsa\n",
+#endif
 			b->device_rate, ARDOP_RATE, ARDOP_RESAMPLE_MAX_M);
 		ardop_backend_ma_close(b);
 		return NULL;
@@ -543,11 +588,41 @@ ardop_fault ardop_backend_ma_fault(const ardop_ma_backend *b)
 		memory_order_relaxed);
 }
 
-void ardop_backend_ma_clear_fault(ardop_ma_backend *b)
+void ardop_backend_ma_stall_capture(ardop_ma_backend *b)
 {
-	if (b)
-		atomic_store(&b->fault, (int)ARDOP_FAULT_NONE);
+	if (!b || !b->capture_started)
+		return;
+	/* Stopping the device stops the callback, which is precisely what an
+	 * unplug does. The handle stays valid so close() still works. */
+	ma_device_stop(&b->capture);
 }
+
+ardop_audio_match ardop_backend_ma_capture_match(const ardop_ma_backend *b)
+{
+	return b ? b->cap_match : ARDOP_AUDIO_MATCH_NONE;
+}
+
+ardop_audio_match ardop_backend_ma_playback_match(const ardop_ma_backend *b)
+{
+	return b ? b->play_match : ARDOP_AUDIO_MATCH_NONE;
+}
+
+void ardop_backend_ma_capture_device(const ardop_ma_backend *b,
+				     ardop_audio_device *out)
+{
+	memset(out, 0, sizeof(*out));
+	if (b)
+		*out = b->cap_dev;
+}
+
+void ardop_backend_ma_playback_device(const ardop_ma_backend *b,
+				      ardop_audio_device *out)
+{
+	memset(out, 0, sizeof(*out));
+	if (b)
+		*out = b->play_dev;
+}
+
 
 size_t ardop_backend_ma_block(const ardop_ma_backend *b)
 {

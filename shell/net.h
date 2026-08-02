@@ -82,11 +82,23 @@ void ardop_net_close(ardop_socket *s);
  */
 ardop_socket ardop_net_listen(uint16_t port);
 
+/** @brief Room for "255.255.255.255:65535" and for an IPv6 literal. */
+#define ARDOP_NET_PEER_MAX 64
+
 /**
  * @brief Accept a pending connection, non-blocking.
+ *
+ * @param listener The listening socket.
+ * @param peer     If non-NULL, receives "address:port" for the client, or the
+ *                 empty string if it could not be determined. An operator
+ *                 looking at a list of attached clients needs to know *which*
+ *                 machine is holding their transmitter, and "a client" does not
+ *                 answer that.
+ * @param peer_cap Bytes available at @p peer; ::ARDOP_NET_PEER_MAX is enough.
  * @return The client socket, or ::ARDOP_SOCKET_INVALID if none was waiting.
  */
-ardop_socket ardop_net_accept(ardop_socket listener);
+ardop_socket ardop_net_accept(ardop_socket listener, char *peer,
+			      size_t peer_cap);
 
 /**
  * @brief Connect to @p host : @p port, resolving through getaddrinfo.

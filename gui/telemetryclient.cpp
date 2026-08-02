@@ -19,7 +19,7 @@ constexpr int kMaxBuffer = 4 * ARDOP_TLM_MAX_RECORD;
 }   // namespace
 
 TelemetryClient::TelemetryClient(QObject *parent)
-	: QObject(parent)
+	: PanelSource(parent)
 {
 	connect(&m_sock, &QTcpSocket::readyRead,
 		this, &TelemetryClient::onReadyRead);

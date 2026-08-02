@@ -55,6 +55,29 @@ static void emit_state_diffs(ardop_runtime *rt)
 	}
 }
 
+/*
+ * One record per frame observed, for the session history (analysis/16 §10).
+ *
+ * Gated on the sink like the spectrum and the constellation, so a headless
+ * ardopb pays nothing. Called from beside observations that already fire, so no
+ * new traversal and nothing new computed on the audio path -- every figure here
+ * is one the runtime already had in hand.
+ */
+static void emit_frame_record(ardop_runtime *rt, uint8_t frame_type,
+			      ardop_tlm_dir dir, int16_t quality, int16_t sn)
+{
+	if (rt->tlm_fn == NULL)
+		return;
+
+	rt->tlm_fn(rt->tlm_ctx,
+		   &(ardop_telemetry){.kind = ARDOP_TLM_FRAME,
+				      .frame_at = rt->now,
+				      .frame_type = frame_type,
+				      .frame_dir = (uint8_t)dir,
+				      .quality = quality,
+				      .sn = sn});
+}
+
 /* Begin modulating a frame to transmit, keying PTT. */
 static void start_tx(ardop_runtime *rt, uint8_t frame_type,
 		     const uint8_t *encoded, size_t len, uint16_t leader_ms)
@@ -66,6 +89,9 @@ static void start_tx(ardop_runtime *rt, uint8_t frame_type,
 	rt->tx_active = true;
 	emit(rt, &(ardop_obs){.kind = ARDOP_OBS_TX_FRAME,
 			      .frame_type = frame_type});
+	/* Quality and S/N are receive figures; a transmitted frame has neither,
+	 * and -1 says so rather than reporting somebody else's. */
+	emit_frame_record(rt, frame_type, ARDOP_TLM_DIR_TX, -1, -1);
 	if (!rt->ptt_keyed) {
 		rt->ptt_keyed = true;
 		emit(rt, &(ardop_obs){.kind = ARDOP_OBS_PTT, .key = true});
@@ -451,12 +477,21 @@ void ardop_runtime_rx(ardop_runtime *rt, const int16_t *samples, size_t n,
 					      .frame_type = ev->frame_type,
 					      .quality = ev->quality,
 					      .sn = rt->last_sn});
+			emit_frame_record(rt, ev->frame_type, ARDOP_TLM_DIR_RX,
+					  (int16_t)ev->quality, rt->last_sn);
 			/* Snapshot the symbols before the next frame overwrites
 			 * phases[]/mags[]. */
 			emit_constellation(rt, ev->frame_type);
-		} else if (ev->kind == ARDOP_EV_FRAME_BAD)
+		} else if (ev->kind == ARDOP_EV_FRAME_BAD) {
 			emit(rt, &(ardop_obs){.kind = ARDOP_OBS_RX_FRAME_BAD,
 					      .frame_type = ev->frame_type});
+			/* The S/N is still worth carrying: a frame that failed
+			 * at a good S/N and one that failed at a bad one are
+			 * different problems. */
+			emit_frame_record(rt, ev->frame_type,
+					  ARDOP_TLM_DIR_RX_FAILED, -1,
+					  rt->last_sn);
+		}
 		else
 			continue;
 

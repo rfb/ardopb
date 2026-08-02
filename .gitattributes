@@ -24,3 +24,8 @@ manifest.json text eol=lf
 *.vcproj text eol=crlf
 *.{cmd,[cC][mM][dD]} text eol=crlf
 *.{bat,[bB][aA][tT]} text eol=crlf
+
+# The ASP end-to-end payload is compared byte for byte across platforms, so it
+# must not be line-ending converted on checkout. Without this it arrives 60 bytes
+# longer on Windows and the two hosts are no longer testing the same thing.
+test/app/asp-payload.txt -text

@@ -28,8 +28,19 @@
  * | `none` | VOX, or no keying at all |
  * | `rts:DEVICE` | Assert RTS on a serial port |
  * | `dtr:DEVICE` | Assert DTR on a serial port |
+ * | `civ:DEVICE[@ADDR]` | Icom CI-V, and every Xiegu. Address in hex; default 00 |
+ * | `kenwood:DEVICE` | `TX;` / `RX;` |
+ * | `yaesu:DEVICE` | `TX1;` / `TX0;` |
+ * | `cm108[:PATH\|VID:PID\|auto][+N]` | C-Media GPIO, pin N (default 3) |
  * | `rigctld:HOST:PORT` | `T 1` / `T 0` to a running rigctld |
- * | `cm108:...`, `gpio:N` | Recognised and refused; not implemented yet |
+ * | `gpio:N` | Recognised and refused; not implemented yet |
+ *
+ * For a rigctld host that is an IPv6 literal, bracket it: `rigctld:[::1]:4532`.
+ *
+ * **The right method is a property of the radio, and getting it wrong is
+ * silent.** A Xiegu or an Icom keys by CAT command and ignores RTS entirely; a
+ * DigiRig Mobile keys by RTS; a DigiRig Lite keys by CM108 GPIO. All three look
+ * identically connected and only one of them transmits.
  *
  * A bare device path is accepted as `rts:` for compatibility with the old
  * `--ptt /dev/ttyUSB0`. On Windows a port above COM9 **must** be written
@@ -43,7 +54,8 @@ typedef enum {
 	ARDOP_PTT_SERIAL_RTS,
 	ARDOP_PTT_SERIAL_DTR,
 	ARDOP_PTT_RIGCTLD,
-	ARDOP_PTT_CM108,      /**< Declared; not implemented (needs HID + hardware). */
+	ARDOP_PTT_CAT,        /**< The radio's own command, over its serial port. */
+	ARDOP_PTT_CM108,      /**< C-Media GPIO over raw HID. */
 	ARDOP_PTT_GPIO        /**< Declared; not implemented (needs libgpiod). */
 } ardop_ptt_method;
 
@@ -52,8 +64,13 @@ typedef enum {
 /** @brief A parsed specification, before anything is opened. */
 typedef struct {
 	ardop_ptt_method method;
-	char target[ARDOP_PTT_TARGET_MAX];   /**< Device path or hostname. */
+	char target[ARDOP_PTT_TARGET_MAX];   /**< Device path, hostname or HID path. */
 	uint16_t port;                       /**< rigctld only; 4532 by default. */
+	int cat_family;                      /**< ::ardop_cat_family, for CAT. */
+	uint8_t civ_addr;                    /**< CI-V transceiver address. */
+	unsigned baud;                       /**< CAT only; 19200 by default. */
+	unsigned gpio;                       /**< CM108 pin, 1..8; 3 by default. */
+	uint16_t hid_vid, hid_pid;           /**< CM108 `VID:PID` form; 0 for any. */
 } ardop_ptt_config;
 
 typedef struct ardop_ptt ardop_ptt;

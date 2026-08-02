@@ -53,7 +53,7 @@ Four processes and three transports, all of which the app collapses:
 
 ```
   ardopb ──8515 cmd──┐
-    │    ──8516 data─┼── ardop-tx / ardop-rx / ardop-chat   (apps/, 216 ln client)
+    │    ──8516 data─┼── ardop-cat / ardop-chat             (apps/, 216 ln client)
     │    ──8517 tlm──┴── ardop-gui                          (gui/, read-only)
     └─ ALSA (Linux only), serial-RTS PTT (Linux only)
 ```
@@ -435,3 +435,72 @@ and the only one that can invalidate Decision 1.
   correctly shows the guest as the session owner throughout.
 - A second guest connecting is refused with a message rather than hanging.
 - The app builds in CI on Linux, Windows, macOS and Android.
+
+---
+
+## Amendments made during implementation
+
+1. **Decision 4's transport defects were already fixed; the missing half was
+   visibility.** All three -- the unserved second client, the bare `write()` with
+   no `SIGPIPE` handling, the discarded short write -- had been dealt with by the
+   time workstream D started: `shell/host_tcp.c` has outbound queues, an explicit
+   refusal, and `MSG_NOSIGNAL`.
+
+   What had not been done is the part Decision 4 spends most of its words on. A
+   guest's configuration commands are applied rather than refused, and the
+   decision promises that "the UI shows the value changed and which client
+   changed it" -- but guest commands went straight to `ardop_host_command` and the
+   transport announced itself through six `fprintf(stderr)` calls. Correct for a
+   daemon whose operator is reading a terminal; useless inside a window, where the
+   events that most need seeing went to a stream nobody was watching.
+
+   `shell/host_tcp.c` now has an observer, and `ardop_net_accept` returns the peer
+   address, because a screen listing attached clients has to say *which* machine
+   is holding the transmitter.
+
+2. **Following a guest's changes turned out to be the other half of the promise.**
+   Recording that Pat set `MYCALL` in an activity log, while the Station screen
+   goes on displaying the previous callsign, keeps the letter of Decision 4 and
+   not its point: a settings screen showing a value that is not the modem's is
+   worse than one showing nothing. The Station screen now follows the canonical
+   `KEY now VALUE` replies.
+
+   **Displayed, not saved.** The running modem takes the guest's value; the
+   settings file keeps the operator's, so a restart returns to what the operator
+   chose. A guest borrows this station, it does not reconfigure it permanently.
+   That distinction is not in Decision 4 and probably should have been.
+
+3. **Two documented host commands were missing, and one of them was the first
+   thing a client says.** `docs/Host_Interface_Commands.md` calls `INITIALIZE`
+   "the first command that needs to be issued to the modem" and opens all three
+   of its example handshakes with it; `ardopb` answered `FAULT CMD INITIALIZE not
+   recoginized`. Now accepted as the no-op it is -- the runtime is initialised
+   long before any socket exists.
+
+   `BUSYDET` was reachable from this application's own settings and not from a
+   guest's, because `app/spine.c` carried a private direct write with a note
+   saying to delete it if the command ever reached `shell/host.c`. It has, and
+   that note has been acted on: one validator, one path, and a client can set it
+   as ARIM expects.
+
+4. **`ARQTIMEOUT` is still refused, deliberately.** It is documented, it appears
+   in the reference handshake, and `core/link` has **no idle-disconnect
+   mechanism at all** -- so accepting it would mean storing a number that changes
+   nothing, and a station that reports `ARQTIMEOUT now 30` while never timing out
+   is worse than one that admits it does not know the command.
+
+   Implementing it honestly means an idle timer, and the right place is
+   `shell/runtime.c` rather than `core/` -- the runtime already drives the link
+   and knows the elapsed sample count, so no protocol code has to change. That is
+   its own piece of work and is **not** part of D.
+
+5. **The application hosts the TNC on the modem thread, with no request ring.**
+   `app/devices.c` needs one because a device rebuild is slow and has states to
+   sequence. Opening a listener is neither, so one atomic carries the whole
+   intent and the modem thread acts on it -- which keeps `app_set_tnc` on the
+   thread its header says owns it.
+
+   **It does not listen until asked.** The listener binds `INADDR_ANY`, so
+   turning it on makes the station reachable from the whole network; that is a
+   decision an operator makes on purpose. `ardopb` sets the same precedent by
+   requiring an explicit `--host PORT`.

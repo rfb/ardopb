@@ -35,6 +35,12 @@ make                 # builds ardopb + the host-client apps
 ./ardopb N0CALL --audio --host 8515
 ```
 
+**Looking for the application rather than the modem?** `ardop-station` is one
+window with the modem inside it — it finds your radio, sets the station up, and
+does chat and file transfer over the link. See
+**[`app/ui/README.md`](app/ui/README.md)** for screenshots, and for the checklist
+we would like testers to work through.
+
 ## Why this fork exists
 
 `ardopcf` is a working, actively maintained modem, but it descends from a
@@ -65,10 +71,10 @@ device, reads no clock of its own, binds no socket, and never blocks. All state
 lives in caller-owned structs. Dependencies point one way.
 
 ```
-  apps/     ardop-tx  ardop-rx  ardop-chat        TCP host-protocol clients
-    |  (host protocol over TCP)
-  shell/    runtime . driver loop . host iface     the impure program: audio,
-    |        . miniaudio / null backends            sockets, the wall clock
+  apps/     ardop-cat  ardop-chat                 TCP host-protocol clients
+    |  (host protocol over TCP)                   app/   the station app's spine
+  shell/    runtime . driver loop . host iface      |    -- embeds the modem
+    |        . miniaudio / null backends           /        instead of dialling it
   core/     codec -> modem -> link                  pure: no I/O, no clock,
              (frames/RS/CRC) (mod/demod) (ARQ/FEC)   no allocation, no globals
 ```
@@ -93,8 +99,10 @@ core is held to.
 | Path | What |
 |---|---|
 | [`core/`](core/) | The pure modem + protocol library: `codec` (frame table, Reed–Solomon, CRC, callsign/grid coding), `modem` (modulator, demodulator, sync, busy detector, FFT), `link` (the ARQ/FEC state machine). No I/O, no globals. |
-| [`shell/`](shell/) | The impure program around the core: the sans-I/O `runtime`, the single-clocked driver `loop`, the TCP host interface, the portable socket/system layer (`net`, `sys`), and the platform backends (miniaudio, plus a device-free `null`). |
+| [`shell/`](shell/) | The impure program around the core: the sans-I/O `runtime`, the single-clocked driver `loop`, the TCP host interface, the portable socket/system layer (`net`, `sys`), settings, and the platform layer — miniaudio, keying, device enumeration. See [`shell/README.md`](shell/README.md). |
 | [`apps/`](apps/) | Host-client CLI tools — see [`apps/README.md`](apps/README.md). |
+| [`app/`](app/) | The station application's embedding spine: the modem embedded rather than talked to, with backpressure and a TNC-ownership rule. [`analysis/14`](analysis/14-station-application.md); see [`app/README.md`](app/README.md). |
+| [`app/ui/`](app/ui/) | **`ardop-station` — the windowed application**: devices, station setup, chat, file transfer, session history, guests and a TNC console, with the modem compiled in. Screenshots and a tester's checklist in [`app/ui/README.md`](app/ui/README.md). |
 | [`test/`](test/) | In-process tests (`test/core`) and the frozen golden-vector corpus (`test/golden`). |
 | [`tools/`](tools/) | `loopback.sh` — a virtual-audio-cable harness for running two stations against each other with no radio; `package-windows.sh` and `package-linux.sh` — assemble the release downloads. |
 | [`third_party/`](third_party/) | Vendored dependencies, pinned by version and checksum. Currently miniaudio. |
@@ -118,6 +126,39 @@ ardopb MYCALL [--listen] [--host PORT] [--telemetry [PORT]]
        [--null [SECONDS] | --audio [CAPTURE PLAYBACK]]
        [--audio-backend NAME] [--ptt SPEC] [--list-devices]
 ```
+
+### Keying
+
+| Spec | Method |
+|---|---|
+| `none`, `vox` | Nothing. Always available. |
+| `rts:DEV`, `dtr:DEV` | Assert a serial control line. |
+| `civ:DEV[@ADDR]` | Icom CI-V, **and every Xiegu**, which emulates it. |
+| `kenwood:DEV`, `yaesu:DEV` | The radio's own CAT command. |
+| `cm108[:PATH\|auto][+N]` | C-Media GPIO over raw HID (DigiRig Lite and similar). |
+| `rigctld:HOST:PORT` | To a running rigctld. |
+
+The right method is a property of the radio, and picking the wrong one fails
+silently: a Xiegu or an Icom keys by CAT command and ignores RTS entirely, while
+a DigiRig Mobile keys by RTS and a DigiRig Lite by CM108 GPIO. All three look
+identically connected and only one of them transmits.
+
+`app/ardop-spine --detect` works it out for you where it can, by pairing a sound
+card with the keying interface on the same USB hardware. It prints what it found
+and applies nothing — confirm it keys before trusting it.
+
+**The keying paths have never been run against real hardware.** If you own a
+radio and can help, [`analysis/19`](analysis/19-field-testing.md) says exactly
+what to try and what to send back.
+
+CM108 on Linux needs a udev rule; the diagnostic prints it, and it is also in
+[`shell/README.md`](shell/README.md).
+
+### Settings
+
+`$XDG_CONFIG_HOME/ardop/station.conf` (or `$HOME/.config/ardop/...`), and
+`%APPDATA%\ardop\station.conf` on Windows. Plain `key=value`, safe to edit by
+hand, and unknown keys are preserved.
 
 `--audio` is the sound card, on every platform: one backend (miniaudio) over
 WASAPI, CoreAudio, AAudio, ALSA, PulseAudio and JACK. `--list-devices` prints
@@ -153,15 +194,16 @@ needed:
 
 | download | what it is |
 | --- | --- |
-| **[ardopb-windows-x86_64.zip](../../releases/download/continuous/ardopb-windows-x86_64.zip)** | the modem and the host-client apps, for Windows |
-| **[ardopb-linux-x86_64.tar.gz](../../releases/download/continuous/ardopb-linux-x86_64.tar.gz)** | the same, for a Linux PC |
+| **[ardop-station-windows-x86_64.zip](../../releases/download/continuous/ardop-station-windows-x86_64.zip)** | the windowed application and the remote panel, for Windows |
+| **[ardopb-windows-x86_64.zip](../../releases/download/continuous/ardopb-windows-x86_64.zip)** | the command-line station program, the modem and the apps |
+| **[ardopb-linux-x86_64.tar.gz](../../releases/download/continuous/ardopb-linux-x86_64.tar.gz)** | the same command-line set, for a Linux PC |
 | **[ardopb-linux-aarch64.tar.gz](../../releases/download/continuous/ardopb-linux-aarch64.tar.gz)** | the same, for a 64-bit Raspberry Pi |
-| **[ardop-gui-windows-x86_64.zip](../../releases/download/continuous/ardop-gui-windows-x86_64.zip)** | the instrument panel, and its Qt libraries |
 
-The modem download is under 300 KB; the panel is a separate one because Qt and
-ICU are two orders of magnitude larger than the modem, and you do not need the
-panel to run a link. On Linux, build the panel from source (see
-[`gui/`](gui/)) — distro Qt is one `apt` line.
+The command-line download is around 600 KB; the windowed one is a separate
+download because Qt and ICU are two orders of magnitude larger than the modem,
+and you do not need a window to run a link — `ardop-spine` does the same
+setting-up from a command line. On Linux, build the window from source (see
+[`app/ui/`](app/ui/)) — distro Qt is one `apt` line.
 
 The Linux tarballs need glibc 2.34 or newer — Debian 12, Ubuntu 22.04 and
 later, Raspberry Pi OS bookworm. Nothing in them links an audio library:
@@ -169,13 +211,20 @@ ALSA, PulseAudio and JACK are opened at run time if present.
 
 ### Windows
 
-`ardopb.exe` and the apps are statically linked single files; `ardop-gui.exe`
-ships with its Qt DLLs beside it. Start with `ardopb.exe --list-devices`, then
+`ardopb.exe` is a statically linked single file; `ardop-station.exe` ships with
+its Qt DLLs beside it. Start with `ardopb.exe --list-devices`, then
 
 ```
 ardopb.exe MYCALL --audio --ptt rts:COM3 --host 8515 --telemetry
-ardop-gui.exe --host 127.0.0.1:8517
+ardop-station.exe --remote 127.0.0.1:8515
 ```
+
+`ardop-station.exe` on its own runs the modem itself, with screens for the
+devices, the station, chat, files, guests and a TNC console — see
+**[`app/ui/README.md`](app/ui/README.md)**, which has screenshots and a
+validation checklist for testers. With `--remote` it runs no modem and only
+watches one: read-only, because a telemetry stream is one-way and a display
+cannot key a transmitter.
 
 COM ports above COM9 work as written — the `\\.\` prefix is applied for you.
 
@@ -189,10 +238,26 @@ of source both platforms share and are run once on the Linux CI job.
 The **apps** are thin clients that connect to a running modem's host port:
 
 ```
-cat file | ardop-tx --host 127.0.0.1:8515 N0DEST     # reliable pipe over ARQ
-ardop-rx --host 127.0.0.1:8515 > file                 # the receiving end
-ardop-chat --host 127.0.0.1:8515 --call N0DEST        # basic two-way chat
+ardop-cat --host 127.0.0.1:8515 N0DEST < file        # a raw pipe over ARQ
+ardop-cat --host 127.0.0.1:8515 --listen > file      # the receiving end
+ardop-chat --host 127.0.0.1:8515 --call N0DEST       # basic two-way chat
 ```
+
+`ardop-cat` is a pipe and nothing more — no filename, no length, no checksum,
+netcat's guarantee. For a transfer with a name and a checksum on it, both ends
+run `ardop-station`, which speaks a real protocol
+([ASP](analysis/17-application-protocol.md)). The two do not mix, and `ardop-cat`
+says so rather than writing framing into your file:
+
+| the other end is | `ardop-cat` | `ardop-chat` | `ardop-station` |
+|---|---|---|---|
+| **`ardop-cat`** | a pipe | — | refuses: it is not chat |
+| **`ardop-chat`** | — | chat | chat, in both directions |
+| **`ardop-station`** | refuses, and says which to use | chat | files, chat, resume, checksums |
+
+Chat works across all of it because ASP degrades to plain UTF-8 with a station
+that does not answer its greeting, which is deliberate — most stations on the air
+are not running this program.
 
 ## Testing without a radio
 
@@ -202,7 +267,7 @@ null sinks) so two `ardopb` instances can talk over real audio on one machine:
 ```
 tools/loopback.sh check     # confirm the virtual cable carries audio
 tools/loopback.sh demo      # run a full ARQ connect + data exchange
-tools/loopback.sh pipe      # transfer a file with ardop-tx/ardop-rx, verify it
+tools/loopback.sh pipe      # transfer a file with ardop-cat, verify it
 ```
 
 ## Verification and guarantees

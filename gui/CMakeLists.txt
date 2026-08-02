@@ -30,6 +30,10 @@ add_executable(ardop-gui
 	main.cpp
 	mainwindow.cpp
 	telemetryclient.cpp
+
+	# Listed so AUTOMOC generates its meta-object: it declares the panel's
+	# five signals but has no .cpp of its own.
+	panelsource.h
 	waterfallwidget.cpp
 	constellationwidget.cpp
 	gaugewidget.cpp

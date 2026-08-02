@@ -44,7 +44,7 @@ jobs:
           sudo apt-get install -y libcmocka-dev qt6-base-dev \
             cmake ninja-build
 
-      - name: Build (ardopb + apps)
+      - name: Build (ardopb, apps, spine)
         run: make
 
       - name: Core guarantees
@@ -59,13 +59,93 @@ jobs:
       - name: Ring ordering under ThreadSanitizer
         run: make test-ring-tsan
 
+      # analysis/14 Decision 2 -- "nothing outside the modem thread touches the
+      # runtime, for any reason, ever" -- is a claim about what does not happen,
+      # which no single-threaded test can support. This runs a whole ARQ session
+      # on one thread while another drives the seam, with core/ and shell/
+      # compiled from source under the sanitizer so their silence means
+      # something. It also builds app/ at -O1, which catches a class of warning
+      # the unoptimised default build structurally cannot.
+      - name: Spine threading under ThreadSanitizer
+        run: make test-app-tsan
+
+      # The spine, driven headless through a scripted command queue: connect,
+      # transfer under backpressure, verify every byte, disconnect. This is
+      # analysis/14's exit criterion for workstream A, and it needs no radio.
+      - name: Station spine, end to end
+        run: |
+          make app
+          ./app/ardop-spine --loopback --telemetry \
+            --script test/app/session.script
+
+      # The application protocol over the real link: offered, accepted,
+      # transferred, checksummed and renamed, through a genuine modulator,
+      # demodulator, retry and turnover. test_asp.c proves the protocol against
+      # a byte queue that never loses anything; this proves the stack under it,
+      # and the two defects it found were both in that stack.
+      - name: Application protocol over ARQ, end to end
+        run: |
+          rm -rf /tmp/asp-a /tmp/asp-b
+          mkdir -p /tmp/asp-a /tmp/asp-b
+          ./app/ardop-spine --loopback --asp /tmp/asp-a /tmp/asp-b \
+            --script test/app/asp.script
+          cmp test/app/asp-payload.txt /tmp/asp-b/asp-payload.txt
+
+      # The device manager against a real backend. miniaudio's synthetic device
+      # runs a real device thread, so this exercises the open, the platform
+      # bind, the block the backend asked for and the credit -- on a runner with
+      # no sound card. test_devices drives the manager as a library; this proves
+      # the program built around it starts.
+      - name: Device manager, end to end
+        run: ./app/ardop-spine --audio-null-device --script test/app/devices.script
+
+      # The two entry points an operator types first. Neither can assert much on
+      # a runner with no audio hardware -- --detect exits 1 when it finds no
+      # radio, which is correct there -- but "it ran, printed something and came
+      # back" is exactly the class of regression that otherwise reaches a user
+      # before it reaches us. The timeout is the real assertion: these must not
+      # hang, and --detect walks a device tree.
+      - name: Operator entry points
+        run: |
+          # Both of these exit 1 when they find nothing, which is correct on a
+          # runner with no audio hardware. The status has to be captured by a
+          # *tested* command: this shell runs with -e, so a bare `cmd; rc=$?`
+          # aborts on the failure before the assignment is ever reached.
+          rc=0; timeout 30 ./app/ardop-spine --list-devices > devices.txt || rc=$?
+          test "$rc" -le 1 || { echo "--list-devices exited $rc"; exit 1; }
+          rc=0; timeout 30 ./app/ardop-spine --detect > detect.txt || rc=$?
+          test "$rc" -le 1 || { echo "--detect exited $rc"; exit 1; }
+          test -s devices.txt || { echo "--list-devices printed nothing"; exit 1; }
+          test -s detect.txt || { echo "--detect printed nothing"; exit 1; }
+          cat devices.txt detect.txt
+
       - name: Golden-corpus conformance
         run: make golden-core golden-shell golden-tx
 
-      - name: Build the GUI
+      # The same corpus through interpolate-then-decimate, at the ratios a real
+      # sound card gives. The -alias variant adds an out-of-band interferer that
+      # naive decimation folds into the middle of the passband, so a decimator
+      # with no anti-alias filter passes the first and fails the second.
+      - name: Resampler against the corpus
+        run: make golden-resample golden-resample-alias
+
+      # Not packaged on Linux -- Qt is already in every distribution and far
+      # larger than the modem, so it is built from source here (see
+      # README-LINUX.txt). Built in CI regardless, because a UI that does not
+      # compile is a UI nobody finds out about until they try.
+      - name: Build the windowed application
         run: |
+          make lib
+          cmake -S app/ui -B app/ui/build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build app/ui/build
           cmake -S gui -B gui/build -G Ninja -DCMAKE_BUILD_TYPE=Release
           cmake --build gui/build
+
+          # The waterfall must blit one image row per device pixel. It is
+          # checked here because it cannot be checked by looking: the failure
+          # is invisible at 100% scaling and shows only at the 125% and 150%
+          # that most Windows machines run at. Offscreen, so no display.
+          cmake --build app/ui/build --target check-widgets
 
   # The Linux tarballs, built where they must be built rather than where the
   # tests happen to run.
@@ -106,7 +186,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential libcmocka-dev
 
-      - name: Build (ardopb + apps)
+      # `make` builds app/ too, which is not shipped in the tarball -- the
+      # packaging script names its four binaries explicitly. It is built here
+      # anyway because aarch64 is the only place the spine's size_t arithmetic
+      # gets compiled for a different word layout than the developer's machine.
+      - name: Build (ardopb, apps, spine)
         run: make
 
       - name: Unit and integration tests
@@ -118,11 +202,26 @@ jobs:
       - name: Package
         run: tools/package-linux.sh dist
 
+      # The *directory*, not the tarball. GitHub zips whatever it is given, so
+      # uploading an archive produces a zip containing an archive and two
+      # unpackings to get at a binary. Uploading the folder makes GitHub's own
+      # zip the archive.
       - uses: actions/upload-artifact@v4
         with:
           name: ardopb-linux-${{ matrix.arch }}
+          path: dist/ardopb-linux-${{ matrix.arch }}/
+          retention-days: 30
+
+      # The tarball as well, but only when something will actually publish it.
+      # It has to survive as a tarball because a GitHub artifact zip does not
+      # carry the executable bit, and a release whose binaries are not
+      # executable is a release nobody can run.
+      - uses: actions/upload-artifact@v4
+        if: github.event_name == 'push'
+        with:
+          name: release-ardopb-linux-${{ matrix.arch }}
           path: ardopb-linux-${{ matrix.arch }}.tar.gz
-          retention-days: 14
+          retention-days: 30
 
   windows:
     runs-on: windows-latest
@@ -143,6 +242,7 @@ jobs:
             make
             zip
             git
+            diffutils
             mingw-w64-x86_64-gcc
             mingw-w64-x86_64-cmocka
             mingw-w64-x86_64-python
@@ -151,11 +251,29 @@ jobs:
             mingw-w64-x86_64-qt6-base
             mingw-w64-x86_64-qt6-tools
 
-      - name: Build (ardopb + apps)
+      - name: Build (ardopb, apps, spine)
         run: make
 
       - name: Unit and integration tests
         run: make test-core
+
+      # Running the spine on Windows, not merely compiling it. The whole reason
+      # this job exists is that portability is a claim about behaviour, and the
+      # loopback session is the one test that drives a complete ARQ exchange --
+      # connect, transfer under backpressure, verify every byte, disconnect --
+      # with no radio. A build that compiles and cannot complete a session is
+      # exactly the failure a compile-only job cannot see.
+      - name: Station spine, end to end
+        run: |
+          make app
+          ./app/ardop-spine --loopback --telemetry \
+            --script test/app/session.script
+          rm -rf /tmp/asp-a /tmp/asp-b
+          mkdir -p /tmp/asp-a /tmp/asp-b
+          ./app/ardop-spine --loopback --asp /tmp/asp-a /tmp/asp-b \
+            --script test/app/asp.script
+          cmp test/app/asp-payload.txt /tmp/asp-b/asp-payload.txt
+          ./app/ardop-spine --audio-null-device --script test/app/devices.script
 
       # Worth stating plainly: golden-tx passing here means the modulator emits
       # byte-identical on-air audio compiled by a different toolchain on a
@@ -165,10 +283,26 @@ jobs:
       - name: Golden-corpus conformance
         run: make golden-core golden-shell golden-tx
 
-      - name: Build the GUI
+      # Both Qt programs. The station application is the product; the panel is
+      # the standalone remote viewer, and they ship together because they need
+      # the same 30 MB of Qt DLLs.
+      #
+      # qt6-base is enough for both -- Widgets and Network, no declarative
+      # module -- which is one of the things that made Widgets the cheaper
+      # choice for a two-platform port.
+      - name: Build the windowed application
         run: |
+          make lib
+          cmake -S app/ui -B app/ui/build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build app/ui/build
           cmake -S gui -B gui/build -G Ninja -DCMAKE_BUILD_TYPE=Release
           cmake --build gui/build
+
+          # The waterfall must blit one image row per device pixel. It is
+          # checked here because it cannot be checked by looking: the failure
+          # is invisible at 100% scaling and shows only at the 125% and 150%
+          # that most Windows machines run at. Offscreen, so no display.
+          cmake --build app/ui/build --target check-widgets
 
       - name: Package
         run: tools/package-windows.sh dist
@@ -178,17 +312,29 @@ jobs:
       # rest of the chain and is about a hundred times that. Shipping them
       # together made every headless operator download Qt to get a 600 KB
       # modem. See tools/package-windows.sh.
+      # Directories, so a download is one zip rather than a zip inside a zip.
       - uses: actions/upload-artifact@v4
         with:
           name: ardopb-windows-x86_64
-          path: ardopb-windows-x86_64.zip
-          retention-days: 14
+          path: dist/ardopb-windows-x86_64/
+          retention-days: 30
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ardop-gui-windows-x86_64
-          path: ardop-gui-windows-x86_64.zip
-          retention-days: 14
+          name: ardop-station-windows-x86_64
+          path: dist/ardop-station-windows-x86_64/
+          retention-days: 30
+
+      # The zips as well, for the release jobs to attach. Only on a push, since
+      # nothing publishes from a pull request.
+      - uses: actions/upload-artifact@v4
+        if: github.event_name == 'push'
+        with:
+          name: release-windows
+          path: |
+            ardopb-windows-x86_64.zip
+            ardop-station-windows-x86_64.zip
+          retention-days: 30
 
   # A rolling build of main, so an operator can get a current binary from a
   # stable URL without a GitHub account:
@@ -210,6 +356,7 @@ jobs:
       # platform above needs no change here.
       - uses: actions/download-artifact@v4
         with:
+          pattern: release-*
           path: release
           merge-multiple: true
 
@@ -237,14 +384,21 @@ jobs:
 
             | download | what it is |
             | --- | --- |
-            | `ardopb-windows-x86_64.zip` | the modem and the host-client apps |
+            | `ardopb-windows-x86_64.zip` | the station program, the modem and the host-client apps |
             | `ardopb-linux-x86_64.tar.gz` | the same, for a Linux PC |
             | `ardopb-linux-aarch64.tar.gz` | the same, for a 64-bit Raspberry Pi |
-            | `ardop-gui-windows-x86_64.zip` | the instrument panel, and its Qt libraries |
+            | `ardop-station-windows-x86_64.zip` | the windowed application and the remote panel, with their Qt libraries |
 
-            You do not need the panel to run a link. The Linux tarballs need
-            glibc 2.34 or newer (Debian 12, Ubuntu 22.04+, Raspberry Pi OS
-            bookworm); the Linux GUI is built from source, see `gui/`.
+            Start with `ardop-spine --detect`, which tries to work out which
+            serial port belongs to your radio. **The keying paths have never
+            been run against real hardware** -- `FIELD-TESTING.md` inside the
+            download says what to try, in order of risk, and what to send back.
+
+            You do not need the windowed application to run a link -- the
+            command-line `ardop-spine` in the first download does the same
+            setting-up. The Linux tarballs need glibc 2.34 or newer (Debian 12,
+            Ubuntu 22.04+, Raspberry Pi OS bookworm); on Linux the windowed
+            application is built from source, see `app/ui/`.
 
             See the `README-WINDOWS.txt` or `README-LINUX.txt` inside the
             download to get started.
@@ -261,6 +415,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
+          pattern: release-*
           path: release
           merge-multiple: true
 

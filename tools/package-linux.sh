@@ -5,7 +5,8 @@
 #   make
 #   tools/package-linux.sh dist
 #
-# Produces ardopb-linux-$(uname -m).tar.gz -- so ardopb-linux-x86_64.tar.gz on a
+# Produces ardopb-linux-$(uname -m).tar.gz -- the station program, the modem and
+# the host-client apps -- so ardopb-linux-x86_64.tar.gz on a
 # PC and ardopb-linux-aarch64.tar.gz on a 64-bit Raspberry Pi.
 #
 # Two things make a portable Linux build of this modem unusually easy, and both
@@ -43,12 +44,27 @@ rm -rf "$OUT/$NAME" "$NAME.tar.gz"
 mkdir -p "$OUT/$NAME"
 
 cp ardopb "$OUT/$NAME/"
-cp apps/ardop-tx apps/ardop-rx apps/ardop-chat "$OUT/$NAME/"
+cp apps/ardop-cat apps/ardop-chat "$OUT/$NAME/"
+
+# ardop-spine ships too, and it is the reason a first-time operator downloads
+# this at all: it is the only binary that can find a radio (--detect), and the
+# only one that keeps a device selection across restarts. It is still labelled a
+# harness rather than the application, because the graphical program will be a
+# different binary -- but the device and keying work it carries is what somebody
+# setting a station up for the first time needs.
+cp app/ardop-spine "$OUT/$NAME/"
 
 # Stripped here rather than by dropping -g from CFLAGS, so a developer who
 # builds locally keeps a debuggable binary.
-strip "$OUT/$NAME"/ardopb "$OUT/$NAME"/ardop-tx "$OUT/$NAME"/ardop-rx \
-	"$OUT/$NAME"/ardop-chat
+strip "$OUT/$NAME"/ardopb "$OUT/$NAME"/ardop-cat \
+	"$OUT/$NAME"/ardop-chat "$OUT/$NAME"/ardop-spine
+
+# The field-test scripts and the guide that walks through them. Shipped together
+# because the guide names the scripts by path and a download that has one without
+# the other is a download somebody has to go and complete themselves.
+mkdir -p "$OUT/$NAME/scripts"
+cp test/app/*.script "$OUT/$NAME/scripts/" 2>/dev/null || true
+cp analysis/19-field-testing.md "$OUT/$NAME/FIELD-TESTING.md" 2>/dev/null || true
 
 # A build with no identity is a bug report nobody can act on.
 git describe --tags --always --dirty 2>/dev/null > "$OUT/$NAME/VERSION" \
@@ -72,10 +88,10 @@ cat > "$OUT/$NAME/README-LINUX.txt" <<'EOF'
 ardopb for Linux
 ================
 
+  ardop-spine   the station program: finds your radio, remembers the choice
   ardopb        the modem
   ardop-chat    keyboard-to-keyboard chat over a link
-  ardop-tx      pipe a file or stream into a link
-  ardop-rx      receive a stream to stdout
+  ardop-cat     a raw byte pipe over a link, in either direction
 
 Nothing here needs installing. Copy the files anywhere on your PATH, or run
 them from this folder.
@@ -96,22 +112,58 @@ source when you want it:
 Quick start
 -----------
 
-1. See what sound devices you have:
+1. Ask it to find your radio:
 
-       ./ardopb --list-devices
+       ./ardop-spine --detect
 
-2. Run the modem. Use the id or the name printed above; with no device
-   arguments it takes the system defaults:
+   In the common case a radio is one USB cable carrying both audio and
+   keying, so this can work out which serial port belongs to which sound
+   card and suggest a keying method. It prints what it found and applies
+   nothing.
 
-       ./ardopb MYCALL --audio --ptt rts:/dev/ttyUSB0 --host 8515 --telemetry
+2. See every sound device, whether or not it was paired:
+
+       ./ardop-spine --list-devices
+
+3. Run the modem:
+
+       ./ardopb MYCALL --audio --ptt civ:/dev/ttyUSB0@a4 --host 8515 --telemetry
 
    PTT can be:  none                 VOX, or no keying
                 rts:/dev/ttyUSB0     assert RTS on a serial port
                 dtr:/dev/ttyUSB0     assert DTR instead
+                civ:/dev/ttyUSB0@a4  Icom CI-V, and every Xiegu
+                kenwood:/dev/ttyUSB0 a Kenwood's own CAT command
+                yaesu:/dev/ttyUSB0   a Yaesu's own CAT command
+                cm108:auto           a C-Media GPIO dongle
                 rigctld:HOST:PORT    key through a running rigctld
 
-   GPIO and CM108 keying are not implemented yet. On a Pi with a GPIO PTT
-   circuit, run rigctld and key through that for now.
+   The right one is a property of the radio, and picking wrong fails
+   SILENTLY. A Xiegu or an Icom keys by CAT command and ignores RTS
+   entirely; a DigiRig Mobile keys by RTS; a DigiRig Lite keys by CM108
+   GPIO. All three look identically connected and only one transmits.
+
+   GPIO keying (a Pi header) is still not implemented; run rigctld and key
+   through that.
+
+   CM108 on Linux needs a udev rule. If keying fails with a permission
+   error the program prints the rule to install.
+
+Please read FIELD-TESTING.md first
+----------------------------------
+
+The keying paths in this build have never been run against a real radio.
+They are unit-tested down to the byte, and that is not the same thing.
+
+FIELD-TESTING.md walks through it in order of risk -- what the computer
+sees, whether audio works, whether it keys into a DUMMY LOAD, and only then
+anything on the air -- and says what to send back. If you have a radio and
+ten minutes, that document is the most useful thing you can do for this
+project.
+
+Use a dummy load for the keying steps. Ctrl-C always unkeys; if you ever
+see a transmitter stay keyed after the program exits, please report that
+ahead of anything else.
 
 3. If the serial port is refused, your user is not in the group that owns it:
 

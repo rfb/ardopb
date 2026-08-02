@@ -156,6 +156,55 @@ static void test_tlm_audio_and_status_roundtrip(void **state)
 	assert_int_equal(out.rec.buffer_len, 70000);
 }
 
+/*
+ * The frame record, whose interesting field is the timestamp.
+ *
+ * `frame_at` is elapsed samples in a uint64, and it is encoded as two 32-bit
+ * halves -- so the case worth asserting is a value that does not fit in one.
+ * At 12 kHz, 2^32 samples is around four days: reachable by a station left
+ * running, and a history whose ordering silently inverted after four days would
+ * be a memorable bug.
+ */
+static void test_tlm_frame_roundtrip(void **state)
+{
+	(void)state;
+	uint8_t buf[ARDOP_TLM_MAX_RECORD];
+	ardop_tlm_decoded out;
+	size_t consumed;
+
+	const uint64_t deep = ((uint64_t)5 << 32) | 0x1234abcdu;
+	ardop_telemetry fr = {.kind = ARDOP_TLM_FRAME,
+			      .frame_at = deep,
+			      .frame_type = 0xa1,
+			      .frame_dir = ARDOP_TLM_DIR_RX,
+			      .quality = 92,
+			      .sn = -7};
+	size_t n = ardop_tlm_encode(&fr, buf, sizeof(buf));
+	assert_true(n > 0);
+	assert_true(ardop_tlm_parse(buf, n, &out, &consumed));
+	assert_int_equal(out.rec.kind, ARDOP_TLM_FRAME);
+	assert_true(out.rec.frame_at == deep);
+	assert_int_equal(out.rec.frame_type, 0xa1);
+	assert_int_equal(out.rec.frame_dir, ARDOP_TLM_DIR_RX);
+	assert_int_equal(out.rec.quality, 92);
+	assert_int_equal(out.rec.sn, -7);
+
+	/* A transmitted frame has no receive figures, and -1 must survive as
+	 * -1 rather than wrapping. */
+	ardop_telemetry tx = {.kind = ARDOP_TLM_FRAME,
+			      .frame_at = 0,
+			      .frame_type = 0x31,
+			      .frame_dir = ARDOP_TLM_DIR_TX,
+			      .quality = -1,
+			      .sn = -1};
+	n = ardop_tlm_encode(&tx, buf, sizeof(buf));
+	assert_true(ardop_tlm_parse(buf, n, &out, &consumed));
+	assert_int_equal(out.rec.frame_dir, ARDOP_TLM_DIR_TX);
+	assert_int_equal(out.rec.quality, -1);
+	assert_int_equal(out.rec.sn, -1);
+	assert_true(out.rec.frame_at == 0);
+}
+
 /* A stream of back-to-back records parses one at a time, and an unknown kind
  * reports its length so a reader can skip it -- the property that lets a newer
  * daemon add records without breaking an older display. */
@@ -237,6 +286,7 @@ int main(void)
 		cmocka_unit_test(test_tlm_spectrum_roundtrip),
 		cmocka_unit_test(test_tlm_constellation_roundtrip),
 		cmocka_unit_test(test_tlm_audio_and_status_roundtrip),
+		cmocka_unit_test(test_tlm_frame_roundtrip),
 		cmocka_unit_test(test_tlm_stream_and_forward_compat),
 		cmocka_unit_test(test_tlm_encode_refuses_short_buffer),
 	};

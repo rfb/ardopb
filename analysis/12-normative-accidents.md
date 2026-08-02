@@ -198,6 +198,37 @@ that exists only for drawing the OLED constellation.
 
 ---
 
+## Not the modem: the CM108 keying report
+
+An accident of the same shape, in the platform layer rather than the waveform,
+recorded here because the reasoning is identical.
+
+`shell/ptt_cm108.c` writes a **five-byte** HID output report to key a C-Media
+GPIO pin. The chip's datasheet describes four. direwolf's `cm108.c` — the
+implementation every interface in the field has actually been tested against —
+writes five, with the comment:
+
+> *"Writing 5 bytes works. I have no idea why. From the CMedia datasheet it
+> looks like we need 4."*
+
+- **Category** — not TX-normative in the on-air sense; nothing about the waveform
+  depends on it. But it is *interop-normative with hardware*, which is the same
+  problem pointed at a device instead of a peer: the behaviour that matters is
+  what the chips in operators' hands do, not what the document says they do.
+- **How `shell/` reproduces it** — `ardop_cm108_report` emits five bytes, and
+  `test/core/test_ptt.c` pins them for every GPIO pin and both states.
+- **`improved` opportunity** — none until somebody with hardware can compare. This
+  project has no CM108 interface, so a four-byte report would be a change made on
+  the strength of a datasheet against an implementation with a decade of field
+  use. If a device is ever found that rejects five bytes, that is the evidence to
+  act on.
+
+The general rule this illustrates: when a reference implementation and its
+documentation disagree, and you cannot test, follow the implementation and write
+down that you did.
+
+---
+
 ## How to add to this catalog
 
 When a port turns up another one, add a numbered entry with: where it lives
@@ -205,3 +236,33 @@ When a port turns up another one, add a numbered entry with: where it lives
 benign), how `core/` currently reproduces it, and what `improved` mode might do
 instead. Keep the TX-normative vs RX-local distinction sharp — it decides
 whether a fix needs the far end's cooperation or not.
+
+---
+
+## A port decision that lost data: `SaveQueueOnBreak`
+
+`iss_yield_on_break()` used to clear `tx_len` when the IRS took the link, with
+the note that ardopcf's `SaveQueueOnBreak` -- the option that let the application
+restore the data -- had been dropped in the port.
+
+Dropping the *option* is fine. Dropping the *data* was not, and it contradicted
+this machine's own rule 3.4 a thousand lines further down, where the IRS
+deliberately sends its BREAK on a **still-unacked** frame *"so the ISS keeps that
+frame for after the turnover"*. The ISS cannot keep a frame it has just thrown
+away.
+
+The cost was silent: bytes the host had been told were accepted vanished with no
+NAK, no fault and no counter, and the sender saw the frame acknowledged. A file
+transfer over a link that turns over -- which is every ARQ file transfer, because
+the receiver has to acknowledge at its own level -- lost a block per turnover.
+
+**This is not a normative accident.** Nothing about it is observable on the air:
+the discarded bytes had not been transmitted, or had been transmitted and
+deliberately left unacknowledged so that they would be sent again. It is recorded
+here because it is the same *shape* as one -- a port decision, written down as
+deliberate, that turned out to change behaviour nobody intended -- and because
+"we dropped that option" is exactly the kind of note that reads as harmless twice
+and costs a day the third time.
+
+Fixed, with `test_loopback_turnover_loses_nothing` as the regression: it fails
+without the fix and passes with it.

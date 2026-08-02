@@ -56,7 +56,31 @@ struct ardop_host_tcp {
 	size_t data_buf_len;
 	uint8_t data_out[DATA_OUT_MAX];
 	size_t data_out_len;
+
+	/* Who is attached, for an interface that has to say which machine holds
+	 * the transmitter. */
+	char cmd_peer[ARDOP_NET_PEER_MAX];
+	char data_peer[ARDOP_NET_PEER_MAX];
+
+	ardop_host_observer_fn obs;
+	void *obs_ctx;
+	uint16_t port;
+	bool announced;   /* the listening event, once an observer exists */
 };
+
+/*
+ * Report, to whoever is watching.
+ *
+ * Also to stderr, because ardopb is a daemon with a terminal and its operator
+ * reads it there. The observer is additive: it does not replace the log, it
+ * gives a windowed application the same information.
+ */
+static void report(ardop_host_tcp *h, ardop_host_ev_kind kind,
+		   const char *channel, const char *detail, const char *reply)
+{
+	if (h->obs)
+		h->obs(h->obs_ctx, kind, channel, detail ? detail : "", reply);
+}
 
 /* --- outbound queues ------------------------------------------------------- */
 
@@ -89,11 +113,15 @@ static bool flush_out(ardop_socket s, uint8_t *buf, size_t *len)
 	return true;
 }
 
-static void drop(ardop_socket *client_fd, const char *what)
+static void drop(ardop_host_tcp *h, ardop_socket *client_fd, const char *what,
+		 char *peer)
 {
 	if (ardop_net_valid(*client_fd)) {
 		ardop_net_close(client_fd);
 		fprintf(stderr, "host: %s client disconnected\n", what);
+		report(h, ARDOP_HOST_EV_DISCONNECTED, what, peer, NULL);
+		if (peer)
+			peer[0] = '\0';
 	}
 }
 
@@ -106,12 +134,12 @@ static void emit_cmd(ardop_host_tcp *h, const void *src, size_t n)
 		fprintf(stderr, "host: cmd client is not reading; disconnecting "
 			"rather than losing notifications\n");
 		h->cmd_out_len = 0;
-		drop(&h->cmd_fd, "cmd");
+		drop(h, &h->cmd_fd, "cmd", h->cmd_peer);
 		return;
 	}
 	if (!flush_out(h->cmd_fd, h->cmd_out, &h->cmd_out_len)) {
 		h->cmd_out_len = 0;
-		drop(&h->cmd_fd, "cmd");
+		drop(h, &h->cmd_fd, "cmd", h->cmd_peer);
 	}
 }
 
@@ -132,6 +160,7 @@ ardop_host_tcp *ardop_host_tcp_open(uint16_t port)
 		ardop_host_tcp_close(h);
 		return NULL;
 	}
+	h->port = port;
 	fprintf(stderr, "host: listening on ports %u (cmd) and %u (data)\n",
 		(unsigned)port, (unsigned)(port + 1));
 	return h;
@@ -145,10 +174,12 @@ ardop_host_tcp *ardop_host_tcp_open(uint16_t port)
  * available behaviours; refusing it explicitly is the contract analysis/14
  * asks for.
  */
-static void accept_into(ardop_socket listen_fd, ardop_socket *client_fd,
-			const char *what, const char *refusal)
+static void accept_into(ardop_host_tcp *h, ardop_socket listen_fd,
+			ardop_socket *client_fd, const char *what,
+			const char *refusal, char *peer)
 {
-	ardop_socket fd = ardop_net_accept(listen_fd);
+	char who[ARDOP_NET_PEER_MAX];
+	ardop_socket fd = ardop_net_accept(listen_fd, who, sizeof who);
 	if (!ardop_net_valid(fd))
 		return;   /* none pending. */
 
@@ -160,10 +191,14 @@ static void accept_into(ardop_socket listen_fd, ardop_socket *client_fd,
 		}
 		ardop_net_close(&fd);
 		fprintf(stderr, "host: refused a second %s client\n", what);
+		report(h, ARDOP_HOST_EV_REFUSED, what, who, NULL);
 		return;
 	}
 	*client_fd = fd;
+	if (peer)
+		snprintf(peer, ARDOP_NET_PEER_MAX, "%s", who);
 	fprintf(stderr, "host: %s client connected\n", what);
+	report(h, ARDOP_HOST_EV_CONNECTED, what, who, NULL);
 }
 
 /* --- the command channel --------------------------------------------------- */
@@ -173,6 +208,12 @@ static void process_line(ardop_host_tcp *h, ardop_runtime *rt, uint64_t now)
 {
 	char reply[1024];
 	ardop_host_command(rt, h->line, now, reply, sizeof(reply));
+	/*
+	 * Reported whatever the reply, including none. A command that produced
+	 * no answer is still a thing a guest did to this station, and Decision 4
+	 * asks for visibility rather than protection.
+	 */
+	report(h, ARDOP_HOST_EV_COMMAND, "cmd", h->line, reply);
 	if (reply[0] != '\0') {
 		char out[1088];
 		int m = snprintf(out, sizeof(out), "%s\r", reply);
@@ -184,8 +225,8 @@ static void process_line(ardop_host_tcp *h, ardop_runtime *rt, uint64_t now)
 /* Read and process the command channel. */
 static void service_cmd(ardop_host_tcp *h, ardop_runtime *rt, uint64_t now)
 {
-	accept_into(h->cmd_listen_fd, &h->cmd_fd, "cmd",
-		    "FAULT station already has a host\r");
+	accept_into(h, h->cmd_listen_fd, &h->cmd_fd, "cmd",
+		    "FAULT station already has a host\r", h->cmd_peer);
 	if (!ardop_net_valid(h->cmd_fd))
 		return;
 
@@ -193,7 +234,7 @@ static void service_cmd(ardop_host_tcp *h, ardop_runtime *rt, uint64_t now)
 	size_t got = 0;
 	ardop_net_status st = ardop_net_recv(h->cmd_fd, buf, sizeof(buf), &got);
 	if (st == ARDOP_NET_CLOSED || st == ARDOP_NET_ERROR) {
-		drop(&h->cmd_fd, "cmd");
+		drop(h, &h->cmd_fd, "cmd", h->cmd_peer);
 		h->line_len = 0;
 		h->cmd_out_len = 0;
 		return;
@@ -216,7 +257,7 @@ static void service_cmd(ardop_host_tcp *h, ardop_runtime *rt, uint64_t now)
 	if (ardop_net_valid(h->cmd_fd)
 	    && !flush_out(h->cmd_fd, h->cmd_out, &h->cmd_out_len)) {
 		h->cmd_out_len = 0;
-		drop(&h->cmd_fd, "cmd");
+		drop(h, &h->cmd_fd, "cmd", h->cmd_peer);
 	}
 }
 
@@ -225,7 +266,12 @@ static void service_cmd(ardop_host_tcp *h, ardop_runtime *rt, uint64_t now)
 /* Read the data channel and queue each complete message as SEND_DATA. */
 static void service_data(ardop_host_tcp *h, ardop_runtime *rt, uint64_t now)
 {
-	accept_into(h->data_listen_fd, &h->data_fd, "data", NULL);
+	/* No refusal string on this channel, unlike the command one, and that is
+	 * deliberate: it carries length-prefixed binary, so an ASCII line would
+	 * be read as a frame header by the very client it was meant to inform.
+	 * Connect-then-EOF is the only signal that cannot be misparsed. */
+	accept_into(h, h->data_listen_fd, &h->data_fd, "data", NULL,
+		    h->data_peer);
 	if (!ardop_net_valid(h->data_fd))
 		return;
 
@@ -235,7 +281,7 @@ static void service_data(ardop_host_tcp *h, ardop_runtime *rt, uint64_t now)
 			h->data_fd, h->data_buf + h->data_buf_len,
 			sizeof(h->data_buf) - h->data_buf_len, &got);
 		if (st == ARDOP_NET_CLOSED || st == ARDOP_NET_ERROR) {
-			drop(&h->data_fd, "data");
+			drop(h, &h->data_fd, "data", h->data_peer);
 			h->data_buf_len = 0;
 			h->data_out_len = 0;
 			return;
@@ -262,18 +308,41 @@ static void service_data(ardop_host_tcp *h, ardop_runtime *rt, uint64_t now)
 
 	if (!flush_out(h->data_fd, h->data_out, &h->data_out_len)) {
 		h->data_out_len = 0;
-		drop(&h->data_fd, "data");
+		drop(h, &h->data_fd, "data", h->data_peer);
 	}
 }
 
 void ardop_host_tcp_service(ardop_host_tcp *h, ardop_runtime *rt, uint64_t now)
 {
+	if (h && h->obs && !h->announced) {
+		char detail[64];
+		snprintf(detail, sizeof detail, "%u (cmd), %u (data)",
+			 (unsigned)h->port, (unsigned)(h->port + 1));
+		report(h, ARDOP_HOST_EV_LISTENING, "cmd", detail, NULL);
+		h->announced = true;
+	}
+
 	/* Data before commands. A host loads the buffer on the data channel and
 	 * then acts on it from the command channel (write data, then FECSEND);
 	 * servicing commands first would run the command against the buffer as
 	 * it stood before this tick's data arrived. */
 	service_data(h, rt, now);
 	service_cmd(h, rt, now);
+}
+
+void ardop_host_tcp_observe(ardop_host_tcp *h, ardop_host_observer_fn fn,
+			    void *ctx)
+{
+	if (!h)
+		return;
+	h->obs = fn;
+	h->obs_ctx = ctx;
+	h->announced = false;   /* re-announce, so a late observer still hears it */
+}
+
+const char *ardop_host_tcp_peer(const ardop_host_tcp *h)
+{
+	return h ? h->cmd_peer : "";
 }
 
 void ardop_host_tcp_notify(ardop_host_tcp *h, const char *msg)
@@ -301,21 +370,29 @@ void ardop_host_tcp_send_data(ardop_host_tcp *h, const char *tag,
 		fprintf(stderr, "host: data client is not reading; "
 			"disconnecting rather than truncating a frame\n");
 		h->data_out_len = 0;
-		drop(&h->data_fd, "data");
+		drop(h, &h->data_fd, "data", h->data_peer);
 		return;
 	}
 	if (!flush_out(h->data_fd, h->data_out, &h->data_out_len)) {
 		h->data_out_len = 0;
-		drop(&h->data_fd, "data");
+		drop(h, &h->data_fd, "data", h->data_peer);
 	}
+}
+
+bool ardop_host_tcp_client_connected(const ardop_host_tcp *h)
+{
+	/* Either channel, not just the command one. A client that opened only the
+	 * data port can still queue SEND_DATA through service_data(), which is
+	 * precisely the interleaving this signal exists to prevent. */
+	return h && (ardop_net_valid(h->cmd_fd) || ardop_net_valid(h->data_fd));
 }
 
 void ardop_host_tcp_close(ardop_host_tcp *h)
 {
 	if (!h)
 		return;
-	drop(&h->cmd_fd, "cmd");
-	drop(&h->data_fd, "data");
+	drop(h, &h->cmd_fd, "cmd", h->cmd_peer);
+	drop(h, &h->data_fd, "data", h->data_peer);
 	ardop_net_close(&h->cmd_listen_fd);
 	ardop_net_close(&h->data_listen_fd);
 	free(h);

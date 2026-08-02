@@ -49,8 +49,9 @@ Local technical review of `ardopcf`, written to answer two questions:
 | 13 | [Completing the rebuild](13-completing-the-rebuild.md) | The full remaining scope once the core ARQ loopback works: finish the link protocol, build the platform shell, validate and cut over |
 | 14 | [The station application](14-station-application.md) | **A new program on the finished core.** The embedding seam, the modem thread, and hosting the TNC ports inside an application that also drives the modem |
 | 15 | [Platform audio and PTT](15-platform-audio-and-ptt.md) | Backends beyond ALSA, device enumeration, the push/pull bridge, resampling as a *timing* question, PTT methods, Android |
-| 16 | [The user interface](16-user-interface.md) | The toolkit evaluation and its recommendation; what survives from `gui/` and what does not; the screens and the responsive layout |
+| 16 | [The user interface](16-user-interface.md) | The toolkit evaluation and its recommendation; what survives from `gui/` and what does not; the screens and the responsive layout; proposals for a horizontal level meter and a two-resolution session history |
 | 17 | [The application protocol](17-application-protocol.md) | Chat and file transfer as a byte-level wire spec: framing, resume, and degrading to raw text against a station that does not speak it |
+| 19 | [Field testing](19-field-testing.md) | What only a radio can tell us, written to be handed to somebody who owns one: the keying and detection paths that have never met hardware, and what to report back |
 
 **Documents 14–17 are a different kind of thing from 00–13.** Those described
 `ardopcf` and planned its rebuild; the rebuild is done and `core/` is the running
@@ -58,6 +59,12 @@ program. These design a *new* application built on top of it — one installable
 program, five platforms, its own shell — and they assume the core as it now
 stands rather than proposing changes to it. [14](14-station-application.md) is
 the umbrella; 15, 16 and 17 are its three hard sub-problems.
+
+[19](19-field-testing.md) is different again: not a design but a request. Four
+implemented features have never been run against real hardware, and one -- live
+interoperability with `ardopcf` -- cannot be established here at all. It is
+written for an operator rather than a developer, and it says where each answer
+lands when it comes back.
 
 **Short on time?** Read 03 and 04 — they contain the answers to the two
 motivating questions.

@@ -1,0 +1,26 @@
+# Open a real audio backend through the device manager and confirm it runs.
+#
+#   app/ardop-spine --audio-null-device --script test/app/devices.script
+#
+# miniaudio's synthetic device gives a *real* backend with a real device thread,
+# so this exercises the whole path -- the manager's state machine, the open, the
+# platform bind, the block size the backend asked for, the credit -- on a machine
+# with no sound card. Which is every CI runner.
+#
+# It is the binary half of test_devices: that suite drives the manager as a
+# library, this proves the program built around it actually starts.
+
+@echo opening the device
+
+@wait secs=2
+@stats
+
+MYCALL N0AAA
+ARQBW 2000MAX
+LISTEN TRUE
+
+@wait secs=2
+@stats
+
+# Nothing was transmitted, nothing was received, and nothing was lost.
+@expect no-loss

@@ -326,10 +326,9 @@ framing by hand with nothing checking the two agree. ASP should not repeat that.
 
 ## Open decisions
 
-1. **Whether `apps/ardop-tx`/`ardop-rx` adopt ASP** or stay as the raw pipe. They
-   are useful precisely because they are `cat`; a `--asp` flag is probably the
-   answer, but then the framing has a second implementation and needs the
-   round-trip test that `test_telemetry.c` does for the telemetry format.
+1. ~~**Whether `apps/ardop-tx`/`ardop-rx` adopt ASP** or stay as the raw pipe.~~
+   **Answered: they stay the raw pipe, and are renamed to say so.** See
+   amendment 10.
 2. **Compression.** Deferred out of version 1 above, but a capability flag and a
    single well-defined algorithm (deflate) would help on text-heavy links.
 3. **Whether `TEXT` needs a message id on ARQ** for UI-level delivery receipts.
@@ -356,3 +355,348 @@ framing by hand with nothing checking the two agree. ASP should not repeat that.
 - The spec in this document is sufficient to write the second implementation
   without reading the first one's source. That is the actual test of whether it
   is a specification.
+
+---
+
+## Amendments made during implementation
+
+1. **The session owns no transport and no storage.** Not stated above, and it is
+   what makes §10's claim -- that this layer needs no radio, no filesystem and no
+   clock -- actually true rather than aspirational. `asp_io` is a table of nine
+   functions; the application supplies one that writes to the spine and to disk,
+   and the test supplies one that writes to arrays. A "file" in the test suite is
+   an array, the "link" is a byte queue, and time is the loop counter.
+
+   That is the difference between the interesting cases being things a test can
+   simply *do* and things somebody has to reproduce on the air. Dropping a link at
+   40% and resuming it is four lines.
+
+2. **`asp_io::send` returns a count, and the session honours it.** The obvious
+   shape is a `void` send that always succeeds. It would have looked correct
+   against any test that gave it room, and lost bytes on the air the first time
+   the 16 kB transmit queue filled -- §7 puts admission in the spine's hands, so a
+   partial send is the normal case, not an error path. `test_transfer_survives_a_
+   stingy_link` runs a whole transfer through a link that refuses four calls in
+   five.
+
+3. **`DATA` arriving with no transfer in progress is skipped, not an error.**
+   §8's table does not cover it. Treating it as a protocol error would turn a
+   harmless race -- a cancel crossing a chunk in flight -- into a dropped link.
+
+4. **A second `OFFER` while one is being received is refused, not queued.** §4
+   says additional offers queue, and they do, but *above* this layer: the session
+   holds one inbound and one outbound transfer and says no to a second. Queueing
+   inside the session would mean holding an offer whose sender may have given up.
+
+5. **The prefix-CRC check reads the sender's own file.** Worth stating because it
+   is the only place the sender re-reads what it has already sent. §5 explains why
+   it is worth it: the alternative discovers the mismatch from the whole-file CRC
+   after the entire remainder has been sent -- minutes of airtime to learn the
+   transfer was doomed at the start.
+
+6. **Open decision 6 is answered by construction.** `msg_id` scope on FEC is
+   per-callsign-string, and the callsign carried in `TEXT_B` is whatever
+   `ardop_stationid` renders -- which includes the SSID. Two stations sharing a
+   callsign with different SSIDs therefore have separate `msg_id` spaces, which is
+   the behaviour the open decision was asking for.
+
+7. **A file transferred over real ARQ arrives corrupt, and the fault is below
+   ASP.** *(This entry replaces an earlier version of amendment 7 that blamed
+   `AUTOBREAK` and the discarded transmit queue. That diagnosis was wrong and is
+   corrected below; the note is left as an amendment rather than deleted because
+   a wrong diagnosis that was acted on is worth being able to find again.)*
+
+   Driving ASP over the harness's real link -- two spines, the real modulator,
+   the real demodulator -- corrupts the file. `test_asp.c` passes, because it
+   drives the protocol over a byte queue that never loses anything, which is what
+   makes it a good test of the protocol and no test at all of the stack beneath
+   it. This is the argument for `ardop-spine --asp` existing.
+
+   ### What it is not
+
+   Ruled out by instrumentation, each with a measurement:
+
+   - **Not the transmit queue discarded on BREAK.** `iss_yield_on_break()`
+     (`core/link/link.c:667`) does throw the queue away, and its own comment says
+     `SaveQueueOnBreak` was deliberately dropped in the port -- but `tx_len` is
+     **0** at every call in this session. Nothing is lost there. This was the
+     first diagnosis and it was wrong.
+   - **Not the link's enqueue limit.** `step_host_send_data` drops bytes past
+     capacity silently; it never fires here, because the transmit credit makes it
+     unreachable and `app/spine.c` asserts the count anyway.
+   - **Not the spine's queues.** `event_lost` stays 0 and no payload is
+     truncated: `ARDOP_DEMOD_MAX_PAYLOAD` is 1024 and no delivery exceeds it.
+   - **Not ASP's framing.** Every message the sender puts on the wire is a
+     complete, correctly framed 1027 bytes, verified by capturing the sender's
+     byte stream.
+
+   ### What it is
+
+   **The IRS silently discards genuinely new data frames as duplicates.**
+   `core/link/link.c:896`:
+
+   ```c
+   if ((int)ev->frame_type != l->last_data_to_host) {
+           deliver_data(...);
+           l->last_data_to_host = ev->frame_type;
+   }
+   ```
+
+   The duplicate test is one bit -- the parity of the data frame type -- and
+   during this transfer the receiver sees the same type twice in a row carrying
+   *different* payload three times, and drops all three. Confirmed by comparing
+   each suppressed payload against the last one actually delivered, with the
+   comparison buffer held per station. (An earlier pass at this used a
+   file-scope buffer shared by both link instances and was therefore worthless;
+   worth recording, because it produced a confident-looking wrong answer.)
+
+   Three frames, 1024 + 1024 + 863 bytes, gone with no NAK, no fault and no
+   counter. The sender sees each one ACKed and drops it from its queue. ASP then
+   desynchronises at the next message header, since §4 correctly gives `DATA` no
+   offsets and there is nothing for the receiver to notice the hole with.
+
+   The sender's toggle is re-anchored by `iss_begin_sending()` at every turnover
+   (`last_data_acked = 1`, so the first frame after a turnover is always even),
+   and the receiver's `last_data_to_host` is re-armed by two different events
+   (`iss_yield_on_break` and `step_irs_to_iss_rx`). **Which of those gets out of
+   step, and when, is not yet established.**
+
+   ### Why it is not fixed here
+
+   A one-bit sequence number is part of the on-air format and cannot be widened
+   without breaking interoperability, so the fix has to be in how the two ends
+   keep their toggles in step -- which means establishing what the reference
+   implementation's rule actually is, not inventing one.
+
+   Two tempting fixes are both wrong:
+
+   - *Suppress only when the payload is byte-identical.* A retransmission is
+     byte-identical by construction, so this looks exact -- until a file contains
+     two consecutive identical 1024-byte blocks, which a file of zeros does
+     immediately, and real data is dropped again.
+   - *Stop suppressing after a turnover.* Delivers duplicates into a file, which
+     is the same corruption with the opposite sign and is quieter.
+
+   `core/link` is the part validated against the golden corpus, and a wrong
+   change to it corrupts real traffic in a way that is harder to see than this
+   one. So this is written down rather than guessed at.
+
+   **Reproduction:** `test/app/asp.script`, deliberately not in CI.
+
+   ### Resolved: two defects, and neither was in the protocol
+
+   Hunting this down found **two** independent defects. Both were below ASP.
+
+   **1. The link discarded the sender's queue on turnover.**
+   `iss_yield_on_break()` cleared `tx_len`, contradicting this machine's own rule
+   3.4 -- where the IRS deliberately breaks on a *still-unacked* frame "so the ISS
+   keeps that frame for after the turnover". See
+   [12](12-normative-accidents.md). Reproduced in isolation by
+   `test_loopback_turnover_loses_nothing`, which fails without the fix. A block of
+   host data per turnover, silently.
+
+   **2. The loopback delivered colliding transmissions intact.** This was the one
+   that took longest, because every instinct said the bug was in the link.
+
+   `app/loopback.c` steps both stations concurrently and queues each
+   transmission into its own buffer. When both stations key at once -- 675 blocks
+   of the failing run, against 65 of the passing one -- both transmissions were
+   delivered perfectly a moment later. ARDOP is half duplex: that is a collision,
+   and on a real channel neither station hears the other. Delivering both intact
+   is not a conservative simplification, it is a channel no pair of radios can
+   meet, and it let the two state machines take sequences that cannot happen on
+   the air. The frame-type toggles then fell out of step and the receiver dropped
+   genuinely new frames as duplicates, which is the symptom this amendment
+   started from.
+
+   `write_audio` now drops samples aimed at a station that is transmitting. ARQ
+   then does the job it exists for: the frame does not arrive, the sender repeats
+   it, and the exchange recovers. The transfer completes byte-identical.
+
+   ### What this cost, and what it is worth
+
+   The measurement that settled it was counting simultaneous keying, and it should
+   have been the first thing measured rather than the last. Three wrong diagnoses
+   preceded it -- the discarded queue (real, but not this), the duplicate
+   suppression (a symptom, not a cause), and a half-duplex change to `read_audio`
+   that was plausible, did not help, and was reverted rather than kept.
+
+   The general lesson is worth more than the bug: **a harness that is kinder than
+   the real channel does not merely miss failures, it manufactures them.** Two of
+   the three wrong diagnoses were attempts to explain behaviour that could not
+   occur on a radio. `app_loopback_collisions()` now reports the count, so the
+   next person can see the channel's fidelity rather than assume it.
+
+   `test/app/asp.script` runs in CI on both hosts.
+
+8. **Still to build:** the Chat and Files screens. Everything under them works:
+   the protocol, its own tests, the application-side `asp_io`, and a file that
+   arrives byte-identical over a real ARQ link with turnovers and collisions in
+   it. Nothing is blocked. *(Built; see amendment 9.)*
+
+9. **The screens are built, and the session belongs to neither of them.**
+
+   `app/ui/aspsession.cpp` owns the one `asp_app` and both screens are views of
+   it. That is not tidiness: chat and files travel over the same connection,
+   share one transmit credit and end together when the link drops, so two owners
+   would be two answers to "are we connected".
+
+   Three things the design above did not settle, each decided against something
+   already written down elsewhere:
+
+   **A session exists only when an ARQ connection does.** `asp_open` documents
+   "call on every new ARQ connection", so the session is opened when the link
+   comes up and closed when it goes down, and nothing survives a disconnect
+   except the `.part` file — which is the whole of §5's resume story. Two link
+   states that are *not* `DISC` still do not carry a session: `ISS_CON_REQ`,
+   where a ConReq is out and nothing has answered it, and `FEC_SEND`, which §1
+   gives its own profile and no file transfer at all.
+
+   **A TNC guest ends our session.** [14](14-station-application.md) Decision 4
+   gives the link a single session owner, and §2 above says that when Pat holds
+   the link ASP is not running — *"nothing in this document needs to accommodate
+   it"*. True of the wire format, and not true of the program: the spine would
+   have refused our submissions silently, leaving a chat window that swallows
+   everything typed into it. So a guest attaching closes the session and both
+   screens say why.
+
+   **Raw mode is a state to display, not a failure to report.** §2 makes the
+   HELLO decision once and never revisits it; the screen says "the other station
+   is not running this program, so this is plain text in both directions — chat
+   works, file transfer does not". That is one sentence covering what the mode
+   is, what still works and what does not, in place of a greyed-out button an
+   operator would go looking for a reason for.
+
+   **A defect found by building the caller.** `asp_app_send_file` accumulated the
+   file's size into a `uint32_t`, so a file above 4 GB wrapped to a plausible
+   small number and produced an offer nobody could satisfy and a CRC failure
+   hours later. It now counts in 64 bits and refuses anything above
+   `ASP_APP_MAX_FILE` — 2 GB − 1, which is the lower of the two real ceilings:
+   `OFFER` carries a `u32` size, and `asp_io::read_file` seeks with `fseek`,
+   whose offset is a `long` and therefore 32 bits on Windows. Not a constraint
+   worth mourning on a mode that moves a few hundred bytes a second; the limit is
+   over two months of continuous transmission.
+
+   Still not built: **the FEC profile**. `TEXT_B` is framed, tested and decoded,
+   but nothing sends one and `asp_app_rx` accepts only `ARQ`-tagged payload, so
+   no `FEC` bytes reach the parser that would handle it. What is missing is the
+   profile around the message rather than the message: no session, no peer, the
+   `FECREPEATS` duplicates to deduplicate on `(callsign, msg_id)`, and a screen
+   where a broadcast is addressed to nobody.
+
+10. **Open decision 1, answered: the pipe stays a pipe, and is renamed to say so.
+    `ardop-tx` and `ardop-rx` are now one binary, `ardop-cat`.**
+
+    The decision above framed this as "do they adopt ASP", and worried that a
+    `--asp` flag would mean "the framing has a second implementation". That
+    worry is void: amendment 1 gave the session no transport and no storage, so
+    a CLI client would *link `asp.c`* with an `asp_io` over the host socket.
+    Adopting ASP is far cheaper than this document assumed.
+
+    It is still the wrong thing, and for the reason the decision itself gives:
+    *"they are useful precisely because they are `cat`."* Since there is now a
+    real protocol for named, checksummed, resumable transfers, the pipe's job is
+    to be the pipe. What was wrong was not its behaviour but its **name** — this
+    document's own opening line is "`ardop-tx` is `cat` over ARQ", and the tool
+    was called `tx` as though it were the general way to send data.
+
+    ### What was actually broken, measured
+
+    Two of the four cross-combinations silently destroyed data:
+
+    | | → `ardop-rx` | → the station app |
+    |---|---|---|
+    | **`ardop-tx` sends a file** | works | the file lands **in the chat window**; nothing written |
+    | **the station app sends a file** | ASP framing written **into the file**; exit 0 | works |
+    | **chat** | one 18-byte greeting, then clean | works |
+
+    Driving the real `asp.c` against raw bytes: a fresh session puts
+    `\x01\x10ASP/1\x01\x03\x00\x00\x00\x05N0AAA` on the wire, and a PNG streamed
+    at it is delivered as `RAW CHAT TEXT`. The chat pairing genuinely works --
+    §2's raw mode doing its job -- apart from that greeting, which is
+    unavoidable because a station has to say hello to discover the peer cannot
+    hear it.
+
+    ### netcat's shape, not netcat's silence
+
+    `nc` is one binary with the direction as a flag, makes no claim about
+    content, and does **not** detect protocol mismatches -- pointed at an HTTPS
+    port it prints garbage, and that is correct for `nc`.
+
+    The first two carry over. The third does not, and the reason is worth
+    recording because it is the whole difference: **with netcat you are on both
+    ends.** You chose to run it twice. Over HF the far end is a stranger who may
+    be running the station application, Pat, ardopcf or a terminal, and "you get
+    what is on the wire" is safe on a terminal and unsafe when the wire's
+    contents become a file somebody trusts.
+
+    So `asp_looks_like_hello` is exported from `asp_wire.c` -- beside the
+    encoder, so the check and the thing it checks for cannot drift, and asserted
+    in `test_asp.c` against what `asp_open` actually emits rather than against a
+    signature written out twice. `ardop-cat` links that one pure object and
+    nothing else of the protocol. Receiving a greeting writes nothing and exits
+    2; sending to one warns and continues, because the operator may know exactly
+    what they are doing.
+
+    It also settles the defect this document opens with: **`ardop-cat` reads the
+    tag.** `apps/ardop_rx.c` received it into a buffer and never looked at it, so
+    an `ERR` marker or an `IDF` could land in the middle of a file. Only `ARQ`
+    payload is the stream now, and anything else is reported once and skipped.
+
+    ### Not done
+
+    **Full duplex.** `nc` is bidirectional because TCP is. ARQ is half duplex
+    with an explicit turnover, and the completion rule -- everything drained and
+    acked, then disconnect -- is one-directional by nature. Possible, since two
+    opposite streams need no multiplexing, but it is a feature rather than a
+    rename, and "when is it finished" gets materially harder in both directions
+    at once.
+
+    **Compatibility aliases.** None. This is a hard fork whose only release is a
+    rolling prerelease, and carrying `ardop-tx` as a symlink from the first
+    release onwards would be inheriting a name we just decided was wrong.
+
+11. **The FEC profile is implemented, and §6 had not costed it against a frame.**
+
+    `apps/fecchat.c` sends and receives `TEXT_B`, which nothing did before --
+    `ardop-chat --fec` broadcast bare lines. Two things were wrong with that, and
+    §6 names both: you could not tell who spoke, and deduplication was left to
+    `core/link.c`, which drops a frame whose type and CRC match the one *before
+    it*. That check's own comment admits the limit -- "identical consecutive
+    payloads are indistinguishable from repeats and are dropped" -- so a line
+    legitimately sent twice was swallowed, and two stations interleaving broke
+    the consecutive assumption the other way and let a real repeat through.
+    `(callsign, msg_id)` over five minutes has neither failure.
+
+    ### The header is expensive, and this document did not say so
+
+    §6 specifies `calllen | callsign | msg_id | text` without reference to what a
+    frame holds, and the gap is wide enough to change how the feature is used:
+
+    | mode | frame payload | left for text |
+    |---|---|---|
+    | `4PSK.200.100` (the default) | 64 B | **54** |
+    | `4FSK.200.50S` (the most robust) | 16 B | **6** |
+
+    Measured, not derived: 54 characters from `N0AAA` encodes to exactly 64
+    bytes, and the test asserts that rather than the arithmetic.
+
+    Six characters is not a chat line. The tool therefore computes the budget
+    from `ardop_frame_spec_for` for whichever `--fecmode` is chosen, prints it at
+    startup, and **splits a longer line into two complete messages at a space**
+    -- not into fragments, because §1 requires each message to be self-contained
+    and a fragment is not. Each half carries its own id and stands alone if the
+    other is lost.
+
+    The callsign comes from the modem's `MYCALL` rather than a new flag, and FEC
+    chat refuses to start without one: a second place to say the callsign is a
+    second place for it to be wrong, and §9 wants anything transmitting to
+    identify anyway.
+
+    ### What is still not done
+
+    The **station application has no FEC screen**. This closes the gap for the
+    command-line tool, which is where broadcast chat is most useful today, but
+    `asp_app_rx` still accepts only `ARQ`-tagged payload. A Broadcast screen in
+    the window would now be a view over `apps/fecchat.c`'s profile rather than
+    new protocol work.

@@ -660,14 +660,32 @@ static size_t step_iss_conack_rx(ardop_link *l, const ardop_event *ev,
 
 /* --- ISS: connected, sending data ---------------------------------------- */
 
-/* The IRS sent BREAK: discard our unsent queue, ACK the break, and yield the
- * link, becoming IRS (settling out of IRS_FROM_ISS on the first frame received).
- * SaveQueueOnBreak (letting the app restore the data) is dropped. Applies whether
- * we were actively sending (ISS) or idling (IDLE). */
+/*
+ * The IRS sent BREAK: ACK it and yield the link, becoming IRS (settling out of
+ * IRS_FROM_ISS on the first frame received). Applies whether we were actively
+ * sending (ISS) or idling (IDLE).
+ *
+ * **The queue is kept.** It used to be discarded here, with a note that
+ * ardopcf's SaveQueueOnBreak -- the option that let the application restore the
+ * data -- had been dropped in the port. Dropping the option is fine; dropping
+ * the data is not, and it contradicted this machine's own rule 3.4 twelve
+ * hundred lines further down, where the IRS deliberately sends its BREAK on a
+ * *still-unacked* frame "so the ISS keeps that frame for after the turnover".
+ * The ISS cannot keep a frame it has just thrown away.
+ *
+ * Nothing here changes what goes on the air. These are bytes the host gave us
+ * that have not been transmitted, or -- for the outstanding frame -- were
+ * transmitted and deliberately not acknowledged, precisely so that we would send
+ * them again. Discarding them lost host data silently: no NAK, no fault, no
+ * counter, and an application that had been told the bytes were accepted.
+ *
+ * @p outstanding_len is still cleared, because nothing is in flight any more.
+ * The bytes it counted stay at the head of the queue and go out again once we
+ * are the ISS.
+ */
 static void iss_yield_on_break(ardop_link *l, ardop_action *actions, size_t *n,
 			       size_t max)
 {
-	l->tx_len = 0;
 	l->outstanding_len = 0;
 	l->last_data_to_host = -1;
 	l->state = ARDOP_LINK_IRS_FROM_ISS;

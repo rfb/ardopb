@@ -71,6 +71,7 @@ typedef enum {
 	ARDOP_TLM_CONSTELLATION = 2, /**< One frame's demodulated symbols. */
 	ARDOP_TLM_AUDIO = 3,         /**< Capture level, RMS and peak. */
 	ARDOP_TLM_STATUS = 4,        /**< Discrete state mirror (see above). */
+	ARDOP_TLM_FRAME = 5,         /**< One frame sent or received. */
 } ardop_tlm_kind;
 
 /**
@@ -121,6 +122,20 @@ typedef struct {
 	float rms;              /**< Capture RMS, 0..1 of full scale. */
 	float peak;             /**< Capture peak, 0..1 of full scale. */
 
+	/* FRAME.
+	 *
+	 * One record per frame observed, which is what a session history is made
+	 * of. STATUS carries the *current* state and is a mirror; this is an
+	 * event and is not, which is why it cannot be folded into it: coalescing
+	 * a status update loses nothing, and coalescing a frame loses a frame.
+	 *
+	 * Reuses frame_type, sn and quality above -- the same fields, for the
+	 * same frame, and a second set would only be a chance for the two to
+	 * disagree.
+	 */
+	uint64_t frame_at;      /**< FRAME: elapsed samples when observed. */
+	uint8_t frame_dir;      /**< FRAME: ::ardop_tlm_dir. */
+
 	/* STATUS. */
 	uint8_t state;          /**< ::ardop_link_state. */
 	uint8_t mode;           /**< ::ardop_link_mode. */
@@ -131,6 +146,13 @@ typedef struct {
 	int16_t bandwidth;      /**< Negotiated session width, Hz. */
 	uint32_t buffer_len;    /**< Bytes queued to send. */
 } ardop_telemetry;
+
+/** @brief Which way a ::ARDOP_TLM_FRAME went, and whether it arrived. */
+typedef enum {
+	ARDOP_TLM_DIR_RX = 0,      /**< Received and decoded. */
+	ARDOP_TLM_DIR_TX,          /**< Handed to the modulator. */
+	ARDOP_TLM_DIR_RX_FAILED,   /**< Heard, and did not decode. */
+} ardop_tlm_dir;
 
 /** @brief Telemetry sink: receives one ::ardop_telemetry. Must not block. */
 typedef void (*ardop_telemetry_fn)(void *ctx, const ardop_telemetry *t);

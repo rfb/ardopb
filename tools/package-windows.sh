@@ -10,8 +10,10 @@
 #
 # Produces two zips, not one:
 #
-#   ardopb-windows-x86_64.zip     ~300 KB   the modem and the host-client apps
-#   ardop-gui-windows-x86_64.zip  ~30 MB    the instrument panel and its Qt DLLs
+#   ardopb-windows-x86_64.zip          ~600 KB  the command-line station program,
+#                                               the modem and the host-client apps
+#   ardop-station-windows-x86_64.zip   ~32 MB   the windowed application, the
+#                                               remote panel, and their Qt DLLs
 #
 # The split is not cosmetic. Every byte over about a megabyte here is Qt and its
 # dependency chain -- ICU alone is ~30 MB of locale data -- while the modem and
@@ -26,7 +28,7 @@ set -euo pipefail
 
 OUT="${1:-dist}"
 MODEM_NAME="ardopb-windows-x86_64"
-GUI_NAME="ardop-gui-windows-x86_64"
+GUI_NAME="ardop-station-windows-x86_64"
 
 # Under MSYS2 the plain names are the right ones. Overridable so the modem half
 # of this script can be smoke-tested from a Linux cross-build:
@@ -67,10 +69,21 @@ stamp() {
 #
 # Stripping is done here rather than by dropping -g from CFLAGS, so a developer
 # who builds locally keeps a debuggable binary. It is worth roughly 3x: the
-# four binaries go from 2.6 MB to 756 KB.
+# binaries go from 2.6 MB to 756 KB.
 cp ardopb.exe "$OUT/$MODEM_NAME/"
-cp apps/ardop-tx.exe apps/ardop-rx.exe apps/ardop-chat.exe "$OUT/$MODEM_NAME/"
+cp apps/ardop-cat.exe apps/ardop-chat.exe "$OUT/$MODEM_NAME/"
+
+# ardop-spine ships too, and it is the reason a first-time operator downloads
+# this at all: it is the only binary that can find a radio (--detect), and the
+# only one that keeps a device selection across restarts.
+cp app/ardop-spine.exe "$OUT/$MODEM_NAME/"
 "$STRIP" "$OUT/$MODEM_NAME"/*.exe
+
+# The field-test scripts and the guide that walks through them. Shipped together
+# because the guide names the scripts by path.
+mkdir -p "$OUT/$MODEM_NAME/scripts"
+cp test/app/*.script "$OUT/$MODEM_NAME/scripts/" 2>/dev/null || true
+cp analysis/19-field-testing.md "$OUT/$MODEM_NAME/FIELD-TESTING.md" 2>/dev/null || true
 
 stamp "$OUT/$MODEM_NAME"
 
@@ -78,37 +91,71 @@ cat > "$OUT/$MODEM_NAME/README-WINDOWS.txt" <<'EOF'
 ardopb for Windows
 ==================
 
+  ardop-spine.exe   the station program: finds your radio, remembers the choice
   ardopb.exe        the modem
   ardop-chat.exe    keyboard-to-keyboard chat over a link
-  ardop-tx.exe      pipe a file or stream into a link
-  ardop-rx.exe      receive a stream to stdout
+  ardop-cat.exe     a raw byte pipe over a link, in either direction
 
 Nothing here needs installing and nothing needs a DLL beside it. Copy the
 files anywhere and run them.
 
-The graphical instrument panel -- waterfall, constellation, gauges -- is a
-separate download, ardop-gui-windows-x86_64.zip, because it carries the Qt
-libraries and is about a hundred times the size of this one. You do not need
-it to run a link.
+The windowed application -- device pickers, waterfall, constellation, gauges --
+is a separate download, ardop-station-windows-x86_64.zip, because it carries
+the Qt libraries and is about fifty times the size of this one. You do not need
+it to run a link, and ardop-spine.exe does the same setting-up from a command
+line.
 
 Quick start
 -----------
 
-1. See what sound devices you have:
+1. Ask it to find your radio:
 
-       ardopb.exe --list-devices
+       ardop-spine.exe --detect
 
-2. Run the modem. Use the id or the name printed above; with no device
+   In the common case a radio is one USB cable carrying both audio and
+   keying. Detection is not implemented on Windows yet, so this will report
+   nothing for now -- use --list-devices and pick by hand.
+
+2. See what sound devices you have:
+
+       ardop-spine.exe --list-devices
+
+3. Run the modem. Use the id or the name printed above; with no device
    arguments it takes the system defaults:
 
-       ardopb.exe MYCALL --audio --ptt rts:COM3 --host 8515 --telemetry
+       ardopb.exe MYCALL --audio --ptt civ:COM3@a4 --host 8515 --telemetry
 
    PTT can be:  none            VOX, or no keying
                 rts:COM3        assert RTS on a serial port
                 dtr:COM3        assert DTR instead
+                civ:COM3@a4     Icom CI-V, and every Xiegu
+                kenwood:COM3    a Kenwood's own CAT command
+                yaesu:COM3      a Yaesu's own CAT command
+                cm108:auto      a C-Media GPIO dongle
                 rigctld:HOST:PORT   key through a running rigctld
 
+   The right one is a property of the radio, and picking wrong fails
+   SILENTLY. A Xiegu or an Icom keys by CAT command and ignores RTS
+   entirely; a DigiRig Mobile keys by RTS; a DigiRig Lite keys by CM108
+   GPIO. All three look identically connected and only one transmits.
+
    Ports above COM9 work as written -- the \\.\ prefix is applied for you.
+
+Please read FIELD-TESTING.md first
+----------------------------------
+
+The keying paths in this build have never been run against a real radio.
+They are unit-tested down to the byte, and that is not the same thing.
+
+FIELD-TESTING.md walks through it in order of risk -- what the computer
+sees, whether audio works, whether it keys into a DUMMY LOAD, and only then
+anything on the air -- and says what to send back. If you have a radio and
+ten minutes, that document is the most useful thing you can do for this
+project.
+
+Use a dummy load for the keying steps. Ctrl-C always unkeys; if you ever
+see a transmitter stay keyed after the program exits, please report that
+ahead of anything else.
 
 Sound card rates
 ----------------
@@ -139,19 +186,33 @@ EOF
 (cd "$OUT" && zip -qr "$DEST/$MODEM_NAME.zip" "$MODEM_NAME")
 echo "package-windows: wrote $MODEM_NAME.zip"
 
-# --- the GUI --------------------------------------------------------------
-if [ -f gui/build/ardop-gui.exe ]; then
+# --- the windowed application ---------------------------------------------
+#
+# One executable now.
+#
+# This used to carry ardop-gui.exe as well -- the standalone read-only panel --
+# with the note that it "survives until --remote makes it a mode of the same
+# binary". That is what analysis/16 §8 asked for and it is now done, so the
+# second executable is gone from the download: `ardop-station --remote HOST:PORT`
+# is the same panel, watching the same stream, with the same inability to key
+# anything.
+#
+# ardop-gui still builds from gui/ and still runs in CI. It is a useful thing to
+# keep compiling -- it proves the instrument widgets do not depend on the spine --
+# but it is not something an operator needs to be handed and choose between.
+if [ -f app/ui/build/ardop-station.exe ]; then
 	mkdir -p "$OUT/$GUI_NAME"
-	cp gui/build/ardop-gui.exe "$OUT/$GUI_NAME/"
-	"$STRIP" "$OUT/$GUI_NAME/ardop-gui.exe"
+	cp app/ui/build/ardop-station.exe "$OUT/$GUI_NAME/"
+	"$STRIP" "$OUT/$GUI_NAME"/*.exe
 
 	# windeployqt copies Qt's own DLLs and the platform plugin.
-	if command -v windeployqt6 >/dev/null 2>&1; then
-		windeployqt6 --release --no-translations --no-system-d3d-compiler \
-			--no-opengl-sw "$OUT/$GUI_NAME/ardop-gui.exe"
-	elif command -v windeployqt >/dev/null 2>&1; then
-		windeployqt --release --no-translations --no-system-d3d-compiler \
-			--no-opengl-sw "$OUT/$GUI_NAME/ardop-gui.exe"
+	WDQ=""
+	command -v windeployqt6 >/dev/null 2>&1 && WDQ=windeployqt6
+	[ -z "$WDQ" ] && command -v windeployqt >/dev/null 2>&1 && WDQ=windeployqt
+	if [ -n "$WDQ" ]; then
+		"$WDQ" --release --no-translations \
+			--no-system-d3d-compiler --no-opengl-sw \
+			"$OUT/$GUI_NAME/ardop-station.exe"
 	else
 		echo "package-windows: windeployqt not found; the GUI will not" >&2
 		echo "                 run on a machine without Qt installed" >&2
@@ -185,34 +246,66 @@ if [ -f gui/build/ardop-gui.exe ]; then
 	stamp "$OUT/$GUI_NAME"
 
 	cat > "$OUT/$GUI_NAME/README-WINDOWS.txt" <<'EOF'
-ardop-gui for Windows
-=====================
+ardop station for Windows
+=========================
 
-  ardop-gui.exe     the instrument panel (waterfall, constellation, gauges)
+  ardop-station.exe   the application: a modem, its devices, and a window
 
-The panel is a viewer. It does not contain a modem and cannot key a radio --
-it connects to a running ardopb and draws what that modem reports. Get the
-modem from ardopb-windows-x86_64.zip if you do not have it already.
+Keep the DLLs in this folder next to it. They are Qt and its dependencies, and
+the program will not start without them.
 
-Keep the DLLs in this folder next to ardop-gui.exe. They are Qt and its
-dependencies, and the panel will not start without them.
+Start here
+----------
 
-Quick start
------------
+Run ardop-station.exe. It opens whatever devices it used last time, or the
+system default on a first run, and the Devices tab is where you change that.
 
-1. Start the modem with telemetry enabled -- without --telemetry there is
-   nothing for the panel to connect to:
+  Panel     the waterfall, constellation, meters and the modem's own log
+  Devices   pick a sound card and a way to key the radio
+  Station   your callsign, grid and ARQ settings; connect and disconnect
+  Console   type TNC commands and see exactly what came back
 
-       ardopb.exe MYCALL --audio --ptt rts:COM3 --host 8515 --telemetry
+Nothing on the Station tab can transmit until a callsign is accepted -- the
+buttons stay greyed and the reason is on the screen. That is deliberate: the
+modem will not open a session without one, and a Connect that failed for that
+reason looks exactly like a radio problem.
 
-2. Attach the panel:
+On the Devices tab, "Detected radios" tries to work out which serial port
+belongs to your radio by looking for a keying interface on the same USB
+hardware as a sound card. Detection is not implemented on Windows yet, so it
+will say so; use the pickers underneath.
 
-       ardop-gui.exe --host 127.0.0.1:8517
+Choosing anything only fills the fields in. Apply opens the devices. Test PTT
+is the only control that puts a signal on the air.
 
-   The modem may be on another machine; give that machine's address instead.
+Before you key anything
+-----------------------
 
-No console window opens behind the panel -- it is built as a GUI-subsystem
-binary. Diagnostics go to the modem's own console, not this one.
+The keying paths in this build have NEVER been run against a real radio.
+They are unit-tested down to the byte, which is not the same thing.
+
+Use a dummy load. Turn the power down. Ctrl-C and closing the window both
+unkey; if you ever see a transmitter stay keyed after the program exits,
+please report that ahead of anything else.
+
+The right keying method is a property of the radio, and picking the wrong one
+fails SILENTLY. A Xiegu or an Icom keys by CAT command and ignores RTS
+entirely; a DigiRig Mobile keys by RTS; a DigiRig Lite keys by CM108 GPIO. All
+three look identically connected and only one of them transmits.
+
+FIELD-TESTING.md in the other download walks through it in order of risk and
+says what to send back.
+
+Watching another station
+------------------------
+
+The same program, started with --remote, is a read-only panel. It runs no modem
+of its own and cannot key a radio: it connects to a running ardopb somewhere and
+draws what that modem reports. Only the Panel appears, because there is nothing
+to command -- a telemetry stream is one-way by construction.
+
+    ardopb.exe MYCALL --audio --host 8515 --telemetry     (on the other machine)
+    ardop-station.exe --remote 192.168.1.20:8515          (here)
 
 Antivirus
 ---------
@@ -223,14 +316,14 @@ about them. Check the SHA-256 against the release page if that matters to you.
 Bug reports
 -----------
 
-Please include the contents of VERSION (in this folder) and the modem's
-console output.
+Please include the contents of VERSION (in this folder) and whatever the
+Panel tab's log said.
 EOF
 
 	(cd "$OUT" && zip -qr "$DEST/$GUI_NAME.zip" "$GUI_NAME")
 	echo "package-windows: wrote $GUI_NAME.zip"
 else
-	echo "package-windows: gui/build/ardop-gui.exe not found; skipping the" >&2
+	echo "package-windows: app/ui/build/ardop-station.exe not found; skipping the" >&2
 	echo "                 GUI zip. Build it with cmake first." >&2
 fi
 

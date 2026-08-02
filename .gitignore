@@ -77,13 +77,20 @@ newArdopSampleArrays.c
 /ardopb
 
 # host-client apps (built by `make apps`)
-/apps/ardop-tx
-/apps/ardop-rx
+/apps/ardop-cat
 /apps/ardop-chat
+
+# the station application's spine harness (built by `make app`)
+/app/ardop-spine
 
 # golden harness binaries (built by golden-shell / golden-tx)
 /test/golden/shell_decode_wav
 /test/golden/shell_tx_wav
+/test/golden/resample_decode_wav
+
+# ThreadSanitizer stress binaries (test-ring-tsan / test-app-tsan)
+/test/core/stress_ring
+/test/core/stress_spine
 
 # Qt GUI build tree (cmake -S gui -B gui/build)
 /gui/build/
@@ -93,3 +100,7 @@ newArdopSampleArrays.c
 /ardopb-windows-*.zip
 /ardop-gui-windows-*.zip
 /ardopb-linux-*.tar.gz
+
+# Qt station app build tree (cmake -S app/ui -B app/ui/build)
+/app/ui/build/
+/libardop.a

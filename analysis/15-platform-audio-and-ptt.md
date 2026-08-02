@@ -201,6 +201,12 @@ it is what dissolved `FixTiming`. A resampler can break that property.
   decouples protocol time from device time and reintroduces exactly the class of
   bug this architecture was built to delete.
 
+> **This second bullet is wrong, and amendment 30 says why.** It conflates a
+> *rational* resampler with an *asynchronous* one. 44100 → 12000 is exactly
+> 147:40, and a fixed-ratio polyphase resampler at that ratio inserts and drops
+> nothing. The conclusion — refuse fractional rates for now — still stands, but
+> on grounds of scope rather than correctness.
+
 **Rule: prefer a device rate that is an integer multiple of 12000** (48000,
 24000, 96000) and decimate. Accept a fractional rate only when the platform
 offers nothing else, mark the session degraded in the UI, and make sure the
@@ -421,7 +427,8 @@ design above and the code as it stood disagreed.
 8. **Open decision 3 is settled as *refuse*.** A device rate that is not a whole
    multiple of 12000 fails the open with a message naming the rate, rather than
    being approximated. More honest and far less code; Windows shared-mode WASAPI
-   gives 48000 in practice.
+   gives 48000 in practice. *(The decision holds. The reasoning behind it was
+   partly wrong — see amendment 30.)*
 
 9. **§Exit criteria's "`make golden-tx` is still bit-identical" is true by
    construction**, not by care: `test/golden/shell_tx_wav` links `$(CORE_OBJS)`
@@ -472,3 +479,192 @@ design above and the code as it stood disagreed.
     4:1 decimation (m = 4), the latter decoding at quality 100 and S/N 23-24 dB.
     `tools/loopback.sh` lost its generated `asound.conf` and `ALSA_CONFIG_PATH`
     machinery in the process, which is a simplification in its own right.
+
+14. **§4's resolution rule shipped private, and printing to stderr.** It was a
+    `static` function inside `backend_ma.c`, so a settings screen could not
+    reuse it and workstream C would have written a second copy; and an operator
+    running a graphical program never sees stderr, so the one failure the rule
+    exists to prevent — transmitting through the laptop speakers after a
+    replug — happened silently anyway. Lifted to `ardop_audio_match_device`:
+    pure, over an enumerated list, returning *how* it matched instead of
+    printing. The backend keeps a thin adapter.
+
+    A name match is deliberately **not** a substitution. It is the operator's
+    device, found after a renumber, so the honest thing is to use it and write
+    the new id back — which is why the backend now also reports the device it
+    actually opened. Without that, the rule degrades to name-matching forever.
+
+15. **`native_12k` (§4) was specified and never built, and should not be.** It
+    was a boolean about the wrong thing: 24000, 48000 and 96000 are all equally
+    usable and it would have read `false` for every one of them. It would also
+    have been wrong on the two backends that matter most, since PulseAudio and
+    shared-mode WASAPI report the mix format rather than the hardware's
+    capability. Replaced by `native_rate` + `rate_ok`, which give three honest
+    answers where one boolean had two dishonest ones: "48000 Hz", "44100 Hz,
+    cannot be used", and "not known until opened".
+
+16. **`ardop_audio_enumerate` grew a fourth parameter, `backend_name`.**
+    Auto-selection prefers PulseAudio on Linux, and `--audio-backend alsa`
+    (kept by amendment 13) has to enumerate the backend it will open — otherwise
+    the list offers devices the open cannot select.
+
+17. **`ARDOP_DEV_NAME_MAX` went 128 → 256.** Amendment 3 raised the *id* for
+    exactly this reason and stopped one field short: the name is the second
+    resolution key, and a truncated name never re-matches.
+
+18. **`ardop_audio_print_devices` writes to stdout and reports failure.** It is
+    the answer to a question the operator asked, not a diagnostic, and
+    `--list-devices | grep USB` should work.
+
+19. **§3's fault latch was one-way at the application layer.** A spine that had
+    seen one fault could never transmit again — while `fault.h` says the
+    application "offers reselection", which requires the reverse edge. That made
+    a device-selection screen structurally impossible: unplugging a USB
+    interface meant restarting the program. Faults are now a recoverable state
+    with a typed code, and recovery is close+open of both objects, which works
+    because [14](14-station-application.md) Decision 5 already makes the runtime
+    outlive the backend.
+
+20. **`ardop_backend_ma_clear_fault` is deleted.** It cleared a latch and did
+    nothing to the device, so calling it only arranged to re-latch on the next
+    read. A function whose name promises recovery it does not perform is worse
+    than none; it had no callers. Same answer for the PTT latch: a keying fault
+    means the path is not trustworthy, and clearing a flag does not make it so.
+
+21. **`backend_ma.h` claimed `ardop_backend_ma_close` "unkeys on the way out"
+    and it did not.** Harmless while `ardopb` closed the PTT immediately
+    afterwards; not harmless once a device rebuild closes the backend while the
+    same PTT object stays open, which is exactly the case the promise was for.
+    Made true.
+
+22. **§8's backend-declared block size was right for `ardopb` and wrong for the
+    application.** `app_set_platform` saved and restored the *old* block, and
+    since `ardop_loop_init` always leaves it non-zero the restore always fired —
+    so a new backend's smaller preferred block was overwritten every time and
+    every device change silently reverted to 100 ms. Amendment 7's "one line in
+    `main.c`" holds only where the platform is fixed. The block is now a
+    parameter of the bind, because a backend and the block it wants are one fact
+    and two calls means a window in which one is wrong.
+
+23. **CM108 (deferred by amendment 10) is implemented, with no new user-facing
+    dependency**: `/dev/hidraw` on Linux, `hid.dll` on Windows, no hidapi and no
+    libusb. Two details from direwolf's implementation matter more than they
+    look. The report is **five bytes**, not the four the CMedia datasheet
+    implies — direwolf writes the fifth with the comment *"Writing 5 bytes
+    works. I have no idea why."*, every interface in the field has been tested
+    against that, and with no hardware here preferring the datasheet would be a
+    guess. And the chip table is load-bearing: members of this family have
+    different GPIO counts (CM108 four, CM108B three, CM119 eight, SSS1621/1623
+    only **two**), so the usual default of pin 3 sets a bit an SSS162x does not
+    have and keys nothing, and a vendor-only match would have missed vendor
+    `0x0c76` entirely. `-lsetupapi` is a new *link* library on Windows; it ships
+    with the operating system.
+
+24. **Native CAT keying is implemented, and rigctld is no longer the only CAT
+    path.** For a modern transceiver the keying line *is* the CAT link, and
+    hamlib gives Icom, Yaesu, Kenwood and every Xiegu `ptt_type = RIG_PTT_RIG` —
+    they key by command and ignore RTS entirely. The command is one acknowledged
+    frame (Icom CI-V `1C 00`, answered `FB`/`FA`), so speaking it directly needs
+    no hamlib installed, no daemon to spawn and reap on two platforms, and no
+    exposure to a command line we do not control.
+
+    It is also safer than managing rigctld would be: killing rigctld does **not**
+    unkey a CAT-keyed rig, because closing a serial handle sends no command, so
+    owning that process would mean a crash on our side could orphan a daemon
+    holding a transmitter up. `rigctld:` remains as the escape hatch.
+
+25. **Open decision 4 ("CAT beyond PTT") stays closed, and open decision 5 (the
+    10-minute ID) is still open.** `wall_ms` is implemented and plumbed into
+    `ardop_platform_ops`, and nothing reads it: `core/link/` has the 3-second
+    closing ID and the explicit `SENDID`, but no periodic obligation. That is
+    link work rather than platform work and it touches the one part of the tree
+    the golden corpus exists to freeze, so it is raised separately rather than
+    smuggled in here. `ardopcf`'s behaviour should be checked first —
+    interoperability matters more than anyone's reading of Part 97.
+
+26. **§4's rigctld host parser could not take an IPv6 literal.** It split on the
+    last colon, so `rigctld:::1` became host `":"` port 1. Bracketed literals
+    (`rigctld:[::1]:4532`) now work.
+
+27. **`ptt.c` claimed the rigctld path "is tested against a scripted fake server
+    on localhost".** It was not; there was no PTT test of any kind. There is now
+    one covering the whole grammar, both CAT frame sets byte for byte, the reply
+    classification including the CI-V transceive echo, the CM108 report for
+    every pin, the chip table and the auto-selection policy. The rigctld byte
+    exchange is still uncovered — it needs a server answering while `open()`
+    blocks, and therefore a thread `test-core` does not have — so the comment now
+    says what is and is not tested rather than something untrue.
+
+28. **The exit criterion "a 48 kHz device decimated to 12 kHz decodes the golden
+    corpus at the same rates as a native 12 kHz device" was untested**, and so
+    was the anti-alias filter against anything but synthetic tones. Worse,
+    `tools/loopback.sh` created its cables at 12000 Hz, so `m == 1` and the
+    resampler was the identity path in **every** loopback validation ever
+    performed — including amendment 13's. Both are fixed:
+    `make golden-resample` runs the corpus through interpolate-then-decimate at
+    m = 2, 4 and 8, `golden-resample-alias` adds an interferer that naive
+    decimation folds into the middle of the passband, and
+    `RATE=48000 tools/loopback.sh pipe` carries a bit-exact transfer at m = 4.
+
+29. **A note on what §7 (Android) and the macOS parts of §2 now mean.** This pass
+    was scoped to Linux and Windows. Nothing here precludes the other two — the
+    ops-table discipline is what keeps it so — but the device-detection reader
+    (§4's successor, `shell/usbtopo.c`) is Linux-only today; Windows groups a
+    physical device's functions under a shared Container ID, which is the same
+    idea with none of the walking, and is a reader to write rather than a design
+    to redo.
+
+30. **§5's argument against fractional rates does not hold, and the decision to
+    refuse them rests on scope instead.** Recorded properly because a wrong
+    reason attached to a right decision is how a future reader talks themselves
+    out of revisiting it.
+
+    §5 says a resampler for 44100 → 12000 "will insert or drop samples relative
+    to the device clock on its own schedule". That is true of an **asynchronous**
+    resampler — one whose ratio is adjusted at run time to track two independent
+    clocks, as a sound server does when synchronising several clients. It is not
+    true of a **fixed rational** one, and 44100 → 12000 is a fixed rational ratio:
+
+        gcd(44100, 12000) = 300  ->  44100/300 = 147,  12000/300 = 40
+
+    A polyphase 147:40 resampler produces exactly 40 output samples for every 147
+    input samples, forever, with a filter phase that cycles with period 40.
+    Nothing is inserted and nothing is dropped. [06](06-target-architecture.md)
+    Rule 2 survives intact: a card actually running at 44097 Hz gives a modem
+    clock of 40/147 × 44097 = 11999.2 Hz, and every protocol deadline stretches
+    by the same 0.007% — which is the identical property 4:1 decimation has.
+    147:40 is no less deterministic than 4:1.
+
+    So the honest cost is not correctness, it is work:
+
+    | | |
+    |---|---|
+    | Filter | 24 taps per phase × L = 40 phases = 961 coefficients, ~4 kB. The existing design is already `24*m + 1`; this is the same structure with a larger L. |
+    | Compute | Still 24 multiply-accumulates per *output* sample. Polyphase never computes the samples it would discard, so it is no worse than today. |
+    | **The actual work** | The framing contract. `ardop_resample(DECIMATE, m)` requires `n % m == 0` and returns `n / m`, and `shell/backend_ma.c`'s `read_audio` is built on that — exactly `k*m` in, exactly `k` out. A rational ratio makes the output count vary with the input block, so both change. |
+
+    **Postponed, not rejected.** The practical need is thin: every real sound
+    card and every radio codec does 48000 natively, and the case that prompted
+    this was an RDP virtual sink under WSL — a remote-desktop audio bridge, not a
+    radio interface, and not a path anyone should run a modem over even with
+    rational support. The genuine cases are a sound server an operator cannot
+    reconfigure and a handful of 44100-only USB codecs.
+
+    **What would justify building it**: an operator with real radio hardware that
+    only offers a fractional rate, or a platform whose sound server cannot be
+    moved off 44100. Until one of those turns up, the refusal message telling the
+    operator how to set 48000 is the better use of the same effort — and that
+    message now names the setting for PipeWire, PulseAudio and Windows rather
+    than saying "pick a device or a system format".
+
+    **What is still refused on correctness grounds, not scope**: letting the
+    *sound server* do the conversion for us. It looks free, and for a fixed-ratio
+    conversion it would even be right — but a server doing adaptive resampling to
+    synchronise several clients is precisely the asynchronous case, and there is
+    no way to tell from the outside which one is running. A resampler we do not
+    control, in the protocol clock path, is the one thing worth refusing outright.
+
+31. **The transmit credit was reported as available with no audio backend
+    bound.** With no platform the loop never runs, so anything accepted sat in
+    the link's 16 kB queue forever — an application would submit into a black
+    hole and then wonder why nothing transmitted. `APP_TX_NO_DEVICE` says so.
