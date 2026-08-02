@@ -356,3 +356,52 @@ framing by hand with nothing checking the two agree. ASP should not repeat that.
 - The spec in this document is sufficient to write the second implementation
   without reading the first one's source. That is the actual test of whether it
   is a specification.
+
+---
+
+## Amendments made during implementation
+
+1. **The session owns no transport and no storage.** Not stated above, and it is
+   what makes §10's claim -- that this layer needs no radio, no filesystem and no
+   clock -- actually true rather than aspirational. `asp_io` is a table of nine
+   functions; the application supplies one that writes to the spine and to disk,
+   and the test supplies one that writes to arrays. A "file" in the test suite is
+   an array, the "link" is a byte queue, and time is the loop counter.
+
+   That is the difference between the interesting cases being things a test can
+   simply *do* and things somebody has to reproduce on the air. Dropping a link at
+   40% and resuming it is four lines.
+
+2. **`asp_io::send` returns a count, and the session honours it.** The obvious
+   shape is a `void` send that always succeeds. It would have looked correct
+   against any test that gave it room, and lost bytes on the air the first time
+   the 16 kB transmit queue filled -- §7 puts admission in the spine's hands, so a
+   partial send is the normal case, not an error path. `test_transfer_survives_a_
+   stingy_link` runs a whole transfer through a link that refuses four calls in
+   five.
+
+3. **`DATA` arriving with no transfer in progress is skipped, not an error.**
+   §8's table does not cover it. Treating it as a protocol error would turn a
+   harmless race -- a cancel crossing a chunk in flight -- into a dropped link.
+
+4. **A second `OFFER` while one is being received is refused, not queued.** §4
+   says additional offers queue, and they do, but *above* this layer: the session
+   holds one inbound and one outbound transfer and says no to a second. Queueing
+   inside the session would mean holding an offer whose sender may have given up.
+
+5. **The prefix-CRC check reads the sender's own file.** Worth stating because it
+   is the only place the sender re-reads what it has already sent. §5 explains why
+   it is worth it: the alternative discovers the mismatch from the whole-file CRC
+   after the entire remainder has been sent -- minutes of airtime to learn the
+   transfer was doomed at the start.
+
+6. **Open decision 6 is answered by construction.** `msg_id` scope on FEC is
+   per-callsign-string, and the callsign carried in `TEXT_B` is whatever
+   `ardop_stationid` renders -- which includes the SSID. Two stations sharing a
+   callsign with different SSIDs therefore have separate `msg_id` spaces, which is
+   the behaviour the open decision was asking for.
+
+7. **Still to build:** the application's own `asp_io` -- the one that reads and
+   writes real files and talks to the spine -- and the Chat and Files screens.
+   The protocol itself is complete and the nine tests of §10 pass, so what remains
+   is plumbing rather than design.

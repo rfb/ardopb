@@ -243,7 +243,7 @@ apps: $(APPS)
 #   Pat and Winlink connect to, which is the point of hosting it at all.
 # SPINE_HARNESS is the phase-1 driver. The shipping application will not link it.
 SPINE_OBJS        = app/spine.o app/ring.o
-ASP_OBJS          = app/asp_wire.o
+ASP_OBJS          = app/asp_wire.o app/asp.o
 SPINE_DEVICE_OBJS = app/devices.o
 SPINE_TNC_OBJS    = app/tnc_host_tcp.o
 SPINE_HARNESS     = app/main.o app/script.o app/loopback.o
@@ -363,7 +363,8 @@ CORE_TESTS = \
 	test/core/test_ptt$(EXE) \
 	test/core/test_usbtopo$(EXE) \
 	test/core/test_backend_ma$(EXE) \
-	test/core/test_asp_wire$(EXE)
+	test/core/test_asp_wire$(EXE) \
+	test/core/test_asp$(EXE)
 
 define newline
 
@@ -447,7 +448,8 @@ test/core/test_devices$(EXE): test/core/test_devices.c $(CORE_OBJS) $(TEMPLATES)
 # test/app/ of its own because that directory is really "the in-process suite",
 # and a second directory would need a duplicate of the generic rule below and a
 # second CI step to run it.
-test/core/test_asp_wire$(EXE): test/core/test_asp_wire.c $(ASP_OBJS) \
+test/core/test_asp$(EXE) test/core/test_asp_wire$(EXE): \
+		test/core/test_asp%$(EXE): test/core/test_asp%.c $(ASP_OBJS) \
 		test/core/setup.o
 	$(CC) $(CORE_CPPFLAGS) -I. -Itest/core $(CFLAGS) \
 		$< $(ASP_OBJS) test/core/setup.o \
