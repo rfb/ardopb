@@ -294,6 +294,20 @@ int main(int argc, char **argv)
 		if (app_run_state_of(sp) == APP_RUN_FAULTED && rc == 0)
 			rc = 1;
 
+		/* A device that will not open is fatal to a headless run. An
+		 * interactive program offers reselection here; a script has
+		 * nobody to ask, and with no platform bound the modem clock does
+		 * not advance -- so every time-based directive would wait for a
+		 * second that never arrives. */
+		if (dv && app_devices_state(dv) == APP_DEV_FAILED) {
+			app_device_status st;
+			app_devices_status(dv, &st);
+			fprintf(stderr, "ardop-spine: %s\n",
+				st.detail[0] ? st.detail : "the device did not open");
+			rc = 1;
+			break;
+		}
+
 		if (!lb && ops.should_stop && ops.should_stop(ops.ctx))
 			break;
 	}

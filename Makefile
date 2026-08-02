@@ -65,6 +65,10 @@ STATIC = -static
 # fallback backend. miniaudio loads them at run time, but the stubs are linked.
 AUDIO_BACKEND_OBJS = $(MA_OBJS)
 AUDIO_LDLIBS = -lole32 -lwinmm -lavrt
+# SetupAPI enumerates HID interfaces for CM108 keying. hid.dll itself is loaded
+# at run time, so it needs no import library. Both ship with Windows: this is a
+# link addition, not a dependency an operator installs.
+PTT_LDLIBS = -lsetupapi
 else
 EXE =
 PLATFORM_CPPFLAGS =
@@ -77,11 +81,13 @@ STATIC =
 # ALSA backend this replaced, not a larger one.
 AUDIO_BACKEND_OBJS = $(MA_OBJS)
 AUDIO_LDLIBS = -ldl
+PTT_LDLIBS =
 endif
 
 # The miniaudio backend and everything it needs. ptt.o is here rather than in
 # SHELL_OBJS because it talks to serial ports and rigctld -- it is device code.
-MA_OBJS = shell/backend_ma.o shell/ma_impl.o shell/audio_devices.o shell/ptt.o
+MA_OBJS = shell/backend_ma.o shell/ma_impl.o shell/audio_devices.o \
+	shell/ptt.o shell/ptt_cat.o shell/ptt_cm108.o
 
 # core/ is held to a strict standard: -Werror and no mutable global state
 # (enforced by check-pure).  The shell/ and apps/ layers compose it under the
@@ -144,6 +150,10 @@ shell/sys.o: shell/sys.c
 	$(CC) -I. -D_GNU_SOURCE $(CORE_CPPFLAGS) $(CFLAGS) $(CORE_CFLAGS) -c -o $@ $<
 shell/ptt.o: shell/ptt.c
 	$(CC) -I. -D_DEFAULT_SOURCE $(CORE_CPPFLAGS) $(CFLAGS) $(CORE_CFLAGS) -c -o $@ $<
+# ptt_cm108.c reads sysfs (dirent) on Linux and SetupAPI on Windows; ptt_cat.c is
+# pure and needs nothing, but shares the rule for symmetry.
+shell/ptt_cm108.o: shell/ptt_cm108.c
+	$(CC) -I. -D_DEFAULT_SOURCE $(CORE_CPPFLAGS) $(CFLAGS) $(CORE_CFLAGS) -c -o $@ $<
 
 # shell/ma_impl.c is the ONE translation unit in the tree not held to
 # -Wall -Wextra -Werror. It contains a single #include of the vendored
@@ -167,7 +177,7 @@ ARDOPB_OBJS = shell/main.o shell/backend_null.o \
 	$(AUDIO_BACKEND_OBJS)
 
 ardopb$(EXE): $(CORE_OBJS) $(TEMPLATES) $(SHELL_OBJS) $(ARDOPB_OBJS)
-	$(CC) $(STATIC) $^ -o $@ $(AUDIO_LDLIBS) $(PLATFORM_LDLIBS) -lm
+	$(CC) $(STATIC) $^ -o $@ $(AUDIO_LDLIBS) $(PTT_LDLIBS) $(PLATFORM_LDLIBS) -lm
 
 # A convenience alias so `make ardopb` works where the real file is ardopb.exe.
 # Guarded, because on Linux the two names are the same and it would be circular.
@@ -226,7 +236,7 @@ app/%.o: app/%.c
 app/ardop-spine$(EXE): $(CORE_OBJS) $(TEMPLATES) $(SHELL_OBJS) $(SPINE_OBJS) \
 		$(SPINE_DEVICE_OBJS) $(SPINE_HARNESS) shell/backend_null.o \
 		shell/host_tcp.o $(AUDIO_BACKEND_OBJS)
-	$(CC) $(STATIC) $^ -o $@ $(AUDIO_LDLIBS) $(PLATFORM_LDLIBS) -lm
+	$(CC) $(STATIC) $^ -o $@ $(AUDIO_LDLIBS) $(PTT_LDLIBS) $(PLATFORM_LDLIBS) -lm
 
 app: app/ardop-spine$(EXE)
 
@@ -312,6 +322,7 @@ CORE_TESTS = \
 	test/core/test_audio_devices$(EXE) \
 	test/core/test_settings$(EXE) \
 	test/core/test_devices$(EXE) \
+	test/core/test_ptt$(EXE) \
 	test/core/test_backend_ma$(EXE)
 
 define newline
@@ -363,7 +374,15 @@ test/core/test_audio_devices$(EXE): test/core/test_audio_devices.c $(CORE_OBJS) 
 	$(CC) $(CORE_CPPFLAGS) -I. -Itest/core $(CFLAGS) \
 		$< $(CORE_OBJS) $(TEMPLATES) $(SHELL_OBJS) $(MA_OBJS) \
 		test/core/setup.o \
-		-lcmocka $(AUDIO_LDLIBS) $(PLATFORM_LDLIBS) -lm -o $@
+		-lcmocka $(AUDIO_LDLIBS) $(PTT_LDLIBS) $(PLATFORM_LDLIBS) -lm -o $@
+
+# test_ptt needs the keying objects, which live in MA_OBJS.
+test/core/test_ptt$(EXE): test/core/test_ptt.c $(CORE_OBJS) $(TEMPLATES) \
+		$(SHELL_OBJS) $(MA_OBJS) test/core/setup.o
+	$(CC) $(CORE_CPPFLAGS) -I. -Itest/core $(CFLAGS) \
+		$< $(CORE_OBJS) $(TEMPLATES) $(SHELL_OBJS) $(MA_OBJS) \
+		test/core/setup.o \
+		-lcmocka $(AUDIO_LDLIBS) $(PTT_LDLIBS) $(PLATFORM_LDLIBS) -lm -o $@
 
 # test_devices links the manager, so it needs MA_OBJS as well -- the null device
 # gives a real backend with a real device thread, which is what makes the
@@ -374,7 +393,7 @@ test/core/test_devices$(EXE): test/core/test_devices.c $(CORE_OBJS) $(TEMPLATES)
 	$(CC) $(CORE_CPPFLAGS) -I. -Itest/core $(CFLAGS) \
 		$< $(CORE_OBJS) $(TEMPLATES) $(SHELL_OBJS) $(SPINE_OBJS) \
 		$(SPINE_DEVICE_OBJS) $(MA_OBJS) test/core/setup.o \
-		-lcmocka $(AUDIO_LDLIBS) $(PLATFORM_LDLIBS) -lm -o $@
+		-lcmocka $(AUDIO_LDLIBS) $(PTT_LDLIBS) $(PLATFORM_LDLIBS) -lm -o $@
 
 # The spine test needs app/ as well. It lives in test/core/ rather than a
 # test/app/ of its own because that directory is really "the in-process suite",
@@ -402,7 +421,7 @@ test/core/test_backend_ma$(EXE): test/core/test_backend_ma.c $(CORE_OBJS) \
 	$(CC) $(CORE_CPPFLAGS) -I. -Itest/core $(CFLAGS) \
 		$< $(CORE_OBJS) $(TEMPLATES) $(SHELL_OBJS) $(MA_OBJS) \
 		test/core/setup.o \
-		-lcmocka $(AUDIO_LDLIBS) $(PLATFORM_LDLIBS) -lm -o $@
+		-lcmocka $(AUDIO_LDLIBS) $(PTT_LDLIBS) $(PLATFORM_LDLIBS) -lm -o $@
 
 # --- golden-corpus conformance (see test/golden/README.md) -----------------
 #
