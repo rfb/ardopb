@@ -62,6 +62,11 @@ add_executable(ardop-station
     ${ARDOP_ROOT}/gui/gaugewidget.cpp
     ${ARDOP_ROOT}/gui/statuslamps.cpp
     ${ARDOP_ROOT}/gui/telemetryclient.cpp
+
+    # Listed so AUTOMOC generates its meta-object: it declares signals but has
+    # no .cpp of its own, and AUTOMOC only scans headers it is told about or
+    # that have a same-named source beside them.
+    ${ARDOP_ROOT}/gui/panelsource.h
 )
 
 add_dependencies(ardop-station ardop_lib)

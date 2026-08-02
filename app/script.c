@@ -201,6 +201,22 @@ void app_script_event(app_script *sc, int side, const app_event *ev)
 	case APP_EV_DEVICE:
 		show(sc, side, ev->text);
 		break;
+
+	case APP_EV_STATE:
+		/*
+		 * Shown only when there is a station on the other end.
+		 *
+		 * Every state change emits one of these, including the return to
+		 * DISC, and a transcript with a bare line per transition is one
+		 * nobody reads. The remote callsign is the part that is not
+		 * already visible in the host messages around it.
+		 */
+		if (ev->text[0]) {
+			char line[APP_TEXT_MAX + 16];
+			snprintf(line, sizeof line, "peer %s", ev->text);
+			show(sc, side, line);
+		}
+		break;
 	}
 }
 

@@ -6,6 +6,7 @@
 #include <QTimer>
 
 #include "modemthread.h"
+#include "panelsource.h"
 #include "telemetryclient.h"
 
 extern "C" {
@@ -41,11 +42,14 @@ extern "C" {
  * spectrum record is one scan line of the waterfall and skipping them tears the
  * picture.
  */
-class SpineSource : public QObject {
+class SpineSource : public PanelSource {
 	Q_OBJECT
 
 public:
 	explicit SpineSource(ModemThread *modem, QObject *parent = nullptr);
+
+	/** @brief Always. This source has a modem behind it. */
+	bool canCommand() const override { return true; }
 
 	/** @brief Start pumping at @p hz. */
 	void start(int hz = 30);
@@ -53,20 +57,17 @@ public:
 
 	/* Geometry, for the waterfall's frequency axis. Fixed for an embedded
 	 * modem: it is the same build, so the constants are ours. */
-	int bins() const { return ARDOP_BUSY_MAG_BINS; }
-	int firstBin() const { return ARDOP_BUSY_FIRST_BIN; }
-	float binHz() const { return ARDOP_BUSY_BIN_HZ; }
+	int bins() const override { return ARDOP_BUSY_MAG_BINS; }
+	int firstBin() const override { return ARDOP_BUSY_FIRST_BIN; }
+	float binHz() const override { return ARDOP_BUSY_BIN_HZ; }
 
 signals:
-	/* Deliberately identical to TelemetryClient's, so the widgets bind to
-	 * either without knowing which. */
-	void spectrum(const SpectrumRow &row);
-	void constellation(const ConstellationFrame &frame);
-	void audioLevel(float rms, float peak);
-	void status(const LinkStatus &st);
-	void connectionChanged(bool up, const QString &detail);
-
-	/* The half a socket cannot carry: an embedded modem talks back. */
+	/* The five a display needs are PanelSource's, so a window can bind to
+	 * either source without knowing which it has.
+	 *
+	 * Below are the half a socket cannot carry: an embedded modem talks
+	 * back. A window that uses these has, by construction, a modem to
+	 * command -- which is what PanelSource::canCommand reports. */
 	void hostMessage(const QString &text);
 	void reply(const QString &text);
 	void fault(int code, const QString &text);

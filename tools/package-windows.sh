@@ -189,17 +189,21 @@ echo "package-windows: wrote $MODEM_NAME.zip"
 
 # --- the windowed application ---------------------------------------------
 #
-# Both Qt programs go in one download because they need the same 30 MB of Qt
-# DLLs, and shipping that twice to give somebody two 1 MB executables would be a
-# strange trade. ardop-station is the application; ardop-gui is the standalone
-# panel for watching a modem on another machine, and survives until --remote
-# makes it a mode of the same binary.
-if [ -f app/ui/build/ardop-station.exe ] || [ -f gui/build/ardop-gui.exe ]; then
+# One executable now.
+#
+# This used to carry ardop-gui.exe as well -- the standalone read-only panel --
+# with the note that it "survives until --remote makes it a mode of the same
+# binary". That is what analysis/16 §8 asked for and it is now done, so the
+# second executable is gone from the download: `ardop-station --remote HOST:PORT`
+# is the same panel, watching the same stream, with the same inability to key
+# anything.
+#
+# ardop-gui still builds from gui/ and still runs in CI. It is a useful thing to
+# keep compiling -- it proves the instrument widgets do not depend on the spine --
+# but it is not something an operator needs to be handed and choose between.
+if [ -f app/ui/build/ardop-station.exe ]; then
 	mkdir -p "$OUT/$GUI_NAME"
-	[ -f app/ui/build/ardop-station.exe ] \
-		&& cp app/ui/build/ardop-station.exe "$OUT/$GUI_NAME/"
-	[ -f gui/build/ardop-gui.exe ] \
-		&& cp gui/build/ardop-gui.exe "$OUT/$GUI_NAME/"
+	cp app/ui/build/ardop-station.exe "$OUT/$GUI_NAME/"
 	"$STRIP" "$OUT/$GUI_NAME"/*.exe
 
 	# windeployqt copies Qt's own DLLs and the platform plugin.
@@ -207,12 +211,9 @@ if [ -f app/ui/build/ardop-station.exe ] || [ -f gui/build/ardop-gui.exe ]; then
 	command -v windeployqt6 >/dev/null 2>&1 && WDQ=windeployqt6
 	[ -z "$WDQ" ] && command -v windeployqt >/dev/null 2>&1 && WDQ=windeployqt
 	if [ -n "$WDQ" ]; then
-		# Once per executable, into the same folder. They share almost
-		# every DLL, so the second run is nearly a no-op.
-		for exe in "$OUT/$GUI_NAME"/*.exe; do
-			"$WDQ" --release --no-translations \
-				--no-system-d3d-compiler --no-opengl-sw "$exe"
-		done
+		"$WDQ" --release --no-translations \
+			--no-system-d3d-compiler --no-opengl-sw \
+			"$OUT/$GUI_NAME/ardop-station.exe"
 	else
 		echo "package-windows: windeployqt not found; the GUI will not" >&2
 		echo "                 run on a machine without Qt installed" >&2
@@ -250,10 +251,9 @@ ardop station for Windows
 =========================
 
   ardop-station.exe   the application: a modem, its devices, and a window
-  ardop-gui.exe       a read-only panel for watching a modem on another machine
 
-Keep the DLLs in this folder next to them. They are Qt and its dependencies,
-and neither program will start without them.
+Keep the DLLs in this folder next to it. They are Qt and its dependencies, and
+the program will not start without them.
 
 Start here
 ----------
@@ -263,6 +263,13 @@ system default on a first run, and the Devices tab is where you change that.
 
   Panel     the waterfall, constellation, meters and the modem's own log
   Devices   pick a sound card and a way to key the radio
+  Station   your callsign, grid and ARQ settings; connect and disconnect
+  Console   type TNC commands and see exactly what came back
+
+Nothing on the Station tab can transmit until a callsign is accepted -- the
+buttons stay greyed and the reason is on the screen. That is deliberate: the
+modem will not open a session without one, and a Connect that failed for that
+reason looks exactly like a radio problem.
 
 On the Devices tab, "Detected radios" tries to work out which serial port
 belongs to your radio by looking for a keying interface on the same USB
@@ -293,12 +300,13 @@ says what to send back.
 Watching another station
 ------------------------
 
-ardop-gui.exe is the standalone panel. It contains no modem and cannot key a
-radio -- it connects to a running ardopb somewhere and draws what that modem
-reports:
+The same program, started with --remote, is a read-only panel. It runs no modem
+of its own and cannot key a radio: it connects to a running ardopb somewhere and
+draws what that modem reports. Only the Panel appears, because there is nothing
+to command -- a telemetry stream is one-way by construction.
 
     ardopb.exe MYCALL --audio --host 8515 --telemetry     (on the other machine)
-    ardop-gui.exe --host 192.168.1.20:8517                (here)
+    ardop-station.exe --remote 192.168.1.20:8515          (here)
 
 Antivirus
 ---------
@@ -316,7 +324,7 @@ EOF
 	(cd "$OUT" && zip -qr "$DEST/$GUI_NAME.zip" "$GUI_NAME")
 	echo "package-windows: wrote $GUI_NAME.zip"
 else
-	echo "package-windows: gui/build/ardop-gui.exe not found; skipping the" >&2
+	echo "package-windows: app/ui/build/ardop-station.exe not found; skipping the" >&2
 	echo "                 GUI zip. Build it with cmake first." >&2
 fi
 

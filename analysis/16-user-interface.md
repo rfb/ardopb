@@ -892,12 +892,23 @@ and the code as it was built disagreed.
    `core/codec/frame.c` by compiling that file in, which `gui/CMakeLists.txt`
    has done since it was written.
 
-3. **§8's `--remote` mode is not implemented yet.** The standalone panel survives
-   as a separate binary, `ardop-gui`, shipped in the same download as the
-   application because they need the same Qt libraries. Making it a mode is
-   cheap now that both sources emit the same signals -- `SpineSource` and
-   `TelemetryClient` are interchangeable behind the panel widgets, which was the
-   point of keeping the wire format in the display queue (§6).
+3. **§8's `--remote` mode is implemented, and the second executable is gone from
+   the download.** *(Amended again: this entry first recorded the mode as not
+   built.)*
+
+   The prediction held -- both sources already emitted the same signals, because
+   the display queue carries the wire format (§6). What was missing was a *type*:
+   the two classes agreed by convention, and a window cannot `connect` to a
+   convention. `gui/panelsource.h` is that type, and it draws the line in the
+   place that matters: the five signals a display needs are on the base, and
+   everything that commands the modem is on `SpineSource` alone. So `--remote`
+   shows only the Panel not because a check disables the other screens, but
+   because the source it was handed cannot command anything.
+
+   `ardop-gui` still builds and still runs in CI -- it is worth continuing to
+   compile, since it proves the instrument widgets do not depend on the spine --
+   but it is no longer shipped. One download, one executable, and nobody has to
+   choose between two programs that look the same.
 
 4. **The waterfall's one-to-one blit has to be written in device pixels, and
    was not.** The original scroll used a fixed 700-row image scaled into whatever

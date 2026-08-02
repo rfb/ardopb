@@ -36,8 +36,11 @@ double toDbfs(float linear)
 }   // namespace
 
 StationWindow::StationWindow(ModemThread *modem, QWidget *parent)
-	: QMainWindow(parent), m_modem(modem), m_source(modem)
+	: QMainWindow(parent), m_modem(modem)
 {
+	m_spineSource = new SpineSource(modem, this);
+	m_source = m_spineSource;
+
 	m_tabs = new QTabWidget(this);
 	m_tabs->addTab(buildPanel(), tr("Panel"));
 
@@ -89,27 +92,21 @@ StationWindow::StationWindow(ModemThread *modem, QWidget *parent)
 	setWindowTitle(tr("ardop station"));
 	resize(980, 640);
 
-	connect(&m_source, &SpineSource::spectrum,
-		this, &StationWindow::onSpectrum);
-	connect(&m_source, &SpineSource::constellation,
-		this, &StationWindow::onConstellation);
-	connect(&m_source, &SpineSource::audioLevel,
-		this, &StationWindow::onAudio);
-	connect(&m_source, &SpineSource::status,
-		this, &StationWindow::onStatus);
-	connect(&m_source, &SpineSource::connectionChanged,
-		this, &StationWindow::onConnectionChanged);
-	connect(&m_source, &SpineSource::hostMessage,
+	connectPanel();
+
+	/* The commanding half. These have no counterpart on a telemetry stream,
+	 * which is why they are connected here and not in connectPanel. */
+	connect(m_spineSource, &SpineSource::hostMessage,
 		this, &StationWindow::onHostMessage);
-	connect(&m_source, &SpineSource::reply,
+	connect(m_spineSource, &SpineSource::reply,
 		this, &StationWindow::onReply);
-	connect(&m_source, &SpineSource::fault,
+	connect(m_spineSource, &SpineSource::fault,
 		this, &StationWindow::onFault);
-	connect(&m_source, &SpineSource::deviceEvent,
+	connect(m_spineSource, &SpineSource::deviceEvent,
 		this, &StationWindow::onDeviceEvent);
-	connect(&m_source, &SpineSource::ownerChanged,
+	connect(m_spineSource, &SpineSource::ownerChanged,
 		this, &StationWindow::onOwnerChanged);
-	connect(&m_source, &SpineSource::linkState,
+	connect(m_spineSource, &SpineSource::linkState,
 		this, &StationWindow::onLinkState);
 
 	connect(m_station, &StationPage::message, this, &StationWindow::log);
@@ -130,7 +127,53 @@ StationWindow::StationWindow(ModemThread *modem, QWidget *parent)
 	connect(m_station, &StationPage::settingsChanged, this,
 		[this] { m_saveTick.start(); });
 
-	m_source.start(30);
+	m_spineSource->start(30);
+}
+
+StationWindow::StationWindow(const QString &host, quint16 port, QWidget *parent)
+	: QMainWindow(parent)
+{
+	m_client = new TelemetryClient(this);
+	m_source = m_client;
+
+	/*
+	 * One screen, and no tab bar around it.
+	 *
+	 * A single-tab QTabWidget is a frame with a decoration that promises
+	 * more. What this window can do remotely is show the panel, so it shows
+	 * the panel -- and the title carries where it is pointed, because a
+	 * display watching somebody else's station should never leave that in
+	 * doubt.
+	 */
+	setCentralWidget(buildPanel());
+
+	m_conn = new QLabel(tr("connecting to %1:%2").arg(host).arg(port), this);
+	statusBar()->addWidget(m_conn);
+	m_owner = new QLabel(QString(), this);
+	statusBar()->addPermanentWidget(m_owner);
+	m_frame = new QLabel(tr("no frames yet"), this);
+	statusBar()->addPermanentWidget(m_frame);
+
+	setWindowTitle(tr("ardop panel - %1:%2").arg(host).arg(port));
+	resize(980, 640);
+
+	connectPanel();
+	m_client->start(host, port);
+}
+
+/* The five a display needs, from whichever source this window was built with. */
+void StationWindow::connectPanel()
+{
+	connect(m_source, &PanelSource::spectrum,
+		this, &StationWindow::onSpectrum);
+	connect(m_source, &PanelSource::constellation,
+		this, &StationWindow::onConstellation);
+	connect(m_source, &PanelSource::audioLevel,
+		this, &StationWindow::onAudio);
+	connect(m_source, &PanelSource::status,
+		this, &StationWindow::onStatus);
+	connect(m_source, &PanelSource::connectionChanged,
+		this, &StationWindow::onConnectionChanged);
 }
 
 QWidget *StationWindow::buildPanel()
@@ -193,9 +236,9 @@ void StationWindow::log(const QString &line)
 void StationWindow::onSpectrum(const SpectrumRow &row)
 {
 	if (!m_geometrySet) {
-		m_waterfall->setSpectrumGeometry(m_source.bins(),
-						 m_source.firstBin(),
-						 m_source.binHz());
+		m_waterfall->setSpectrumGeometry(m_source->bins(),
+						 m_source->firstBin(),
+						 m_source->binHz());
 		m_geometrySet = true;
 	}
 	m_waterfall->addRow(row);
@@ -222,9 +265,11 @@ void StationWindow::onAudio(float rms, float peak)
 void StationWindow::onStatus(const LinkStatus &st)
 {
 	m_lamps->setStatus(st);
-	m_station->setLinkState(
-		QString::fromUtf8(ardop_host_state_name((ardop_link_state)st.state)),
-		m_remoteCall);
+	if (m_station)
+		m_station->setLinkState(
+			QString::fromUtf8(
+				ardop_host_state_name((ardop_link_state)st.state)),
+			m_remoteCall);
 	if (st.sn != 0 || st.quality != 0)
 		m_sn->setValue(st.sn, tr("%1 dB   Q %2")
 					      .arg(st.sn).arg(st.quality));

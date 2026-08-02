@@ -38,7 +38,26 @@ class StationWindow : public QMainWindow {
 	Q_OBJECT
 
 public:
+	/**
+	 * @brief The embedded station: a modem, its devices, and every screen.
+	 */
 	explicit StationWindow(ModemThread *modem, QWidget *parent = nullptr);
+
+	/**
+	 * @brief The remote panel: watch a running `ardopb` over its telemetry
+	 *        port.
+	 *
+	 * analysis/16 §8. **Only the Panel appears** -- there is no Devices,
+	 * Station or Console screen, because there is nothing to command. That
+	 * is not a limitation to be lifted later; `gui/README.md` records it as
+	 * the property that makes pointing this program at somebody else's
+	 * station safe: "the telemetry stream is one-way by construction, so a
+	 * display cannot key a transmitter".
+	 *
+	 * The window takes ownership of the client it builds.
+	 */
+	StationWindow(const QString &host, quint16 port,
+		      QWidget *parent = nullptr);
 
 	/**
 	 * @brief Open @p sel at start-up, and show it in the Devices screen.
@@ -78,10 +97,18 @@ private slots:
 
 private:
 	QWidget *buildPanel();
+	void connectPanel();
 	void log(const QString &line);
 
+	/* Null in remote mode. Every use is guarded, and the guard is what
+	 * decides whether a screen exists at all. */
 	ModemThread *m_modem = nullptr;
-	SpineSource m_source;
+
+	/* Exactly one of these is built; m_source is the one the panel binds
+	 * to. See panelsource.h. */
+	SpineSource *m_spineSource = nullptr;
+	TelemetryClient *m_client = nullptr;
+	PanelSource *m_source = nullptr;
 
 	QTabWidget *m_tabs = nullptr;
 	DevicesPage *m_devices = nullptr;

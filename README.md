@@ -204,13 +204,18 @@ ALSA, PulseAudio and JACK are opened at run time if present.
 
 ### Windows
 
-`ardopb.exe` and the apps are statically linked single files; `ardop-gui.exe`
-ships with its Qt DLLs beside it. Start with `ardopb.exe --list-devices`, then
+`ardopb.exe` is a statically linked single file; `ardop-station.exe` ships with
+its Qt DLLs beside it. Start with `ardopb.exe --list-devices`, then
 
 ```
 ardopb.exe MYCALL --audio --ptt rts:COM3 --host 8515 --telemetry
-ardop-gui.exe --host 127.0.0.1:8517
+ardop-station.exe --remote 127.0.0.1:8515
 ```
+
+`ardop-station.exe` on its own runs the modem itself, with screens for the
+devices, the station and a TNC console. With `--remote` it runs no modem and
+only watches one: read-only, because a telemetry stream is one-way and a
+display cannot key a transmitter.
 
 COM ports above COM9 work as written — the `\\.\` prefix is applied for you.
 

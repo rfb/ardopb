@@ -28,6 +28,19 @@ int main(int argc, char **argv)
 		"The ARDOP station: a modem, its devices, and a window on both.");
 	parser.addHelpOption();
 
+	/*
+	 * analysis/16 §8: the standalone panel is a mode, not a second program.
+	 * With --remote there is no modem in this process at all -- no device
+	 * manager, no audio, no thread -- so the flag is checked before anything
+	 * is built rather than disabling things afterwards.
+	 */
+	QCommandLineOption remoteOpt(
+		"remote",
+		"Watch a running ardopb over its telemetry port instead of "
+		"running a modem. Read-only: the panel is the only screen.",
+		"HOST:PORT");
+	parser.addOption(remoteOpt);
+
 	QCommandLineOption telemetryOpt(
 		"no-telemetry",
 		"Do not compute spectrum and constellation. The panel goes dark; "
@@ -35,6 +48,34 @@ int main(int argc, char **argv)
 	parser.addOption(telemetryOpt);
 
 	parser.process(app);
+
+	if (parser.isSet(remoteOpt)) {
+		const QString spec = parser.value(remoteOpt);
+
+		/* Split on the last colon, so an IPv6 literal survives -- the
+		 * same rule and the same reason as shell/ptt.c's rigctld host
+		 * parser, which had this exact bug. */
+		const int colon = spec.lastIndexOf(':');
+		bool portOk = false;
+		const quint16 port =
+			colon > 0 ? spec.mid(colon + 1).toUShort(&portOk) : 0;
+		if (!portOk || colon <= 0) {
+			QMessageBox::critical(
+				nullptr, QObject::tr("ardop panel"),
+				QObject::tr("--remote wants HOST:PORT, "
+					    "for example 127.0.0.1:8515.\n\n"
+					    "Got: %1").arg(spec));
+			return 1;
+		}
+
+		QString host = spec.left(colon);
+		if (host.startsWith('[') && host.endsWith(']'))
+			host = host.mid(1, host.size() - 2);   /* [::1]:8515 */
+
+		StationWindow window(host, port);
+		window.show();
+		return app.exec();
+	}
 
 	auto *modem = new ModemThread(&app);
 	if (!modem->open(!parser.isSet(telemetryOpt))) {

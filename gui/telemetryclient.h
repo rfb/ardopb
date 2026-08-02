@@ -8,43 +8,12 @@
 #include <QTimer>
 #include <QVector>
 
+#include "panelsource.h"
+#include "telemetrytypes.h"
+
 extern "C" {
 #include "shell/telemetry.h"
 }
-
-/**
- * @brief One spectrum row, as the waterfall wants it.
- *
- * Power magnitudes straight from the modem's FFT. Scaling to dB and to colour
- * is the widget's business, not the transport's.
- */
-struct SpectrumRow {
-	QVector<float> mag;
-};
-
-/** @brief One frame's demodulated symbols, in the decoder's own units. */
-struct ConstellationFrame {
-	quint8 frameType = 0;
-	quint8 modulation = 0;
-	/* Interpretation depends on `modulation` -- see shell/telemetry.h.
-	 * PSK/QAM: phase in milliradians and symbol magnitude.
-	 * 4FSK:    winning tone 0..3 and decision margin in per mille. */
-	QVector<qint16> phaseMrad;
-	QVector<qint16> mag;
-	qint16 magThreshold = 0;     /**< 16QAM ring, in `mag` units; 0 if none. */
-};
-
-/** @brief The discrete state a panel needs, mirrored onto the stream. */
-struct LinkStatus {
-	quint8 state = 0;
-	quint8 mode = 0;
-	bool busy = false;
-	bool ptt = false;
-	qint16 sn = 0;
-	qint16 quality = 0;
-	qint16 bandwidth = 0;
-	quint32 bufferLen = 0;
-};
 
 /**
  * @brief Reads an ardopb telemetry stream and re-emits it as Qt signals.
@@ -53,27 +22,25 @@ struct LinkStatus {
  * watching, and to be started before it. Strictly read-only -- nothing this
  * class can do reaches the modem.
  */
-class TelemetryClient : public QObject {
+class TelemetryClient : public PanelSource {
 	Q_OBJECT
 
 public:
 	explicit TelemetryClient(QObject *parent = nullptr);
 
+	/** @brief Never. A telemetry stream is one-way; see panelsource.h. */
+	bool canCommand() const override { return false; }
+
 	/** @brief Connect to @p host : @p port, retrying until told otherwise. */
 	void start(const QString &host, quint16 port);
 
 	/** @brief Spectrum geometry from the stream hello, for axis labelling. */
-	int bins() const { return m_bins; }
-	int firstBin() const { return m_firstBin; }
-	float binHz() const { return m_binHz; }
+	int bins() const override { return m_bins; }
+	int firstBin() const override { return m_firstBin; }
+	float binHz() const override { return m_binHz; }
 	bool connected() const { return m_greeted; }
 
-signals:
-	void spectrum(const SpectrumRow &row);
-	void constellation(const ConstellationFrame &frame);
-	void audioLevel(float rms, float peak);
-	void status(const LinkStatus &st);
-	void connectionChanged(bool up, const QString &detail);
+	/* The five signals are declared by PanelSource and emitted from here. */
 
 private slots:
 	void onReadyRead();

@@ -6,7 +6,7 @@
  */
 
 SpineSource::SpineSource(ModemThread *modem, QObject *parent)
-	: QObject(parent), m_modem(modem)
+	: PanelSource(parent), m_modem(modem)
 {
 	connect(&m_timer, &QTimer::timeout, this, &SpineSource::pump);
 }
