@@ -121,7 +121,8 @@ core/%.o: core/%.c
 
 # --- shell/ : the I/O-free runtime + the platform backends -----------------
 SHELL_OBJS = shell/runtime.o shell/loop.o shell/host.o shell/telemetry.o \
-	shell/ring.o shell/resample.o shell/net.o shell/sys.o shell/fault.o
+	shell/ring.o shell/resample.o shell/net.o shell/sys.o shell/fault.o \
+	shell/settings.o
 
 shell/%.o: shell/%.c
 	$(CC) -I. $(CORE_CPPFLAGS) $(CFLAGS) $(CORE_CFLAGS) -c -o $@ $<
@@ -299,6 +300,7 @@ CORE_TESTS = \
 	test/core/test_resample$(EXE) \
 	test/core/test_spine$(EXE) \
 	test/core/test_audio_devices$(EXE) \
+	test/core/test_settings$(EXE) \
 	test/core/test_backend_ma$(EXE)
 
 define newline

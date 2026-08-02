@@ -69,6 +69,37 @@ void ardop_install_signal_handlers(void);
 /** @brief True once an interrupt has been received. */
 bool ardop_stop_requested(void);
 
+/* --- where things are kept ------------------------------------------------- */
+
+/**
+ * @brief The per-user configuration directory for @p app, created if missing.
+ *
+ * `$XDG_CONFIG_HOME/<app>` or `$HOME/.config/<app>` on POSIX;
+ * `%%APPDATA%%\<app>` on Windows. No trailing separator.
+ *
+ * Windows reads `APPDATA` and nothing else. `SHGetKnownFolderPath` would add a
+ * link dependency for a variable that is set in every interactive session, and a
+ * service running without it gets a clear message rather than a surprise
+ * directory somewhere under `C:\Windows`.
+ *
+ * @return false if no home can be determined or the directory cannot be
+ *         created, in which case @p out is set to "".
+ */
+bool ardop_config_dir(const char *app, char *out, size_t cap);
+
+/** @brief Create @p path and any missing parents. @return true if it exists after. */
+bool ardop_mkdir_p(const char *path);
+
+/**
+ * @brief Rename @p from onto @p to, replacing @p to if it exists.
+ *
+ * Exists because POSIX `rename()` replaces and Win32's `rename()` fails when the
+ * destination is present. The one caller -- saving settings -- needs the
+ * replacing kind, or a crash midway through a write leaves an operator with an
+ * empty configuration.
+ */
+bool ardop_replace_file(const char *from, const char *to);
+
 /**
  * @brief A binary semaphore with a timed wait.
  *

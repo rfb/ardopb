@@ -19,11 +19,101 @@
 #  include <io.h>
 #else
 #  include <sys/select.h>
+#  include <sys/stat.h>
 #  include <sys/time.h>
 #  include <pthread.h>
 #  include <time.h>
 #  include <unistd.h>
 #endif
+
+#include <stdlib.h>
+
+/* --- where things are kept ------------------------------------------------- */
+
+bool ardop_mkdir_p(const char *path)
+{
+	char buf[512];
+	size_t n = strlen(path);
+	if (n == 0 || n >= sizeof(buf))
+		return false;
+	memcpy(buf, path, n + 1);
+
+	/* Create each component in turn. Starting at 1 skips a leading separator
+	 * so an absolute path does not try to create the root. */
+	for (size_t i = 1; i <= n; i++) {
+		bool sep = buf[i] == '/' || buf[i] == '\\';
+		if (!sep && buf[i] != '\0')
+			continue;
+
+		char saved = buf[i];
+		buf[i] = '\0';
+#ifdef _WIN32
+		/* "C:" is a drive, not a directory to create. */
+		bool drive = i == 2 && buf[1] == ':';
+		if (!drive && !CreateDirectoryA(buf, NULL)
+		    && GetLastError() != ERROR_ALREADY_EXISTS) {
+			buf[i] = saved;
+			return false;
+		}
+#else
+		if (mkdir(buf, 0700) != 0 && errno != EEXIST) {
+			buf[i] = saved;
+			return false;
+		}
+#endif
+		buf[i] = saved;
+	}
+	return true;
+}
+
+bool ardop_config_dir(const char *app, char *out, size_t cap)
+{
+	if (cap == 0)
+		return false;
+	out[0] = '\0';
+
+#ifdef _WIN32
+	const char *base = getenv("APPDATA");
+	if (!base || !*base)
+		return false;
+	if ((size_t)snprintf(out, cap, "%s\\%s", base, app) >= cap) {
+		out[0] = '\0';
+		return false;
+	}
+#else
+	const char *xdg = getenv("XDG_CONFIG_HOME");
+	int n;
+	if (xdg && *xdg) {
+		n = snprintf(out, cap, "%s/%s", xdg, app);
+	} else {
+		const char *home = getenv("HOME");
+		if (!home || !*home)
+			return false;
+		n = snprintf(out, cap, "%s/.config/%s", home, app);
+	}
+	if (n < 0 || (size_t)n >= cap) {
+		out[0] = '\0';
+		return false;
+	}
+#endif
+
+	if (!ardop_mkdir_p(out)) {
+		out[0] = '\0';
+		return false;
+	}
+	return true;
+}
+
+bool ardop_replace_file(const char *from, const char *to)
+{
+#ifdef _WIN32
+	/* MoveFileEx with REPLACE_EXISTING is the atomic-replace primitive;
+	 * plain rename() fails outright when the destination exists. */
+	return MoveFileExA(from, to, MOVEFILE_REPLACE_EXISTING) != 0;
+#else
+	return rename(from, to) == 0;
+#endif
+}
 
 /* --- sleeping and clocks --------------------------------------------------- */
 
