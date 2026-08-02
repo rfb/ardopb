@@ -10,7 +10,8 @@
 #
 # Produces two zips, not one:
 #
-#   ardopb-windows-x86_64.zip     ~300 KB   the modem and the host-client apps
+#   ardopb-windows-x86_64.zip     ~600 KB   the station program, the modem and
+#                                           the host-client apps
 #   ardop-gui-windows-x86_64.zip  ~30 MB    the instrument panel and its Qt DLLs
 #
 # The split is not cosmetic. Every byte over about a megabyte here is Qt and its
@@ -70,7 +71,18 @@ stamp() {
 # four binaries go from 2.6 MB to 756 KB.
 cp ardopb.exe "$OUT/$MODEM_NAME/"
 cp apps/ardop-tx.exe apps/ardop-rx.exe apps/ardop-chat.exe "$OUT/$MODEM_NAME/"
+
+# ardop-spine ships too, and it is the reason a first-time operator downloads
+# this at all: it is the only binary that can find a radio (--detect), and the
+# only one that keeps a device selection across restarts.
+cp app/ardop-spine.exe "$OUT/$MODEM_NAME/"
 "$STRIP" "$OUT/$MODEM_NAME"/*.exe
+
+# The field-test scripts and the guide that walks through them. Shipped together
+# because the guide names the scripts by path.
+mkdir -p "$OUT/$MODEM_NAME/scripts"
+cp test/app/*.script "$OUT/$MODEM_NAME/scripts/" 2>/dev/null || true
+cp analysis/19-field-testing.md "$OUT/$MODEM_NAME/FIELD-TESTING.md" 2>/dev/null || true
 
 stamp "$OUT/$MODEM_NAME"
 
@@ -78,6 +90,7 @@ cat > "$OUT/$MODEM_NAME/README-WINDOWS.txt" <<'EOF'
 ardopb for Windows
 ==================
 
+  ardop-spine.exe   the station program: finds your radio, remembers the choice
   ardopb.exe        the modem
   ardop-chat.exe    keyboard-to-keyboard chat over a link
   ardop-tx.exe      pipe a file or stream into a link
@@ -94,21 +107,54 @@ it to run a link.
 Quick start
 -----------
 
-1. See what sound devices you have:
+1. Ask it to find your radio:
 
-       ardopb.exe --list-devices
+       ardop-spine.exe --detect
 
-2. Run the modem. Use the id or the name printed above; with no device
+   In the common case a radio is one USB cable carrying both audio and
+   keying. Detection is not implemented on Windows yet, so this will report
+   nothing for now -- use --list-devices and pick by hand.
+
+2. See what sound devices you have:
+
+       ardop-spine.exe --list-devices
+
+3. Run the modem. Use the id or the name printed above; with no device
    arguments it takes the system defaults:
 
-       ardopb.exe MYCALL --audio --ptt rts:COM3 --host 8515 --telemetry
+       ardopb.exe MYCALL --audio --ptt civ:COM3@a4 --host 8515 --telemetry
 
    PTT can be:  none            VOX, or no keying
                 rts:COM3        assert RTS on a serial port
                 dtr:COM3        assert DTR instead
+                civ:COM3@a4     Icom CI-V, and every Xiegu
+                kenwood:COM3    a Kenwood's own CAT command
+                yaesu:COM3      a Yaesu's own CAT command
+                cm108:auto      a C-Media GPIO dongle
                 rigctld:HOST:PORT   key through a running rigctld
 
+   The right one is a property of the radio, and picking wrong fails
+   SILENTLY. A Xiegu or an Icom keys by CAT command and ignores RTS
+   entirely; a DigiRig Mobile keys by RTS; a DigiRig Lite keys by CM108
+   GPIO. All three look identically connected and only one transmits.
+
    Ports above COM9 work as written -- the \\.\ prefix is applied for you.
+
+Please read FIELD-TESTING.md first
+----------------------------------
+
+The keying paths in this build have never been run against a real radio.
+They are unit-tested down to the byte, and that is not the same thing.
+
+FIELD-TESTING.md walks through it in order of risk -- what the computer
+sees, whether audio works, whether it keys into a DUMMY LOAD, and only then
+anything on the air -- and says what to send back. If you have a radio and
+ten minutes, that document is the most useful thing you can do for this
+project.
+
+Use a dummy load for the keying steps. Ctrl-C always unkeys; if you ever
+see a transmitter stay keyed after the program exits, please report that
+ahead of anything else.
 
 Sound card rates
 ----------------

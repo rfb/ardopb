@@ -176,7 +176,7 @@ jobs:
         with:
           name: ardopb-linux-${{ matrix.arch }}
           path: ardopb-linux-${{ matrix.arch }}.tar.gz
-          retention-days: 14
+          retention-days: 30
 
   windows:
     runs-on: windows-latest
@@ -249,13 +249,13 @@ jobs:
         with:
           name: ardopb-windows-x86_64
           path: ardopb-windows-x86_64.zip
-          retention-days: 14
+          retention-days: 30
 
       - uses: actions/upload-artifact@v4
         with:
           name: ardop-gui-windows-x86_64
           path: ardop-gui-windows-x86_64.zip
-          retention-days: 14
+          retention-days: 30
 
   # A rolling build of main, so an operator can get a current binary from a
   # stable URL without a GitHub account:
@@ -304,10 +304,15 @@ jobs:
 
             | download | what it is |
             | --- | --- |
-            | `ardopb-windows-x86_64.zip` | the modem and the host-client apps |
+            | `ardopb-windows-x86_64.zip` | the station program, the modem and the host-client apps |
             | `ardopb-linux-x86_64.tar.gz` | the same, for a Linux PC |
             | `ardopb-linux-aarch64.tar.gz` | the same, for a 64-bit Raspberry Pi |
             | `ardop-gui-windows-x86_64.zip` | the instrument panel, and its Qt libraries |
+
+            Start with `ardop-spine --detect`, which tries to work out which
+            serial port belongs to your radio. **The keying paths have never
+            been run against real hardware** -- `FIELD-TESTING.md` inside the
+            download says what to try, in order of risk, and what to send back.
 
             You do not need the panel to run a link. The Linux tarballs need
             glibc 2.34 or newer (Debian 12, Ubuntu 22.04+, Raspberry Pi OS
