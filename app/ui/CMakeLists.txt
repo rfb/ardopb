@@ -87,6 +87,31 @@ else()
     target_link_libraries(ardop-station PRIVATE dl pthread m)
 endif()
 
+#
+# The one mechanical property the instruments have: the waterfall must blit one
+# image row per device pixel. It regressed once, invisibly, because the first fix
+# was written in logical pixels and this machine runs at 100%.
+#
+#   cmake --build app/ui/build --target check-widgets
+#
+add_executable(test_widgets EXCLUDE_FROM_ALL
+    test_widgets.cpp
+    ${ARDOP_ROOT}/gui/waterfallwidget.cpp
+    ${ARDOP_ROOT}/gui/telemetryclient.cpp)
+target_include_directories(test_widgets PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR} ${ARDOP_ROOT} ${ARDOP_ROOT}/core ${ARDOP_ROOT}/gui)
+target_link_libraries(test_widgets PRIVATE
+    ${ARDOP_ROOT}/libardop.a Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Network)
+if(NOT WIN32)
+    target_link_libraries(test_widgets PRIVATE dl pthread m)
+endif()
+add_dependencies(test_widgets ardop_lib)
+
+add_custom_target(check-widgets
+    COMMAND test_widgets
+    DEPENDS test_widgets
+    COMMENT "Waterfall scale test, at four device pixel ratios")
+
 # The C sources compiled here are held to the same bar as everywhere else.
 # Guarded on the compiler, since these are GCC/Clang spellings and MSVC rejects
 # them; MinGW takes them unchanged.

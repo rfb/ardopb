@@ -128,6 +128,12 @@ jobs:
           cmake -S gui -B gui/build -G Ninja -DCMAKE_BUILD_TYPE=Release
           cmake --build gui/build
 
+          # The waterfall must blit one image row per device pixel. It is
+          # checked here because it cannot be checked by looking: the failure
+          # is invisible at 100% scaling and shows only at the 125% and 150%
+          # that most Windows machines run at. Offscreen, so no display.
+          cmake --build app/ui/build --target check-widgets
+
   # The Linux tarballs, built where they must be built rather than where the
   # tests happen to run.
   #
@@ -272,6 +278,12 @@ jobs:
           cmake --build app/ui/build
           cmake -S gui -B gui/build -G Ninja -DCMAKE_BUILD_TYPE=Release
           cmake --build gui/build
+
+          # The waterfall must blit one image row per device pixel. It is
+          # checked here because it cannot be checked by looking: the failure
+          # is invisible at 100% scaling and shows only at the 125% and 150%
+          # that most Windows machines run at. Offscreen, so no display.
+          cmake --build app/ui/build --target check-widgets
 
       - name: Package
         run: tools/package-windows.sh dist

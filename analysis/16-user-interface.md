@@ -898,3 +898,35 @@ and the code as it was built disagreed.
    cheap now that both sources emit the same signals -- `SpineSource` and
    `TelemetryClient` are interchangeable behind the panel widgets, which was the
    point of keeping the wire format in the display queue (§6).
+
+4. **The waterfall's one-to-one blit has to be written in device pixels, and
+   was not.** The original scroll used a fixed 700-row image scaled into whatever
+   height the widget happened to be, so every new row moved the picture by a
+   fractional pixel and the resampling shifted which source row landed on which
+   output row -- the display shimmered. That was fixed by growing the image to at
+   least the canvas height, and it worked.
+
+   It worked *at 100% scaling*. `QWidget::height()` is in logical pixels and the
+   blit lands in device pixels, so on a display at 125% or 150% -- which is most
+   Windows machines -- the vertical scale was still 1.25 or 1.5 and the shimmer
+   was still there. It was reported from a Windows machine and could not be
+   reproduced on the Linux one, because this display runs at 100%.
+
+   The fix is one unit change: every row count is now in device pixels
+   (`canvasRows()`), and `paintEvent` derives its target rectangle from the row
+   count rather than from the widget, so the rectangle maps to a whole number of
+   device pixels however the ratio divides.
+
+   **The general form is worth more than the fix.** A geometry bug that is exact
+   at one device pixel ratio and wrong at every other is invisible to whoever
+   wrote it and obvious to the operator, and no amount of looking at it on the
+   development machine will find it. So it is now tested rather than looked at:
+   `app/ui/test_widgets.cpp` feeds the widget a single bright scan line and
+   asserts it renders one row thick and stays that thickness as it scrolls, in a
+   child process at each of 1.0, 1.25, 1.5 and 2.0. Against the previous code it
+   passes at 1.0 and fails at all three others, which is exactly the signature.
+   It runs offscreen, in CI, on both hosts.
+
+   **Anything else drawn here inherits the same hazard** -- the §9 meter and the
+   §10 history grid both paint at pixel scale, and both should get a case in that
+   file rather than a comment.

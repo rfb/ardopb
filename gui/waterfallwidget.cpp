@@ -45,7 +45,7 @@ void WaterfallWidget::setSpectrumGeometry(int bins, int firstBin, float binHz)
 	m_firstBin = firstBin;
 	m_binHz = binHz;
 	m_img = QImage();
-	ensureHeight(std::max(canvasHeight(), kHistory));
+	ensureHeight(std::max(canvasRows(), kHistory));
 	m_rows = 0;
 	m_haveFloor = false;
 	update();
@@ -57,7 +57,7 @@ int WaterfallWidget::historyHeight() const
 }
 
 /*
- * Keep the image at least as tall as the canvas.
+ * Keep the image at least as tall as the canvas, measured in *device* pixels.
  *
  * This is what makes the scroll smooth. Painting used to scale a fixed 700-row
  * image into whatever height the widget happened to be, so every new row moved
@@ -65,6 +65,14 @@ int WaterfallWidget::historyHeight() const
  * landed on which output row -- the display shimmered and appeared to bounce.
  * With the image at least canvas-height, rows blit one-to-one and a new row
  * moves the picture by exactly one pixel.
+ *
+ * The unit is the part that took two goes to get right. A widget's height() is
+ * in logical pixels and a blit lands in device pixels, so on a display running
+ * at 125% or 150% -- which is most Windows machines -- sizing the image to the
+ * logical height left the vertical scale at 1.25 or 1.5 and the shimmer came
+ * straight back, invisible to anyone developing at 100%. Every quantity here is
+ * therefore in device pixels, and paintEvent picks a target rectangle that maps
+ * to a whole number of them.
  */
 void WaterfallWidget::ensureHeight(int rows)
 {
@@ -164,13 +172,19 @@ void WaterfallWidget::addRow(const SpectrumRow &row)
 void WaterfallWidget::resizeEvent(QResizeEvent *e)
 {
 	QWidget::resizeEvent(e);
-	ensureHeight(canvasHeight());
+	ensureHeight(canvasRows());
 	update();
 }
 
 int WaterfallWidget::canvasHeight() const
 {
 	return std::max(0, height() - kAxisHeight);
+}
+
+/* The canvas in device pixels: how many image rows it takes to fill it. */
+int WaterfallWidget::canvasRows() const
+{
+	return int(std::ceil(canvasHeight() * devicePixelRatioF()));
 }
 
 void WaterfallWidget::paintEvent(QPaintEvent *)
@@ -181,13 +195,29 @@ void WaterfallWidget::paintEvent(QPaintEvent *)
 	const int axisH = kAxisHeight;
 	QRect canvas(0, 0, width(), canvasHeight());
 
-	/* One image row per output row: only the horizontal axis is scaled
+	/*
+	 * One image row per device pixel row: only the horizontal axis is scaled
 	 * (bins to pixels), which is a constant stretch and so does not shimmer
-	 * as rows arrive. */
-	if (m_rows > 0 && canvas.height() > 0)
-		p.drawImage(canvas, m_img,
-			    QRect(0, 0, m_img.width(),
-				  std::min(canvas.height(), m_img.height())));
+	 * as rows arrive.
+	 *
+	 * The target is a QRectF whose height is derived from the row count
+	 * rather than from the widget, so that however the ratio divides, the
+	 * rectangle maps to exactly `rows` device pixels and the vertical scale
+	 * is exactly 1. Taking canvas.height() directly would leave a fractional
+	 * scale on any display that is not at 100%.
+	 */
+	if (m_rows > 0 && canvas.height() > 0) {
+		/* Dragging the window to a monitor with different scaling changes
+		 * the ratio without necessarily resizing the widget, so the row
+		 * count is checked here too. ensureHeight only ever grows and
+		 * returns immediately when the image is already big enough. */
+		ensureHeight(canvasRows());
+
+		const qreal dpr = devicePixelRatioF();
+		const int rows = std::min(canvasRows(), m_img.height());
+		p.drawImage(QRectF(0, 0, width(), rows / dpr), m_img,
+			    QRectF(0, 0, m_img.width(), rows));
+	}
 
 	/* Frequency axis, from the geometry the stream announced. */
 	p.setPen(QColor(160, 160, 160));

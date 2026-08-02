@@ -28,6 +28,16 @@ public:
 	/** @brief Set the bin geometry used to label the frequency axis. */
 	void setSpectrumGeometry(int bins, int firstBin, float binHz);
 
+	/**
+	 * @brief Rows the history image holds, in device pixels.
+	 *
+	 * Observation only, for the scale test in app/ui/test_widgets.cpp. The
+	 * unit is the whole point: this must cover the canvas in *device* pixels,
+	 * not logical ones, or the vertical blit is fractional and the display
+	 * shimmers on any screen not at 100%.
+	 */
+	int historyRows() const { return m_img.height(); }
+
 public slots:
 	void addRow(const SpectrumRow &row);
 	void clear();
@@ -39,10 +49,13 @@ protected:
 private:
 	QRgb colourFor(float t) const;
 	int historyHeight() const;
-	int canvasHeight() const;
+	int canvasHeight() const;   /* logical pixels: layout and the axis. */
+	int canvasRows() const;     /* device pixels: the image and the blit. */
 	void ensureHeight(int rows);
 
-	QImage m_img;            /* bins wide, history tall; scaled on paint. */
+	QImage m_img;            /* bins wide, history tall; scaled on paint.
+	                          * Rows are device pixels, not logical ones --
+	                          * see ensureHeight. */
 	int m_bins = ARDOP_BUSY_MAG_BINS;
 	int m_firstBin = ARDOP_BUSY_FIRST_BIN;
 	float m_binHz = ARDOP_BUSY_BIN_HZ;
