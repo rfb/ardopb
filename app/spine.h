@@ -164,7 +164,29 @@ typedef enum {
 	APP_EV_FAULT,     /**< @c text + @c code (an ::app_fault). */
 	APP_EV_DEVICE,    /**< @c text + @c code (an ::app_device_code). */
 	APP_EV_STATE,     /**< @c text: the other station, or empty. @c code: state. */
+	APP_EV_GUEST,     /**< @c text + @c code (an ::app_guest_code). */
 } app_event_kind;
+
+/**
+ * @brief What an attached TNC client did. Rides ::APP_EV_GUEST in @c code.
+ *
+ * [analysis/14](../analysis/14-station-application.md) Decision 4 settles the
+ * policy these report on: a guest's configuration commands are **applied, not
+ * refused** -- Pat sets `MYCALL` during its startup handshake, and protecting
+ * the application's settings from it would break the client we most want to
+ * support. Interoperability wins, and the operator is given visibility instead
+ * of protection.
+ *
+ * These events are that visibility. Without them a guest can change this
+ * station's callsign and nothing on screen says so.
+ */
+typedef enum {
+	APP_GUEST_LISTENING = 0, /**< The server came up. */
+	APP_GUEST_CONNECTED,     /**< A client attached; it now owns the link. */
+	APP_GUEST_DISCONNECTED,  /**< It left; the link is the app's again. */
+	APP_GUEST_REFUSED,       /**< A second client was turned away. */
+	APP_GUEST_COMMAND,       /**< It ran a command. @c text has the reply. */
+} app_guest_code;
 
 /**
  * @brief One event, fully owned by the caller.
@@ -386,6 +408,9 @@ void app_report_fault(app_spine *sp, app_fault code, const char *what);
 
 /** @brief Emit an ::APP_EV_DEVICE. **Modem thread only.** */
 void app_report_device(app_spine *sp, app_device_code code, const char *text);
+
+/** @brief Emit an ::APP_EV_GUEST. **Modem thread only.** */
+void app_report_guest(app_spine *sp, app_guest_code code, const char *text);
 
 /**
  * @brief Permit transmission again. **Modem thread only.**

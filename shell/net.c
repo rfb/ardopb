@@ -165,11 +165,29 @@ ardop_socket ardop_net_listen(uint16_t port)
 	return fd;
 }
 
-ardop_socket ardop_net_accept(ardop_socket listener)
+ardop_socket ardop_net_accept(ardop_socket listener, char *peer, size_t peer_cap)
 {
-	ardop_socket fd = (ardop_socket)accept(listener, NULL, NULL);
+	struct sockaddr_storage addr;
+	socklen_t addr_len = sizeof addr;
+
+	if (peer && peer_cap)
+		peer[0] = '\0';
+
+	ardop_socket fd =
+		(ardop_socket)accept(listener, (struct sockaddr *)&addr,
+				     &addr_len);
 	if (!ardop_net_valid(fd))
 		return ARDOP_SOCKET_INVALID;
+
+	/* Best effort: a name we could not render is not a reason to refuse a
+	 * connection, so a failure here leaves the empty string behind. */
+	if (peer && peer_cap) {
+		char host[64], serv[16];
+		if (getnameinfo((struct sockaddr *)&addr, addr_len, host,
+				sizeof host, serv, sizeof serv,
+				NI_NUMERICHOST | NI_NUMERICSERV) == 0)
+			snprintf(peer, peer_cap, "%.48s:%.8s", host, serv);
+	}
 	(void)ardop_net_set_nonblock(fd);
 #ifdef _WIN32
 	/* Balance the refcount: this handle will be passed to

@@ -302,6 +302,7 @@ int main(int argc, char **argv)
 	 * first step. */
 	ardop_host_tcp *host = NULL;
 	app_tnc_ops tnc;
+	app_tnc_watch watch;
 	if (host_port > 0) {
 		host = ardop_host_tcp_open((uint16_t)host_port);
 		if (!host) {
@@ -312,6 +313,9 @@ int main(int argc, char **argv)
 		}
 		app_tnc_host_tcp_bind(&tnc, host);
 		app_set_tnc(sp, &tnc);
+		/* Watched here as well as in the application, so the harness
+		 * exercises the same path a windowed operator sees. */
+		app_tnc_host_tcp_watch(&watch, host, sp);
 		/* ardop_host_tcp_open already reported the ports. */
 	}
 

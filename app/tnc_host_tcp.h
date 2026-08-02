@@ -29,4 +29,25 @@
  */
 void app_tnc_host_tcp_bind(app_tnc_ops *ops, ardop_host_tcp *h);
 
+/**
+ * @brief Storage for the observer binding. Caller-owned; outlive the spine.
+ *
+ * Two pointers, because the transport's observer is told what a guest did and
+ * the spine is what turns that into an event a user interface can see, and
+ * neither knows about the other.
+ */
+typedef struct {
+	app_spine *spine;
+	ardop_host_tcp *host;
+} app_tnc_watch;
+
+/**
+ * @brief Report guest activity into @p sp as ::APP_EV_GUEST events.
+ *
+ * Optional: ardopb does not call it, because a daemon's operator reads the same
+ * information on stderr. A windowed application has no stderr anybody is
+ * looking at, which is the whole reason the hook exists.
+ */
+void app_tnc_host_tcp_watch(app_tnc_watch *w, ardop_host_tcp *h, app_spine *sp);
+
 #endif /* ARDOP_APP_TNC_HOST_TCP_H_ */

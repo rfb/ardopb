@@ -434,6 +434,12 @@ bool app_set_platform(app_spine *sp, const ardop_platform_ops *ops, size_t block
 	return true;
 }
 
+void app_report_guest(app_spine *sp, app_guest_code code, const char *text)
+{
+	if (sp)
+		emit(sp, APP_EV_GUEST, (int)code, false, NULL, text, NULL, 0);
+}
+
 void app_set_tnc(app_spine *sp, const app_tnc_ops *tnc)
 {
 	sp->tnc = tnc;
