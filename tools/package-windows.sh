@@ -69,9 +69,9 @@ stamp() {
 #
 # Stripping is done here rather than by dropping -g from CFLAGS, so a developer
 # who builds locally keeps a debuggable binary. It is worth roughly 3x: the
-# four binaries go from 2.6 MB to 756 KB.
+# binaries go from 2.6 MB to 756 KB.
 cp ardopb.exe "$OUT/$MODEM_NAME/"
-cp apps/ardop-tx.exe apps/ardop-rx.exe apps/ardop-chat.exe "$OUT/$MODEM_NAME/"
+cp apps/ardop-cat.exe apps/ardop-chat.exe "$OUT/$MODEM_NAME/"
 
 # ardop-spine ships too, and it is the reason a first-time operator downloads
 # this at all: it is the only binary that can find a radio (--detect), and the
@@ -94,8 +94,7 @@ ardopb for Windows
   ardop-spine.exe   the station program: finds your radio, remembers the choice
   ardopb.exe        the modem
   ardop-chat.exe    keyboard-to-keyboard chat over a link
-  ardop-tx.exe      pipe a file or stream into a link
-  ardop-rx.exe      receive a stream to stdout
+  ardop-cat.exe     a raw byte pipe over a link, in either direction
 
 Nothing here needs installing and nothing needs a DLL beside it. Copy the
 files anywhere and run them.

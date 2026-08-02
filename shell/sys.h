@@ -37,8 +37,8 @@ uint64_t ardop_wall_ms(void);
  *
  * A no-op on POSIX and **mandatory** on Windows for anything that pipes data.
  * In the default text mode the C runtime turns every 0x0A written into 0x0D
- * 0x0A, and treats 0x1A on input as end-of-file. `ardop-tx` reads payload from
- * stdin and `ardop-rx` writes payload to stdout, so without this a file moved
+ * 0x0A, and treats 0x1A on input as end-of-file. `ardop-cat` reads payload from
+ * stdin and writes payload to stdout, so without this a file moved
  * over the radio is silently corrupted at both ends -- and the corruption
  * depends on the file's contents, so small tests pass.
  */
