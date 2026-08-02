@@ -63,15 +63,20 @@ make test-app-tsan    # the two-thread ThreadSanitizer stress, Linux only
 | `spine.h` | **The public seam.** Workstreams C (the interface) and E (the protocol) include this and nothing else from here. |
 | `spine.c` | The heap runtime, the loop body, the single observer, the telemetry sink, the transmit credit, the ownership gate. |
 | `ring.h` `ring.c` | The single-producer/single-consumer ring of variable-length records that all three queues are built from. |
+| `devices.{h,c}` | Who owns the sound card and the keying line, and when they are rebuilt. The only file in the tree that includes both `app/spine.h` and `shell/backend_ma.h`. |
 | `tnc_host_tcp.c` | `shell/host_tcp.c` presented as an `app_tnc_ops`. The only file here that knows sockets exist. |
 | `loopback.c` | Two spines wired to each other over an in-memory channel. |
 | `script.c` | The scripted driver: TNC lines plus a handful of `@` directives. |
 | `main.c` | `ardop-spine`: argument parsing, backend selection, and the loop. |
 
-Two object groups, and the split matters: `SPINE_OBJS` (`spine.o`, `ring.o`) is
-portable C11 with no sockets and no feature-test macros — it is what the eventual
-CMake application build will compile. `SPINE_HARNESS` is everything else here,
-and the shipping program will not link it.
+Three object groups, because they have three futures. `SPINE_OBJS`
+(`spine.o`, `ring.o`) is the seam: portable C11 with no sockets, no feature-test
+macros and no devices — what the eventual CMake application build compiles.
+`SPINE_DEVICE_OBJS` (`devices.o`) owns the sound card and the keying line;
+portable C11 too, but it names the miniaudio backend and the PTT object, so a
+platform that gets its audio from somewhere else replaces this one file and keeps
+the seam. `SPINE_HARNESS` is the phase-1 driver, and the shipping program will
+not link it.
 
 ---
 
@@ -120,7 +125,18 @@ warnings — `-Wformat-truncation` among them — only fire with optimisation on
 `make test-app-tsan` builds at `-O1` and so covers this directory at a bar the
 default build structurally cannot. It has already caught one real defect.
 
-### 4. Exactly one observer — *guidance*
+### 4. The device manager's shared surface is one ring and two atomics — *guidance*
+
+`app_devices` crosses threads with a request ring — the same SPSC record ring the
+spine's three queues use, so the ordering guarantee is the one
+`make test-ring-tsan` already proves — plus a published state and a generation
+counter. A third shared field needs its own argument.
+
+`app/devices.c` is deliberately absent from `TSAN_SRCS`, for the same reason
+`net.c` and `ring.c` are: it is unreachable from a loopback-backed, socket-free
+spine, and adding it would drag miniaudio under the sanitizer.
+
+### 5. Exactly one observer — *guidance*
 
 `ARDOP_MAX_OBSERVERS` is 4, the fifth registration is dropped silently, and there
 is no way to unregister. The spine takes one slot at `app_open` and fans out on
@@ -160,19 +176,23 @@ transmit credit, and the only one that takes part in the release/acquire pairing
 
 ## Status
 
-Phase 1 of five. What works: the seam, the three queues, transmit backpressure,
-the TNC takeover rule against a real client, a complete ARQ session over the
-loopback, and the sanitised two-thread proof.
+Phases 1 and 2 of five (workstreams A and B). What works: the seam, the three
+queues, transmit backpressure, the TNC takeover rule against a real client, a
+complete ARQ session over the loopback, the sanitised two-thread proof — and
+device selection, which is what made this an application rather than a daemon.
+
+An operator can now choose a sound card and a keying method, have the choice
+survive a restart, and recover from a device that disappears by selecting another
+rather than restarting the program. `--detect` finds a radio by pairing a sound
+card with the keying interface on the same USB hardware. See
+[`shell/README.md`](../shell/README.md) for what has and has not been run against
+real hardware.
 
 Not here yet:
 
 - **The user interface** (workstream C, [`analysis/16`](../analysis/16-user-interface.md)).
   `gui/` remains the standalone panel for a *remote* station and is untouched.
 - **Chat and file transfer** (workstream E, [`analysis/17`](../analysis/17-application-protocol.md)).
-- **Device selection from a settings screen** (workstream B,
-  [`analysis/15`](../analysis/15-platform-audio-and-ptt.md)). `app_set_platform`
-  already supports the swap and already refuses it mid-transmission; nothing
-  drives it yet.
 - **macOS and Android.** Windows and Linux first. Nothing here precludes them —
   that is what rule 2 is for.
 - **CMake.** It arrives with the interface, which is what needs it. The root

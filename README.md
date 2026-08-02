@@ -93,7 +93,7 @@ core is held to.
 | Path | What |
 |---|---|
 | [`core/`](core/) | The pure modem + protocol library: `codec` (frame table, Reed–Solomon, CRC, callsign/grid coding), `modem` (modulator, demodulator, sync, busy detector, FFT), `link` (the ARQ/FEC state machine). No I/O, no globals. |
-| [`shell/`](shell/) | The impure program around the core: the sans-I/O `runtime`, the single-clocked driver `loop`, the TCP host interface, the portable socket/system layer (`net`, `sys`), and the platform backends (miniaudio, plus a device-free `null`). |
+| [`shell/`](shell/) | The impure program around the core: the sans-I/O `runtime`, the single-clocked driver `loop`, the TCP host interface, the portable socket/system layer (`net`, `sys`), settings, and the platform layer — miniaudio, keying, device enumeration. See [`shell/README.md`](shell/README.md). |
 | [`apps/`](apps/) | Host-client CLI tools — see [`apps/README.md`](apps/README.md). |
 | [`app/`](app/) | The station application's embedding spine: the modem embedded rather than talked to, with backpressure and a TNC-ownership rule. Phase 1 of [`analysis/14`](analysis/14-station-application.md); see [`app/README.md`](app/README.md). |
 | [`test/`](test/) | In-process tests (`test/core`) and the frozen golden-vector corpus (`test/golden`). |
@@ -119,6 +119,35 @@ ardopb MYCALL [--listen] [--host PORT] [--telemetry [PORT]]
        [--null [SECONDS] | --audio [CAPTURE PLAYBACK]]
        [--audio-backend NAME] [--ptt SPEC] [--list-devices]
 ```
+
+### Keying
+
+| Spec | Method |
+|---|---|
+| `none`, `vox` | Nothing. Always available. |
+| `rts:DEV`, `dtr:DEV` | Assert a serial control line. |
+| `civ:DEV[@ADDR]` | Icom CI-V, **and every Xiegu**, which emulates it. |
+| `kenwood:DEV`, `yaesu:DEV` | The radio's own CAT command. |
+| `cm108[:PATH\|auto][+N]` | C-Media GPIO over raw HID (DigiRig Lite and similar). |
+| `rigctld:HOST:PORT` | To a running rigctld. |
+
+The right method is a property of the radio, and picking the wrong one fails
+silently: a Xiegu or an Icom keys by CAT command and ignores RTS entirely, while
+a DigiRig Mobile keys by RTS and a DigiRig Lite by CM108 GPIO. All three look
+identically connected and only one of them transmits.
+
+`app/ardop-spine --detect` works it out for you where it can, by pairing a sound
+card with the keying interface on the same USB hardware. It prints what it found
+and applies nothing — confirm it keys before trusting it.
+
+CM108 on Linux needs a udev rule; the diagnostic prints it, and it is also in
+[`shell/README.md`](shell/README.md).
+
+### Settings
+
+`$XDG_CONFIG_HOME/ardop/station.conf` (or `$HOME/.config/ardop/...`), and
+`%APPDATA%\ardop\station.conf` on Windows. Plain `key=value`, safe to edit by
+hand, and unknown keys are preserved.
 
 `--audio` is the sound card, on every platform: one backend (miniaudio) over
 WASAPI, CoreAudio, AAudio, ALSA, PulseAudio and JACK. `--list-devices` prints

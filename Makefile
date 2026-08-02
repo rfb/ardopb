@@ -497,4 +497,5 @@ clean:
 		test/core/*.o test/core/*.d $(CORE_TESTS) \
 		test/core/stress_ring$(EXE) test/core/stress_spine$(EXE) \
 		test/golden/core_decode_wav$(EXE) test/golden/shell_decode_wav$(EXE) \
-		test/golden/shell_tx_wav$(EXE) test/golden/*.d
+		test/golden/shell_tx_wav$(EXE) test/golden/resample_decode_wav$(EXE) \
+		test/golden/*.d

@@ -198,6 +198,37 @@ that exists only for drawing the OLED constellation.
 
 ---
 
+## Not the modem: the CM108 keying report
+
+An accident of the same shape, in the platform layer rather than the waveform,
+recorded here because the reasoning is identical.
+
+`shell/ptt_cm108.c` writes a **five-byte** HID output report to key a C-Media
+GPIO pin. The chip's datasheet describes four. direwolf's `cm108.c` — the
+implementation every interface in the field has actually been tested against —
+writes five, with the comment:
+
+> *"Writing 5 bytes works. I have no idea why. From the CMedia datasheet it
+> looks like we need 4."*
+
+- **Category** — not TX-normative in the on-air sense; nothing about the waveform
+  depends on it. But it is *interop-normative with hardware*, which is the same
+  problem pointed at a device instead of a peer: the behaviour that matters is
+  what the chips in operators' hands do, not what the document says they do.
+- **How `shell/` reproduces it** — `ardop_cm108_report` emits five bytes, and
+  `test/core/test_ptt.c` pins them for every GPIO pin and both states.
+- **`improved` opportunity** — none until somebody with hardware can compare. This
+  project has no CM108 interface, so a four-byte report would be a change made on
+  the strength of a datasheet against an implementation with a decade of field
+  use. If a device is ever found that rejects five bytes, that is the evidence to
+  act on.
+
+The general rule this illustrates: when a reference implementation and its
+documentation disagree, and you cannot test, follow the implementation and write
+down that you did.
+
+---
+
 ## How to add to this catalog
 
 When a port turns up another one, add a numbered entry with: where it lives

@@ -472,3 +472,137 @@ design above and the code as it stood disagreed.
     4:1 decimation (m = 4), the latter decoding at quality 100 and S/N 23-24 dB.
     `tools/loopback.sh` lost its generated `asound.conf` and `ALSA_CONFIG_PATH`
     machinery in the process, which is a simplification in its own right.
+
+14. **§4's resolution rule shipped private, and printing to stderr.** It was a
+    `static` function inside `backend_ma.c`, so a settings screen could not
+    reuse it and workstream C would have written a second copy; and an operator
+    running a graphical program never sees stderr, so the one failure the rule
+    exists to prevent — transmitting through the laptop speakers after a
+    replug — happened silently anyway. Lifted to `ardop_audio_match_device`:
+    pure, over an enumerated list, returning *how* it matched instead of
+    printing. The backend keeps a thin adapter.
+
+    A name match is deliberately **not** a substitution. It is the operator's
+    device, found after a renumber, so the honest thing is to use it and write
+    the new id back — which is why the backend now also reports the device it
+    actually opened. Without that, the rule degrades to name-matching forever.
+
+15. **`native_12k` (§4) was specified and never built, and should not be.** It
+    was a boolean about the wrong thing: 24000, 48000 and 96000 are all equally
+    usable and it would have read `false` for every one of them. It would also
+    have been wrong on the two backends that matter most, since PulseAudio and
+    shared-mode WASAPI report the mix format rather than the hardware's
+    capability. Replaced by `native_rate` + `rate_ok`, which give three honest
+    answers where one boolean had two dishonest ones: "48000 Hz", "44100 Hz,
+    cannot be used", and "not known until opened".
+
+16. **`ardop_audio_enumerate` grew a fourth parameter, `backend_name`.**
+    Auto-selection prefers PulseAudio on Linux, and `--audio-backend alsa`
+    (kept by amendment 13) has to enumerate the backend it will open — otherwise
+    the list offers devices the open cannot select.
+
+17. **`ARDOP_DEV_NAME_MAX` went 128 → 256.** Amendment 3 raised the *id* for
+    exactly this reason and stopped one field short: the name is the second
+    resolution key, and a truncated name never re-matches.
+
+18. **`ardop_audio_print_devices` writes to stdout and reports failure.** It is
+    the answer to a question the operator asked, not a diagnostic, and
+    `--list-devices | grep USB` should work.
+
+19. **§3's fault latch was one-way at the application layer.** A spine that had
+    seen one fault could never transmit again — while `fault.h` says the
+    application "offers reselection", which requires the reverse edge. That made
+    a device-selection screen structurally impossible: unplugging a USB
+    interface meant restarting the program. Faults are now a recoverable state
+    with a typed code, and recovery is close+open of both objects, which works
+    because [14](14-station-application.md) Decision 5 already makes the runtime
+    outlive the backend.
+
+20. **`ardop_backend_ma_clear_fault` is deleted.** It cleared a latch and did
+    nothing to the device, so calling it only arranged to re-latch on the next
+    read. A function whose name promises recovery it does not perform is worse
+    than none; it had no callers. Same answer for the PTT latch: a keying fault
+    means the path is not trustworthy, and clearing a flag does not make it so.
+
+21. **`backend_ma.h` claimed `ardop_backend_ma_close` "unkeys on the way out"
+    and it did not.** Harmless while `ardopb` closed the PTT immediately
+    afterwards; not harmless once a device rebuild closes the backend while the
+    same PTT object stays open, which is exactly the case the promise was for.
+    Made true.
+
+22. **§8's backend-declared block size was right for `ardopb` and wrong for the
+    application.** `app_set_platform` saved and restored the *old* block, and
+    since `ardop_loop_init` always leaves it non-zero the restore always fired —
+    so a new backend's smaller preferred block was overwritten every time and
+    every device change silently reverted to 100 ms. Amendment 7's "one line in
+    `main.c`" holds only where the platform is fixed. The block is now a
+    parameter of the bind, because a backend and the block it wants are one fact
+    and two calls means a window in which one is wrong.
+
+23. **CM108 (deferred by amendment 10) is implemented, with no new user-facing
+    dependency**: `/dev/hidraw` on Linux, `hid.dll` on Windows, no hidapi and no
+    libusb. Two details from direwolf's implementation matter more than they
+    look. The report is **five bytes**, not the four the CMedia datasheet
+    implies — direwolf writes the fifth with the comment *"Writing 5 bytes
+    works. I have no idea why."*, every interface in the field has been tested
+    against that, and with no hardware here preferring the datasheet would be a
+    guess. And the chip table is load-bearing: members of this family have
+    different GPIO counts (CM108 four, CM108B three, CM119 eight, SSS1621/1623
+    only **two**), so the usual default of pin 3 sets a bit an SSS162x does not
+    have and keys nothing, and a vendor-only match would have missed vendor
+    `0x0c76` entirely. `-lsetupapi` is a new *link* library on Windows; it ships
+    with the operating system.
+
+24. **Native CAT keying is implemented, and rigctld is no longer the only CAT
+    path.** For a modern transceiver the keying line *is* the CAT link, and
+    hamlib gives Icom, Yaesu, Kenwood and every Xiegu `ptt_type = RIG_PTT_RIG` —
+    they key by command and ignore RTS entirely. The command is one acknowledged
+    frame (Icom CI-V `1C 00`, answered `FB`/`FA`), so speaking it directly needs
+    no hamlib installed, no daemon to spawn and reap on two platforms, and no
+    exposure to a command line we do not control.
+
+    It is also safer than managing rigctld would be: killing rigctld does **not**
+    unkey a CAT-keyed rig, because closing a serial handle sends no command, so
+    owning that process would mean a crash on our side could orphan a daemon
+    holding a transmitter up. `rigctld:` remains as the escape hatch.
+
+25. **Open decision 4 ("CAT beyond PTT") stays closed, and open decision 5 (the
+    10-minute ID) is still open.** `wall_ms` is implemented and plumbed into
+    `ardop_platform_ops`, and nothing reads it: `core/link/` has the 3-second
+    closing ID and the explicit `SENDID`, but no periodic obligation. That is
+    link work rather than platform work and it touches the one part of the tree
+    the golden corpus exists to freeze, so it is raised separately rather than
+    smuggled in here. `ardopcf`'s behaviour should be checked first —
+    interoperability matters more than anyone's reading of Part 97.
+
+26. **§4's rigctld host parser could not take an IPv6 literal.** It split on the
+    last colon, so `rigctld:::1` became host `":"` port 1. Bracketed literals
+    (`rigctld:[::1]:4532`) now work.
+
+27. **`ptt.c` claimed the rigctld path "is tested against a scripted fake server
+    on localhost".** It was not; there was no PTT test of any kind. There is now
+    one covering the whole grammar, both CAT frame sets byte for byte, the reply
+    classification including the CI-V transceive echo, the CM108 report for
+    every pin, the chip table and the auto-selection policy. The rigctld byte
+    exchange is still uncovered — it needs a server answering while `open()`
+    blocks, and therefore a thread `test-core` does not have — so the comment now
+    says what is and is not tested rather than something untrue.
+
+28. **The exit criterion "a 48 kHz device decimated to 12 kHz decodes the golden
+    corpus at the same rates as a native 12 kHz device" was untested**, and so
+    was the anti-alias filter against anything but synthetic tones. Worse,
+    `tools/loopback.sh` created its cables at 12000 Hz, so `m == 1` and the
+    resampler was the identity path in **every** loopback validation ever
+    performed — including amendment 13's. Both are fixed:
+    `make golden-resample` runs the corpus through interpolate-then-decimate at
+    m = 2, 4 and 8, `golden-resample-alias` adds an interferer that naive
+    decimation folds into the middle of the passband, and
+    `RATE=48000 tools/loopback.sh pipe` carries a bit-exact transfer at m = 4.
+
+29. **A note on what §7 (Android) and the macOS parts of §2 now mean.** This pass
+    was scoped to Linux and Windows. Nothing here precludes the other two — the
+    ops-table discipline is what keeps it so — but the device-detection reader
+    (§4's successor, `shell/usbtopo.c`) is Linux-only today; Windows groups a
+    physical device's functions under a shared Container ID, which is the same
+    idea with none of the walking, and is a reader to write rather than a design
+    to redo.

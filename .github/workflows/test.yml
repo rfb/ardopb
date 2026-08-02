@@ -81,6 +81,13 @@ jobs:
       - name: Golden-corpus conformance
         run: make golden-core golden-shell golden-tx
 
+      # The same corpus through interpolate-then-decimate, at the ratios a real
+      # sound card gives. The -alias variant adds an out-of-band interferer that
+      # naive decimation folds into the middle of the passband, so a decimator
+      # with no anti-alias filter passes the first and fails the second.
+      - name: Resampler against the corpus
+        run: make golden-resample golden-resample-alias
+
       - name: Build the GUI
         run: |
           cmake -S gui -B gui/build -G Ninja -DCMAKE_BUILD_TYPE=Release
