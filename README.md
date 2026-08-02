@@ -35,6 +35,12 @@ make                 # builds ardopb + the host-client apps
 ./ardopb N0CALL --audio --host 8515
 ```
 
+**Looking for the application rather than the modem?** `ardop-station` is one
+window with the modem inside it — it finds your radio, sets the station up, and
+does chat and file transfer over the link. See
+**[`app/ui/README.md`](app/ui/README.md)** for screenshots, and for the checklist
+we would like testers to work through.
+
 ## Why this fork exists
 
 `ardopcf` is a working, actively maintained modem, but it descends from a
@@ -95,7 +101,8 @@ core is held to.
 | [`core/`](core/) | The pure modem + protocol library: `codec` (frame table, Reed–Solomon, CRC, callsign/grid coding), `modem` (modulator, demodulator, sync, busy detector, FFT), `link` (the ARQ/FEC state machine). No I/O, no globals. |
 | [`shell/`](shell/) | The impure program around the core: the sans-I/O `runtime`, the single-clocked driver `loop`, the TCP host interface, the portable socket/system layer (`net`, `sys`), settings, and the platform layer — miniaudio, keying, device enumeration. See [`shell/README.md`](shell/README.md). |
 | [`apps/`](apps/) | Host-client CLI tools — see [`apps/README.md`](apps/README.md). |
-| [`app/`](app/) | The station application's embedding spine: the modem embedded rather than talked to, with backpressure and a TNC-ownership rule. Phase 1 of [`analysis/14`](analysis/14-station-application.md); see [`app/README.md`](app/README.md). |
+| [`app/`](app/) | The station application's embedding spine: the modem embedded rather than talked to, with backpressure and a TNC-ownership rule. [`analysis/14`](analysis/14-station-application.md); see [`app/README.md`](app/README.md). |
+| [`app/ui/`](app/ui/) | **`ardop-station` — the windowed application**: devices, station setup, chat, file transfer, session history, guests and a TNC console, with the modem compiled in. Screenshots and a tester's checklist in [`app/ui/README.md`](app/ui/README.md). |
 | [`test/`](test/) | In-process tests (`test/core`) and the frozen golden-vector corpus (`test/golden`). |
 | [`tools/`](tools/) | `loopback.sh` — a virtual-audio-cable harness for running two stations against each other with no radio; `package-windows.sh` and `package-linux.sh` — assemble the release downloads. |
 | [`third_party/`](third_party/) | Vendored dependencies, pinned by version and checksum. Currently miniaudio. |
@@ -213,9 +220,11 @@ ardop-station.exe --remote 127.0.0.1:8515
 ```
 
 `ardop-station.exe` on its own runs the modem itself, with screens for the
-devices, the station and a TNC console. With `--remote` it runs no modem and
-only watches one: read-only, because a telemetry stream is one-way and a
-display cannot key a transmitter.
+devices, the station, chat, files, guests and a TNC console — see
+**[`app/ui/README.md`](app/ui/README.md)**, which has screenshots and a
+validation checklist for testers. With `--remote` it runs no modem and only
+watches one: read-only, because a telemetry stream is one-way and a display
+cannot key a transmitter.
 
 COM ports above COM9 work as written — the `\\.\` prefix is applied for you.
 
