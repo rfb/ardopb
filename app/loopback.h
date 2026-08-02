@@ -71,4 +71,13 @@ uint64_t app_loopback_elapsed(const app_loopback *lb);
  */
 uint64_t app_loopback_overruns(const app_loopback *lb);
 
+/**
+ * @brief Samples destroyed because both stations transmitted at once.
+ *
+ * A collision is a real event on a real channel and ARQ is what recovers from
+ * it. Non-zero here is not a fault; it is the harness declining to pretend that
+ * two simultaneous transmissions both arrive intact.
+ */
+uint64_t app_loopback_collisions(const app_loopback *lb);
+
 #endif /* ARDOP_APP_LOOPBACK_H_ */

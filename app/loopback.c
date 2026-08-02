@@ -64,6 +64,8 @@ struct side {
 	struct air *tx;   /* write_audio deposits here */
 	struct air *rx;   /* read_audio draws from here */
 	bool ptt;
+	struct side *peer;      /* who hears what we write */
+	uint64_t collided;      /* samples destroyed by a collision */
 };
 
 struct app_loopback {
@@ -86,9 +88,29 @@ static size_t read_audio(void *ctx, int16_t *buf, size_t max)
 	return max;
 }
 
+/*
+ * Deposit into the air the peer reads -- unless the peer is transmitting.
+ *
+ * ARDOP is half duplex: a station with its PTT up is deaf, and two stations
+ * transmitting at once is a collision in which neither hears the other. This
+ * harness used to queue both transmissions and deliver them intact a moment
+ * later, which turns a collision into a delayed-but-perfect exchange. That is
+ * not a conservative simplification -- it is a channel no pair of radios can
+ * meet, and it let the two ends' state machines take sequences that cannot
+ * happen on the air.
+ *
+ * Dropping the samples is the honest model, and it is what makes ARQ do the job
+ * it exists for: the frame fails to arrive, the sender repeats it, and the
+ * exchange recovers exactly as it would on a real channel.
+ */
 static void write_audio(void *ctx, const int16_t *buf, size_t n)
 {
-	air_write(((struct side *)ctx)->tx, buf, n);
+	struct side *s = ctx;
+	if (s->peer && s->peer->ptt) {
+		s->collided += n;
+		return;
+	}
+	air_write(s->tx, buf, n);
 }
 
 static void set_ptt(void *ctx, bool key)
@@ -117,6 +139,9 @@ app_loopback *app_loopback_open(const app_config *cfg)
 		s->ops.set_ptt = set_ptt;
 		app_set_platform(s->sp, &s->ops, 0);
 	}
+	/* After both exist: each needs to know who is listening to it. */
+	lb->side[0].peer = &lb->side[1];
+	lb->side[1].peer = &lb->side[0];
 	return lb;
 }
 
@@ -154,4 +179,9 @@ uint64_t app_loopback_elapsed(const app_loopback *lb)
 uint64_t app_loopback_overruns(const app_loopback *lb)
 {
 	return lb->air[0].overruns + lb->air[1].overruns;
+}
+
+uint64_t app_loopback_collisions(const app_loopback *lb)
+{
+	return lb->side[0].collided + lb->side[1].collided;
 }

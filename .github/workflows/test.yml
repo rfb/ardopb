@@ -78,6 +78,19 @@ jobs:
           ./app/ardop-spine --loopback --telemetry \
             --script test/app/session.script
 
+      # The application protocol over the real link: offered, accepted,
+      # transferred, checksummed and renamed, through a genuine modulator,
+      # demodulator, retry and turnover. test_asp.c proves the protocol against
+      # a byte queue that never loses anything; this proves the stack under it,
+      # and the two defects it found were both in that stack.
+      - name: Application protocol over ARQ, end to end
+        run: |
+          rm -rf /tmp/asp-a /tmp/asp-b
+          mkdir -p /tmp/asp-a /tmp/asp-b
+          ./app/ardop-spine --loopback --asp /tmp/asp-a /tmp/asp-b \
+            --script test/app/asp.script
+          cmp test/app/asp-payload.txt /tmp/asp-b/asp-payload.txt
+
       # The device manager against a real backend. miniaudio's synthetic device
       # runs a real device thread, so this exercises the open, the platform
       # bind, the block the backend asked for and the credit -- on a runner with
@@ -254,6 +267,11 @@ jobs:
           make app
           ./app/ardop-spine --loopback --telemetry \
             --script test/app/session.script
+          rm -rf /tmp/asp-a /tmp/asp-b
+          mkdir -p /tmp/asp-a /tmp/asp-b
+          ./app/ardop-spine --loopback --asp /tmp/asp-a /tmp/asp-b \
+            --script test/app/asp.script
+          cmp test/app/asp-payload.txt /tmp/asp-b/asp-payload.txt
           ./app/ardop-spine --audio-null-device --script test/app/devices.script
 
       # Worth stating plainly: golden-tx passing here means the modulator emits

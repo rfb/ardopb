@@ -484,44 +484,53 @@ framing by hand with nothing checking the two agree. ASP should not repeat that.
 
    **Reproduction:** `test/app/asp.script`, deliberately not in CI.
 
-   ### Update: one of the two causes is fixed
+   ### Resolved: two defects, and neither was in the protocol
 
-   Hunting this down found **two** independent defects, not one.
+   Hunting this down found **two** independent defects. Both were below ASP.
 
-   **Fixed.** `iss_yield_on_break()` discarded the ISS's transmit queue when the
-   IRS took the link -- see [12](12-normative-accidents.md). That is a block of
-   host data lost per turnover, silently, and every ARQ file transfer turns over
-   because the receiver has to acknowledge at its own level. It is now reproduced
-   in isolation by `test_loopback_turnover_loses_nothing` (which fails without
-   the fix) and corrected.
+   **1. The link discarded the sender's queue on turnover.**
+   `iss_yield_on_break()` cleared `tx_len`, contradicting this machine's own rule
+   3.4 -- where the IRS deliberately breaks on a *still-unacked* frame "so the ISS
+   keeps that frame for after the turnover". See
+   [12](12-normative-accidents.md). Reproduced in isolation by
+   `test_loopback_turnover_loses_nothing`, which fails without the fix. A block of
+   host data per turnover, silently.
 
-   **Not fixed.** The duplicate suppression above survives that fix: the same
-   three frames are still discarded, still carrying new data. What is now known
-   about it:
+   **2. The loopback delivered colliding transmissions intact.** This was the one
+   that took longest, because every instinct said the bug was in the link.
 
-   - It is **not** the transmit queue, the enqueue limit, the spine's queues,
-     payload truncation, or ASP's framing -- each ruled out by measurement.
-   - It does **not** reproduce at the link level on a clean channel, even with
-     repeated turnovers driven deliberately
-     (`test_loopback_turnover_loses_nothing` passes).
-   - It is **not** the loopback's air buffer overflowing: zero dropped samples.
-   - Modelling the loopback as half duplex -- a transmitting station is deaf,
-     which is true of every real radio and is *not* true of this harness -- does
-     not fix it either. That change was reverted rather than kept: with a
-     *queued* air buffer, discarding audio while PTT is up invents loss a live
-     channel would not have, and shipping a plausible-but-unproven change to the
-     channel model would make the next investigation harder, not easier.
+   `app/loopback.c` steps both stations concurrently and queues each
+   transmission into its own buffer. When both stations key at once -- 675 blocks
+   of the failing run, against 65 of the passing one -- both transmissions were
+   delivered perfectly a moment later. ARDOP is half duplex: that is a collision,
+   and on a real channel neither station hears the other. Delivering both intact
+   is not a conservative simplification, it is a channel no pair of radios can
+   meet, and it let the two state machines take sequences that cannot happen on
+   the air. The frame-type toggles then fell out of step and the receiver dropped
+   genuinely new frames as duplicates, which is the symptom this amendment
+   started from.
 
-   So the remaining difference between the harness that fails and the harness
-   that passes is that `app/loopback.c` steps both stations concurrently, and
-   `hop()` delivers one frame at a time to completion. That is where to look
-   next, and the question to answer first is whether the failure is in the link
-   or in the harness -- because the evidence no longer points clearly at the
-   link.
+   `write_audio` now drops samples aimed at a station that is transmitting. ARQ
+   then does the job it exists for: the frame does not arrive, the sender repeats
+   it, and the exchange recovers. The transfer completes byte-identical.
 
-8. **Still to build:** the Chat and Files screens. The protocol is complete, its
-   own tests pass, and the application-side `asp_io` is written. **Chat is not
-   blocked** -- a lost chat line is a lost chat line, and the raw-mode path does
-   not use ARQ data framing at all. **Files are blocked on amendment 7**, because
-   a transfer UI over a transfer that silently corrupts is the wrong thing to
-   build next.
+   ### What this cost, and what it is worth
+
+   The measurement that settled it was counting simultaneous keying, and it should
+   have been the first thing measured rather than the last. Three wrong diagnoses
+   preceded it -- the discarded queue (real, but not this), the duplicate
+   suppression (a symptom, not a cause), and a half-duplex change to `read_audio`
+   that was plausible, did not help, and was reverted rather than kept.
+
+   The general lesson is worth more than the bug: **a harness that is kinder than
+   the real channel does not merely miss failures, it manufactures them.** Two of
+   the three wrong diagnoses were attempts to explain behaviour that could not
+   occur on a radio. `app_loopback_collisions()` now reports the count, so the
+   next person can see the channel's fidelity rather than assume it.
+
+   `test/app/asp.script` runs in CI on both hosts.
+
+8. **Still to build:** the Chat and Files screens. Everything under them works:
+   the protocol, its own tests, the application-side `asp_io`, and a file that
+   arrives byte-identical over a real ARQ link with turnovers and collisions in
+   it. Nothing is blocked.
