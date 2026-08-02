@@ -930,3 +930,24 @@ and the code as it was built disagreed.
    **Anything else drawn here inherits the same hazard** -- the §9 meter and the
    §10 history grid both paint at pixel scale, and both should get a case in that
    file rather than a comment.
+
+5. **§4's narrow layout, and two of the four platforms in the exit criteria, are
+   out of scope.** This document was written when the target was Linux, Windows,
+   macOS and Android. The port was subsequently scoped to Linux and Windows, and
+   §4 -- the phone breakpoint, the bottom tab bar, "the gauges are the first thing
+   to go" -- is entirely about a target that is no longer being built. So is the
+   exit criterion "renders usably at 360 x 640 with nothing clipped".
+
+   Recorded rather than deleted, for the same reason amendment 1 defers Qt Quick
+   rather than reversing it: **the analysis is still correct, and it is what
+   should be read first if Android comes back.** The observation that a
+   semicircular needle dial is a poor use of 80 pt of phone width is what
+   eventually produced §9, on a desktop, for a different reason.
+
+   What remains live from the exit criteria: one binary embedded and in
+   `--remote`; all four instruments verified against every modulation; no protocol
+   name written down in the UI; and the telemetry ring dropping rather than
+   blocking under a stalled UI, *measured*.
+
+   Also settled: **open decision 1 is void** -- amendment 1 chose Widgets, so
+   there is no QML/C++ split left to decide.
