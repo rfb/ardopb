@@ -233,12 +233,17 @@ apps: $(APPS)
 # SPINE_DEVICE_OBJS owns the sound card and the keying line. Portable C11 too,
 #   but it names the miniaudio backend and the PTT object, so a platform that
 #   gets its audio elsewhere replaces this one file and keeps the seam.
+# ASP_OBJS is the application protocol (analysis/17). Pure: no sockets, no
+#   files, no devices, no allocation -- which is why it can be built and proved
+#   before any of them exist, and why the harness can carry a second decoder to
+#   check this one against.
 # SPINE_TNC_OBJS hosts the TNC interface for guest clients. Its own group
 #   because it is the one part of the seam that needs sockets, and because both
 #   the harness and the shipping application link it -- the application is what
 #   Pat and Winlink connect to, which is the point of hosting it at all.
 # SPINE_HARNESS is the phase-1 driver. The shipping application will not link it.
 SPINE_OBJS        = app/spine.o app/ring.o
+ASP_OBJS          = app/asp_wire.o
 SPINE_DEVICE_OBJS = app/devices.o
 SPINE_TNC_OBJS    = app/tnc_host_tcp.o
 SPINE_HARNESS     = app/main.o app/script.o app/loopback.o
@@ -264,7 +269,7 @@ app: app/ardop-spine$(EXE)
 # So the Makefile stays the authority and hands CMake one artifact. Adding a file
 # to any group above is picked up by the Qt build with no CMake change at all.
 ARDOP_LIB_OBJS = $(CORE_OBJS) $(TEMPLATES) $(SHELL_OBJS) $(SPINE_OBJS) \
-	$(SPINE_DEVICE_OBJS) $(SPINE_TNC_OBJS) shell/host_tcp.o \
+	$(ASP_OBJS) $(SPINE_DEVICE_OBJS) $(SPINE_TNC_OBJS) shell/host_tcp.o \
 	shell/backend_null.o $(AUDIO_BACKEND_OBJS)
 
 libardop.a: $(ARDOP_LIB_OBJS)
@@ -357,7 +362,8 @@ CORE_TESTS = \
 	test/core/test_devices$(EXE) \
 	test/core/test_ptt$(EXE) \
 	test/core/test_usbtopo$(EXE) \
-	test/core/test_backend_ma$(EXE)
+	test/core/test_backend_ma$(EXE) \
+	test/core/test_asp_wire$(EXE)
 
 define newline
 
@@ -441,6 +447,12 @@ test/core/test_devices$(EXE): test/core/test_devices.c $(CORE_OBJS) $(TEMPLATES)
 # test/app/ of its own because that directory is really "the in-process suite",
 # and a second directory would need a duplicate of the generic rule below and a
 # second CI step to run it.
+test/core/test_asp_wire$(EXE): test/core/test_asp_wire.c $(ASP_OBJS) \
+		test/core/setup.o
+	$(CC) $(CORE_CPPFLAGS) -I. -Itest/core $(CFLAGS) \
+		$< $(ASP_OBJS) test/core/setup.o \
+		-lcmocka $(PLATFORM_LDLIBS) -lm -o $@
+
 test/core/test_spine$(EXE): test/core/test_spine.c $(CORE_OBJS) $(TEMPLATES) \
 		$(SHELL_OBJS) $(SPINE_OBJS) app/loopback.o test/core/setup.o
 	$(CC) $(CORE_CPPFLAGS) -I. -Itest/core $(CFLAGS) \
