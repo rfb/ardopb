@@ -401,56 +401,92 @@ framing by hand with nothing checking the two agree. ASP should not repeat that.
    callsign with different SSIDs therefore have separate `msg_id` spaces, which is
    the behaviour the open decision was asking for.
 
-7. **§7 is wrong, and it took the real link to show it. `AUTOBREAK` loses data.**
+7. **A file transferred over real ARQ arrives corrupt, and the fault is below
+   ASP.** *(This entry replaces an earlier version of amendment 7 that blamed
+   `AUTOBREAK` and the discarded transmit queue. That diagnosis was wrong and is
+   corrected below; the note is left as an amendment rather than deleted because
+   a wrong diagnosis that was acted on is worth being able to find again.)*
 
-   This is the important one, and it is a design problem rather than a bug in any
-   one file.
+   Driving ASP over the harness's real link -- two spines, the real modulator,
+   the real demodulator -- corrupts the file. `test_asp.c` passes, because it
+   drives the protocol over a byte queue that never loses anything, which is what
+   makes it a good test of the protocol and no test at all of the stack beneath
+   it. This is the argument for `ardop-spine --asp` existing.
 
-   §7 says turnover is the link's job: *"`AUTOBREAK TRUE` already does this in
-   core -- on an `IDLE` keep-alive from the ISS, an IRS with queued data sends
-   `BREAK`. The app sets it and does not reimplement it."* Both halves are true.
-   What §7 does not say is what a `BREAK` costs the sender.
+   ### What it is not
 
-   `core/link/link.c:665-671`, `iss_yield_on_break()`:
+   Ruled out by instrumentation, each with a measurement:
 
-   > *The IRS sent BREAK: discard our unsent queue, ACK the break, and yield the
-   > link... SaveQueueOnBreak (letting the app restore the data) is dropped.*
+   - **Not the transmit queue discarded on BREAK.** `iss_yield_on_break()`
+     (`core/link/link.c:667`) does throw the queue away, and its own comment says
+     `SaveQueueOnBreak` was deliberately dropped in the port -- but `tx_len` is
+     **0** at every call in this session. Nothing is lost there. This was the
+     first diagnosis and it was wrong.
+   - **Not the link's enqueue limit.** `step_host_send_data` drops bytes past
+     capacity silently; it never fires here, because the transmit credit makes it
+     unreachable and `app/spine.c` asserts the count anyway.
+   - **Not the spine's queues.** `event_lost` stays 0 and no payload is
+     truncated: `ARDOP_DEMOD_MAX_PAYLOAD` is 1024 and no delivery exceeds it.
+   - **Not ASP's framing.** Every message the sender puts on the wire is a
+     complete, correctly framed 1027 bytes, verified by capturing the sender's
+     byte stream.
 
-   So when the receiver breaks -- which it must, because a `ACCEPT` or a `RESULT`
-   is data and only the ISS may send data -- **the sender's queued bytes are
-   thrown away**, including bytes `app_tx_submit` already accepted and reported
-   as taken. Driving ASP over the real ARQ loopback loses 2048 bytes out of 16953
-   at the first turnover, and because the protocol has no per-chunk offsets (§4,
-   correctly) the receiver cannot tell: it sees a continuous stream that has
-   silently jumped forward, desynchronises on the next message header, and reports
-   a malformed frame.
+   ### What it is
 
-   Without `AUTOBREAK` the transfer never starts at all: the receiver can never
-   send its `HELLO`, let alone an `ACCEPT`. So the two available settings are
-   "deadlock" and "silent corruption", and §7 recommends the second.
+   **The IRS silently discards genuinely new data frames as duplicates.**
+   `core/link/link.c:896`:
 
-   **`test_asp.c` could not have found this.** It drives the protocol over a byte
-   queue that never discards anything, which is exactly what made it a good test
-   of the protocol and useless as a test of the stack. This is the argument for
-   the harness path (`ardop-spine --asp`) existing at all.
+   ```c
+   if ((int)ev->frame_type != l->last_data_to_host) {
+           deliver_data(...);
+           l->last_data_to_host = ev->frame_type;
+   }
+   ```
 
-   ### The fix, and why it is not in this change
+   The duplicate test is one bit -- the parity of the data frame type -- and
+   during this transfer the receiver sees the same type twice in a row carrying
+   *different* payload three times, and drops all three. Confirmed by comparing
+   each suppressed payload against the last one actually delivered, with the
+   comparison buffer held per station. (An earlier pass at this used a
+   file-scope buffer shared by both link instances and was therefore worthless;
+   worth recording, because it produced a confident-looking wrong answer.)
 
-   The clean answer does not touch the wire format and does not change what goes
-   on the air: **the link should report how many queued bytes it discarded**, the
-   spine should surface that, and the sender should rewind `tx_offset` by exactly
-   that many and re-send. Discarded means never transmitted, so a rewind cannot
-   duplicate anything the receiver already has, and §4's "no per-chunk offsets"
-   survives untouched -- the sender already knows its own offset, it just needs to
-   be told it was moved.
+   Three frames, 1024 + 1024 + 863 bytes, gone with no NAK, no fault and no
+   counter. The sender sees each one ACKed and drops it from its queue. ASP then
+   desynchronises at the next message header, since §4 correctly gives `DATA` no
+   offsets and there is nothing for the receiver to notice the hole with.
 
-   That is a change to `core/link`'s observable behaviour, which is not something
-   to slip into a plumbing commit. Raised separately.
+   The sender's toggle is re-anchored by `iss_begin_sending()` at every turnover
+   (`last_data_acked = 1`, so the first frame after a turnover is always even),
+   and the receiver's `last_data_to_host` is re-armed by two different events
+   (`iss_yield_on_break` and `step_irs_to_iss_rx`). **Which of those gets out of
+   step, and when, is not yet established.**
 
-   Until then, **ASP file transfer over ARQ is not reliable**, and the harness
-   script that demonstrates it is deliberately not in CI: a test that fails for a
-   known reason teaches nothing that this note does not.
+   ### Why it is not fixed here
+
+   A one-bit sequence number is part of the on-air format and cannot be widened
+   without breaking interoperability, so the fix has to be in how the two ends
+   keep their toggles in step -- which means establishing what the reference
+   implementation's rule actually is, not inventing one.
+
+   Two tempting fixes are both wrong:
+
+   - *Suppress only when the payload is byte-identical.* A retransmission is
+     byte-identical by construction, so this looks exact -- until a file contains
+     two consecutive identical 1024-byte blocks, which a file of zeros does
+     immediately, and real data is dropped again.
+   - *Stop suppressing after a turnover.* Delivers duplicates into a file, which
+     is the same corruption with the opposite sign and is quieter.
+
+   `core/link` is the part validated against the golden corpus, and a wrong
+   change to it corrupts real traffic in a way that is harder to see than this
+   one. So this is written down rather than guessed at.
+
+   **Reproduction:** `test/app/asp.script`, deliberately not in CI.
 
 8. **Still to build:** the Chat and Files screens. The protocol is complete, its
-   own tests pass, and the application-side `asp_io` is written -- what it is
-   waiting on is amendment 7.
+   own tests pass, and the application-side `asp_io` is written. **Chat is not
+   blocked** -- a lost chat line is a lost chat line, and the raw-mode path does
+   not use ARQ data framing at all. **Files are blocked on amendment 7**, because
+   a transfer UI over a transfer that silently corrupts is the wrong thing to
+   build next.

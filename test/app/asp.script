@@ -1,0 +1,43 @@
+# ASP over a real ARQ session: real modulator, real demodulator, real retries.
+#
+#   ./app/ardop-spine --loopback --asp /tmp/asp-a /tmp/asp-b \
+#       --script test/app/asp.script
+#
+# **This script currently fails**, and it is in the tree because of what it
+# fails at. See analysis/17 amendment 7: the IRS silently discards genuinely
+# new data frames as duplicates, so the file arrives corrupt. test_asp.c cannot
+# find that -- it drives the protocol over a byte queue that never loses
+# anything, which is what makes it a good test of the protocol and no test at
+# all of the stack underneath it.
+#
+# Not in CI. A test that fails for a known reason teaches nothing the amendment
+# does not, and a red build teaches people to ignore red builds.
+
+@echo configuring both stations
+
+MYCALL N0AAA
+ARQBW 2000MAX
+AUTOBREAK TRUE
+@peer MYCALL N0BBB
+@peer ARQBW 2000MAX
+@peer LISTEN TRUE
+@peer AUTOBREAK TRUE
+
+@echo connecting
+ARQCALL N0BBB 2000
+@wait host=CONNECTED 60
+
+# Both HELLOs. Not instant: the answering station is the IRS and cannot send
+# until it gets a turn, which is what AUTOBREAK is for (analysis/17 §7).
+@asp-wait link 120
+
+@echo chat
+@asp-text hello from the script
+@asp-wait text=hello 60
+
+@echo the file
+@asp-send test/app/asp-payload.txt
+@asp-wait file 900
+
+@echo done
+DISCONNECT
