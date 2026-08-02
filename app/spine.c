@@ -129,6 +129,7 @@ const char *app_tx_status_str(app_tx_status s)
 	case APP_TX_CONGESTED: return "event queue congested";
 	case APP_TX_NO_ROOM:   return "command queue full";
 	case APP_TX_FAULTED:   return "device fault; reselect or retry";
+	case APP_TX_NO_DEVICE: return "no audio device";
 	case APP_TX_CLOSED:    return "stopping";
 	}
 	return "unknown";
@@ -411,6 +412,11 @@ bool app_set_platform(app_spine *sp, const ardop_platform_ops *ops, size_t block
 	sp->loop.t = t;
 	if (block && block <= ARDOP_LOOP_BLOCK)
 		sp->loop.block = block;
+
+	/* Binding a device makes transmission possible, so say so now rather
+	 * than at the next step: a settings screen that has just opened a sound
+	 * card should not show "no audio device" until the modem happens to run. */
+	publish_credit(sp);
 	return true;
 }
 
@@ -691,6 +697,14 @@ static void publish_credit(app_spine *sp)
 	uint64_t lim = sp->tx_applied + room;
 	app_tx_status why = room ? APP_TX_OK : APP_TX_FULL;
 
+	/* With no backend bound the loop never runs, so anything accepted here
+	 * would sit in the link's queue forever. Reporting credit in that state
+	 * invites a caller to submit into a black hole until the 16 kB fills and
+	 * then wonder why nothing transmitted. */
+	if (!sp->plat) {
+		lim = sp->tx_applied;
+		why = APP_TX_NO_DEVICE;
+	}
 	if (sp->events_congested) {
 		lim = sp->tx_applied;
 		why = APP_TX_CONGESTED;

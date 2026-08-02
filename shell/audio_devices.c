@@ -316,7 +316,7 @@ ardop_audio_match ardop_audio_resolve(ardop_audio_dir dir, const char *want_id,
 bool ardop_audio_print_devices(const char *backend_name)
 {
 	static ardop_audio_device devs[64];
-	size_t found = 0;
+	size_t found = 0, usable = 0;
 
 	for (int d = 0; d < 2; d++) {
 		ardop_audio_dir dir = d ? ARDOP_AUDIO_PLAYBACK
@@ -331,6 +331,8 @@ bool ardop_audio_print_devices(const char *backend_name)
 		}
 		found += n;
 		for (size_t i = 0; i < n; i++) {
+			if (devs[i].rate_ok)
+				usable++;
 			char rate[48];
 			if (devs[i].rate_ok)
 				snprintf(rate, sizeof rate, "%u Hz",
@@ -352,5 +354,36 @@ bool ardop_audio_print_devices(const char *backend_name)
 	printf("\nPass an id or a name to --audio CAPTURE PLAYBACK. Both are\n"
 	       "matched, id first, so a saved selection survives a device\n"
 	       "being renumbered by a replug.\n");
+
+	/*
+	 * Saying it once, at the end, rather than leaving an operator to notice
+	 * that every line said "cannot be used". A machine where nothing is
+	 * usable is usually a sound server defaulting to 44100 rather than a
+	 * machine with no suitable hardware, and that is fixable in one setting.
+	 */
+	if (found > 0 && usable == 0) {
+		printf("\nNone of these can be used: the modem needs a whole "
+		       "multiple of 12000 Hz\n"
+		       "(12000, 24000, 48000 or 96000), and every device above "
+		       "reports something\n"
+		       "else. That is usually the sound server's default rate "
+		       "rather than the\n"
+		       "hardware -- setting it to 48000 fixes every device at "
+		       "once:\n"
+		       "\n"
+#ifdef _WIN32
+		       "  Sound Control Panel -> the device -> Properties -> "
+		       "Advanced -> 48000 Hz\n");
+#else
+		       "  PipeWire:   ~/.config/pipewire/pipewire.conf.d/"
+		       "10-rate.conf\n"
+		       "              context.properties = "
+		       "{ default.clock.rate = 48000 }\n"
+		       "  PulseAudio: /etc/pulse/daemon.conf, "
+		       "default-sample-rate = 48000, then pulseaudio -k\n"
+		       "  Or bypass the sound server: --audio-backend alsa\n");
+#endif
+	}
+
 	return found > 0;
 }

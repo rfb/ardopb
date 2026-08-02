@@ -201,6 +201,12 @@ it is what dissolved `FixTiming`. A resampler can break that property.
   decouples protocol time from device time and reintroduces exactly the class of
   bug this architecture was built to delete.
 
+> **This second bullet is wrong, and amendment 30 says why.** It conflates a
+> *rational* resampler with an *asynchronous* one. 44100 → 12000 is exactly
+> 147:40, and a fixed-ratio polyphase resampler at that ratio inserts and drops
+> nothing. The conclusion — refuse fractional rates for now — still stands, but
+> on grounds of scope rather than correctness.
+
 **Rule: prefer a device rate that is an integer multiple of 12000** (48000,
 24000, 96000) and decimate. Accept a fractional rate only when the platform
 offers nothing else, mark the session degraded in the UI, and make sure the
@@ -421,7 +427,8 @@ design above and the code as it stood disagreed.
 8. **Open decision 3 is settled as *refuse*.** A device rate that is not a whole
    multiple of 12000 fails the open with a message naming the rate, rather than
    being approximated. More honest and far less code; Windows shared-mode WASAPI
-   gives 48000 in practice.
+   gives 48000 in practice. *(The decision holds. The reasoning behind it was
+   partly wrong — see amendment 30.)*
 
 9. **§Exit criteria's "`make golden-tx` is still bit-identical" is true by
    construction**, not by care: `test/golden/shell_tx_wav` links `$(CORE_OBJS)`
@@ -606,3 +613,58 @@ design above and the code as it stood disagreed.
     physical device's functions under a shared Container ID, which is the same
     idea with none of the walking, and is a reader to write rather than a design
     to redo.
+
+30. **§5's argument against fractional rates does not hold, and the decision to
+    refuse them rests on scope instead.** Recorded properly because a wrong
+    reason attached to a right decision is how a future reader talks themselves
+    out of revisiting it.
+
+    §5 says a resampler for 44100 → 12000 "will insert or drop samples relative
+    to the device clock on its own schedule". That is true of an **asynchronous**
+    resampler — one whose ratio is adjusted at run time to track two independent
+    clocks, as a sound server does when synchronising several clients. It is not
+    true of a **fixed rational** one, and 44100 → 12000 is a fixed rational ratio:
+
+        gcd(44100, 12000) = 300  ->  44100/300 = 147,  12000/300 = 40
+
+    A polyphase 147:40 resampler produces exactly 40 output samples for every 147
+    input samples, forever, with a filter phase that cycles with period 40.
+    Nothing is inserted and nothing is dropped. [06](06-target-architecture.md)
+    Rule 2 survives intact: a card actually running at 44097 Hz gives a modem
+    clock of 40/147 × 44097 = 11999.2 Hz, and every protocol deadline stretches
+    by the same 0.007% — which is the identical property 4:1 decimation has.
+    147:40 is no less deterministic than 4:1.
+
+    So the honest cost is not correctness, it is work:
+
+    | | |
+    |---|---|
+    | Filter | 24 taps per phase × L = 40 phases = 961 coefficients, ~4 kB. The existing design is already `24*m + 1`; this is the same structure with a larger L. |
+    | Compute | Still 24 multiply-accumulates per *output* sample. Polyphase never computes the samples it would discard, so it is no worse than today. |
+    | **The actual work** | The framing contract. `ardop_resample(DECIMATE, m)` requires `n % m == 0` and returns `n / m`, and `shell/backend_ma.c`'s `read_audio` is built on that — exactly `k*m` in, exactly `k` out. A rational ratio makes the output count vary with the input block, so both change. |
+
+    **Postponed, not rejected.** The practical need is thin: every real sound
+    card and every radio codec does 48000 natively, and the case that prompted
+    this was an RDP virtual sink under WSL — a remote-desktop audio bridge, not a
+    radio interface, and not a path anyone should run a modem over even with
+    rational support. The genuine cases are a sound server an operator cannot
+    reconfigure and a handful of 44100-only USB codecs.
+
+    **What would justify building it**: an operator with real radio hardware that
+    only offers a fractional rate, or a platform whose sound server cannot be
+    moved off 44100. Until one of those turns up, the refusal message telling the
+    operator how to set 48000 is the better use of the same effort — and that
+    message now names the setting for PipeWire, PulseAudio and Windows rather
+    than saying "pick a device or a system format".
+
+    **What is still refused on correctness grounds, not scope**: letting the
+    *sound server* do the conversion for us. It looks free, and for a fixed-ratio
+    conversion it would even be right — but a server doing adaptive resampling to
+    synchronise several clients is precisely the asynchronous case, and there is
+    no way to tell from the outside which one is running. A resampler we do not
+    control, in the protocol clock path, is the one thing worth refusing outright.
+
+31. **The transmit credit was reported as available with no audio backend
+    bound.** With no platform the loop never runs, so anything accepted sat in
+    the link's 16 kB queue forever — an application would submit into a black
+    hole and then wonder why nothing transmitted. `APP_TX_NO_DEVICE` says so.

@@ -481,15 +481,34 @@ ardop_ma_backend *ardop_backend_ma_open(const ardop_ma_config *cfg,
 		 * is more honest than a session that mysteriously underperforms.
 		 */
 		fprintf(stderr,
-			"audio: device runs at %u Hz, which is not a whole "
+			"audio: this device runs at %u Hz, which is not a whole "
 			"multiple of %d Hz\n"
-			"       (up to %ux). Pick a device or a system format "
-			"of 12000, 24000,\n"
-			"       48000 or 96000 Hz. Rates like 44100 are "
-			"refused rather than\n"
-			"       resampled, because approximate timing here "
-			"breaks the protocol\n"
-			"       clock rather than just the audio.\n",
+			"       (up to %ux). 44100 is refused rather than "
+			"resampled, because in this\n"
+			"       modem the sample clock IS the protocol clock -- "
+			"an approximate\n"
+			"       conversion would break the link's timing, not "
+			"just the audio.\n"
+			"\n"
+			"       Set the device to 48000 Hz, which is what "
+			"nearly every sound card\n"
+			"       and every radio codec does natively:\n"
+			"\n"
+#ifdef _WIN32
+			"         Sound Control Panel -> the device -> "
+			"Properties -> Advanced,\n"
+			"         and choose a 48000 Hz format.\n",
+#else
+			"         PipeWire:   ~/.config/pipewire/pipewire.conf.d/"
+			"10-rate.conf\n"
+			"                     context.properties = "
+			"{ default.clock.rate = 48000 }\n"
+			"         PulseAudio: /etc/pulse/daemon.conf, "
+			"default-sample-rate = 48000\n"
+			"                     then: pulseaudio -k\n"
+			"         Or bypass the sound server entirely: "
+			"--audio-backend alsa\n",
+#endif
 			b->device_rate, ARDOP_RATE, ARDOP_RESAMPLE_MAX_M);
 		ardop_backend_ma_close(b);
 		return NULL;

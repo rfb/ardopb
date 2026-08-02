@@ -73,6 +73,25 @@ static int print_detected(const char *backend_name)
 	static ardop_radio_candidate c[16];
 	size_t n = ardop_radio_detect(c, sizeof c / sizeof c[0], backend_name);
 
+	if (!ardop_usb_detect_supported()) {
+		/* Saying "no radios found" here would blame the operator's
+		 * hardware for something that is our gap, and send them off to
+		 * check a cable that was never the problem. */
+		printf("\nDetection is not implemented on this platform yet.\n\n"
+		       "It is not that no radio was found -- nothing was looked "
+		       "at. Windows\n"
+		       "groups a physical device's functions under a shared "
+		       "Container ID, which\n"
+		       "is the same idea as the Linux walk with none of the "
+		       "walking, and the\n"
+		       "reader for it is still to write.\n\n"
+		       "Use --list-devices and pick the capture and playback "
+		       "devices by hand,\n"
+		       "then choose a keying method with --ptt. See "
+		       "FIELD-TESTING.md.\n");
+		return 1;
+	}
+
 	if (n == 0) {
 		printf("\nNo radios detected.\n\n"
 		       "This finds a keying interface on the same USB hardware as\n"

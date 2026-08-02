@@ -258,6 +258,11 @@ static size_t scan_class(const char *root, const char *cls, const char *prefix,
 	return got;
 }
 
+bool ardop_usb_detect_supported(void)
+{
+	return true;
+}
+
 size_t ardop_usb_scan(const char *root, ardop_usb_node *out, size_t max)
 {
 	if (!root)
@@ -284,6 +289,11 @@ size_t ardop_usb_scan(const char *root, ardop_usb_node *out, size_t max)
  * The pure half above is built and tested on both platforms, so this is a
  * reader to write, not a design to redo.
  */
+bool ardop_usb_detect_supported(void)
+{
+	return false;
+}
+
 size_t ardop_usb_scan(const char *root, ardop_usb_node *out, size_t max)
 {
 	(void)root;

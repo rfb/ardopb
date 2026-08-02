@@ -163,6 +163,48 @@ static void test_ring_oversize_is_discarded(void **state)
 	assert_memory_equal(out, "tail", 4);
 }
 
+/* --- a platform that is not a sound card ----------------------------------- */
+
+/*
+ * Silence in, transmit swallowed. A test about the credit, a fault or the
+ * takeover rule should not also have to be a test about a device -- but it does
+ * need *a* device, because with no backend bound the loop never runs and the
+ * credit is correctly zero.
+ *
+ * read_audio returns a full block every time so the clock ticks uniformly, which
+ * is the same trick test_loop.c uses.
+ */
+static size_t fake_read(void *ctx, int16_t *buf, size_t max)
+{
+	(void)ctx;
+	memset(buf, 0, max * sizeof *buf);
+	return max;
+}
+static void fake_write(void *ctx, const int16_t *buf, size_t n)
+{
+	(void)ctx; (void)buf; (void)n;
+}
+static void fake_ptt(void *ctx, bool key)
+{
+	(void)ctx; (void)key;
+}
+
+static const ardop_platform_ops kFakePlatform = {
+	.read_audio = fake_read,
+	.write_audio = fake_write,
+	.set_ptt = fake_ptt,
+};
+
+/* Open a spine with a device bound, which is the state every test below is
+ * actually about. */
+static app_spine *open_with_device(void)
+{
+	app_spine *sp = app_open(NULL);
+	if (sp)
+		(void)app_set_platform(sp, &kFakePlatform, 0);
+	return sp;
+}
+
 /* --- the transmit credit --------------------------------------------------- */
 
 /* Drain every event, returning how many there were. */
@@ -178,14 +220,17 @@ static int drain(app_spine *sp)
 static void test_credit_arithmetic(void **state)
 {
 	(void)state;
-	app_spine *sp = app_open(NULL);
+	app_spine *sp = open_with_device();
 	assert_non_null(sp);
 
-	/* Credit is true from the moment the spine exists, not from the first
+	/* Credit is true from the moment a device is bound, not from the first
 	 * step: the link's queue really is empty and really can take bytes, and
 	 * they wait in the command ring until the modem thread runs. Reporting
 	 * "queue full" about an empty queue would be a lie a settings screen
-	 * would show for as long as the audio device took to open. */
+	 * would show for as long as the audio device took to open.
+	 *
+	 * With no device bound it is correctly zero -- see
+	 * test_no_device_means_no_credit. */
 	assert_int_equal(app_tx_credit(sp), APP_TX_CHUNK);
 
 	/* One call is capped at a chunk, however much is offered. */
@@ -246,7 +291,7 @@ static void test_credit_arithmetic(void **state)
 static void test_truncation_is_reported(void **state)
 {
 	(void)state;
-	app_spine *sp = app_open(NULL);
+	app_spine *sp = open_with_device();
 	assert_non_null(sp);
 
 	app_step(sp);
@@ -273,6 +318,52 @@ static void test_truncation_is_reported(void **state)
 }
 
 /*
+ * With no audio backend bound, the loop never runs -- so anything accepted would
+ * sit in the link's 16 kB queue forever. Reporting credit in that state invites
+ * a caller to submit into a black hole and then wonder why nothing transmitted.
+ *
+ * This was a real defect: the spine published credit from the moment it existed,
+ * and a station whose sound card had been refused reported "credit=4096 (ok)"
+ * while being incapable of transmitting a byte.
+ */
+static void test_no_device_means_no_credit(void **state)
+{
+	(void)state;
+	app_spine *sp = app_open(NULL);
+	assert_non_null(sp);
+
+	assert_int_equal(app_tx_credit(sp), 0);
+
+	uint8_t byte = 0;
+	app_tx_status why = APP_TX_OK;
+	assert_int_equal(app_tx_submit(sp, &byte, 1, &why), 0);
+	assert_int_equal(why, APP_TX_NO_DEVICE);
+
+	app_status st;
+	app_snapshot(sp, &st);
+	assert_int_equal(st.tx_credit, 0);
+	assert_int_equal(st.tx_reason, APP_TX_NO_DEVICE);
+
+	/* Stepping does not conjure one. */
+	app_step(sp);
+	assert_int_equal(app_tx_credit(sp), 0);
+
+	/* Binding a device makes credit available immediately, not at the next
+	 * step -- a settings screen that has just opened a sound card should not
+	 * show "no audio device" until the modem happens to run. */
+	assert_true(app_set_platform(sp, &kFakePlatform, 0));
+	assert_int_equal(app_tx_credit(sp), APP_TX_CHUNK);
+
+	/* And detaching takes it away again. */
+	assert_true(app_set_platform(sp, NULL, 0));
+	assert_int_equal(app_tx_credit(sp), 0);
+	assert_int_equal(app_tx_submit(sp, &byte, 1, &why), 0);
+	assert_int_equal(why, APP_TX_NO_DEVICE);
+
+	app_close(sp);
+}
+
+/*
  * A device fault must be survivable.
  *
  * `shell/fault.h` names the intended reaction as "abort the ARQ session, unkey,
@@ -285,7 +376,7 @@ static void test_truncation_is_reported(void **state)
 static void test_fault_is_recoverable(void **state)
 {
 	(void)state;
-	app_spine *sp = app_open(NULL);
+	app_spine *sp = open_with_device();
 	assert_non_null(sp);
 
 	app_step(sp);
@@ -339,7 +430,7 @@ static void test_fault_is_recoverable(void **state)
 static void test_closing_is_not_clearable(void **state)
 {
 	(void)state;
-	app_spine *sp = app_open(NULL);
+	app_spine *sp = open_with_device();
 	assert_non_null(sp);
 	app_step(sp);
 
@@ -386,7 +477,7 @@ static void fake_send_data(void *ctx, const char *tag, const uint8_t *d,
 static void test_tnc_takeover(void **state)
 {
 	(void)state;
-	app_spine *sp = app_open(NULL);
+	app_spine *sp = open_with_device();
 	assert_non_null(sp);
 
 	struct fake_tnc fake;
@@ -469,7 +560,7 @@ static void test_tnc_takeover(void **state)
 static void test_config_shares_the_host_validator(void **state)
 {
 	(void)state;
-	app_spine *sp = app_open(NULL);
+	app_spine *sp = open_with_device();
 	assert_non_null(sp);
 
 	assert_true(app_submit_config(sp, APP_CFG_MYCALL,
@@ -782,6 +873,7 @@ int main(void)
 		cmocka_unit_test(test_ring_reserve),
 		cmocka_unit_test(test_ring_oversize_is_discarded),
 		cmocka_unit_test(test_credit_arithmetic),
+		cmocka_unit_test(test_no_device_means_no_credit),
 		cmocka_unit_test(test_truncation_is_reported),
 		cmocka_unit_test(test_fault_is_recoverable),
 		cmocka_unit_test(test_closing_is_not_clearable),

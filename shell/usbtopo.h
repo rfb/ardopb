@@ -94,6 +94,17 @@ size_t ardop_usb_pair(const ardop_usb_node *nodes, size_t n,
 		      ardop_radio_candidate *out, size_t max);
 
 /**
+ * @brief Whether this platform can look at the device tree at all.
+ *
+ * False on Windows, where the reader is not written yet. It matters because
+ * "found nothing" and "cannot look" are different answers and an operator acts
+ * on them differently: the first says something about their hardware, the second
+ * says nothing at all. Reporting the first when the second is true sends
+ * somebody off to check a cable that was never the problem.
+ */
+bool ardop_usb_detect_supported(void);
+
+/**
  * @brief Read the real device tree. **Not the modem thread** -- it walks sysfs.
  * @param root Filesystem prefix, or NULL for the live one. Tests pass a fixture.
  * @return Nodes written.

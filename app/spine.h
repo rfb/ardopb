@@ -103,6 +103,7 @@ typedef enum {
 	APP_TX_CONGESTED,  /**< The event queue is backed up; see the file comment. */
 	APP_TX_NO_ROOM,    /**< The command ring itself is full. */
 	APP_TX_FAULTED,    /**< A device fault is latched. Recover or reselect. */
+	APP_TX_NO_DEVICE,  /**< No audio backend is bound; nothing can go out. */
 	APP_TX_CLOSED,     /**< The spine is shutting down. */
 } app_tx_status;
 
