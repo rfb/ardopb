@@ -22,10 +22,20 @@ namespace {
 /* The same band edges the standalone panel uses, and for the same reasons --
  * see gui/mainwindow.cpp. Duplicated rather than shared because they are
  * presentation constants of one layout, and the layouts will diverge. */
-constexpr double kSnGreen = -10.0;
-constexpr double kSnRed = -15.0;
-constexpr double kVuWarn = -12.0;
-constexpr double kVuBad = -6.0;
+/*
+ * Where a reading is supposed to sit, rather than where it becomes a warning.
+ *
+ * The dials took a warn/bad pair and were green everywhere below the warning --
+ * which told an operator with 40 dB too little audio that everything was fine.
+ * §9 replaced that with a band: below kVuBandLo is as wrong as above kVuBandHi,
+ * and looks it.
+ *
+ * S/N has a low edge and no high one, because more is simply better. Its band
+ * top is the top of the scale.
+ */
+constexpr double kVuBandLo = -24.0;
+constexpr double kVuBandHi = -12.0;
+constexpr double kSnBandLo = 5.0;
 
 double toDbfs(float linear)
 {
@@ -186,22 +196,39 @@ QWidget *StationWindow::buildPanel()
 	auto *row = new QHBoxLayout;
 	row->setSpacing(6);
 
-	m_vu = new GaugeWidget(tr("VU"), page);
-	m_vu->setScale(-60.0, 0.0, kVuWarn, kVuBad);
-	m_vu->setUnknown(tr("Audio In: --"));
+	/*
+	 * The two meters stack vertically in the space one dial used to take.
+	 *
+	 * §9's band edges, and the comment is the point: the dials were green
+	 * everywhere below -12 dB, so a signal 40 dB too quiet looked correct.
+	 * Audio level is two-sided -- too quiet and too loud are both faults.
+	 * S/N is one-sided, which is said by putting the band's top edge at the
+	 * top of the scale rather than by having a second kind of meter.
+	 */
+	auto *meters = new QVBoxLayout;
+	meters->setSpacing(4);
+
+	m_vu = new LevelMeter(tr("RX"), page);
+	m_vu->setScale(-60.0, 0.0);
+	m_vu->setBand(kVuBandLo, kVuBandHi);
+	m_vu->setUnknown(tr("no audio"));
+
+	m_sn = new LevelMeter(tr("S/N"), page);
+	m_sn->setScale(-25.0, 30.0);
+	m_sn->setBand(kSnBandLo, 30.0);
+	m_sn->setUnknown(tr("--"));
+
+	meters->addWidget(m_vu);
+	meters->addWidget(m_sn);
+	meters->addStretch(1);
 
 	m_lamps = new StatusLamps(page);
 	m_lamps->setOffline();
 
-	m_sn = new GaugeWidget(tr("S/N"), page);
-	m_sn->setScale(-25.0, 30.0, kSnGreen, kSnRed);
-	m_sn->setUnknown(tr("S/N: --"));
-
 	m_constellation = new ConstellationWidget(page);
 
-	row->addWidget(m_vu, 2);
+	row->addLayout(meters, 5);
 	row->addWidget(m_lamps, 3);
-	row->addWidget(m_sn, 2);
 	row->addWidget(m_constellation, 4);
 	root->addLayout(row, 0);
 
@@ -257,9 +284,11 @@ void StationWindow::onConstellation(const ConstellationFrame &f)
 void StationWindow::onAudio(float rms, float peak)
 {
 	const double rmsDb = toDbfs(rms);
-	m_vu->setValue(rmsDb, tr("%1 dB  pk %2")
-				      .arg(rmsDb, 0, 'f', 1)
-				      .arg(toDbfs(peak), 0, 'f', 1));
+	const double peakDb = toDbfs(peak);
+	m_vu->setValue(rmsDb, peakDb);
+	m_vu->setCaption(tr("%1 dB  pk %2")
+				 .arg(rmsDb, 0, 'f', 1)
+				 .arg(peakDb, 0, 'f', 1));
 }
 
 void StationWindow::onStatus(const LinkStatus &st)
@@ -270,9 +299,12 @@ void StationWindow::onStatus(const LinkStatus &st)
 			QString::fromUtf8(
 				ardop_host_state_name((ardop_link_state)st.state)),
 			m_remoteCall);
-	if (st.sn != 0 || st.quality != 0)
-		m_sn->setValue(st.sn, tr("%1 dB   Q %2")
-					      .arg(st.sn).arg(st.quality));
+	if (st.sn != 0 || st.quality != 0) {
+		/* One-sided: the same number twice, so nothing draws a peak
+		 * marker for a quantity that has no transient meaning. */
+		m_sn->setValue(st.sn, st.sn);
+		m_sn->setCaption(tr("%1 dB   Q %2").arg(st.sn).arg(st.quality));
+	}
 }
 
 void StationWindow::onConnectionChanged(bool up, const QString &detail)
@@ -282,8 +314,8 @@ void StationWindow::onConnectionChanged(bool up, const QString &detail)
 	if (!up) {
 		m_frame->setText(tr("no frames yet"));
 		m_lamps->setOffline();
-		m_vu->setUnknown(tr("Audio In: --"));
-		m_sn->setUnknown(tr("S/N: --"));
+		m_vu->setUnknown(tr("no audio"));
+		m_sn->setUnknown(tr("--"));
 		m_constellation->clear();
 		m_waterfall->clear();
 		m_geometrySet = false;

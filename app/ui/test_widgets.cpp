@@ -27,8 +27,10 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <cmath>
 #include <cstring>
 
+#include "levelmeter.h"
 #include "waterfallwidget.h"
 
 namespace {
@@ -133,6 +135,76 @@ void image_covers_canvas(void)
 	      "the image holds at least a canvas-worth of device rows");
 }
 
+/*
+ * The meter's ballistics, which amendment 4 says belong here rather than in a
+ * comment. Two properties, both mechanical:
+ *
+ *  1. the decay depends on elapsed time and not on how often setValue was
+ *     called -- the reason the ballistics are on a repaint timer at all; and
+ *  2. the colour is decided against a band, so "far too quiet" is not painted
+ *     the same as "correct", which is the defect §9 exists to fix.
+ */
+void meter_decay_is_time_based(void)
+{
+	LevelMeter fast(QStringLiteral("a")), slow(QStringLiteral("b"));
+	for (LevelMeter *m : {&fast, &slow}) {
+		m->setScale(-60.0, 0.0);
+		m->setBand(-24.0, -12.0);
+		m->setValue(-10.0, -10.0);   /* attack to a known level */
+		m->setValue(-50.0, -50.0);   /* then the signal drops away */
+	}
+
+	/* The same half second, delivered as one advance and as ten. A meter
+	 * whose decay rode the data rate would land in two different places. */
+	fast.advanceForTest(500);
+	for (int i = 0; i < 10; i++)
+		slow.advanceForTest(50);
+
+	const double diff = std::fabs(fast.displayedLevel() - slow.displayedLevel());
+	printf("    one 500 ms step: %.2f dB, ten 50 ms steps: %.2f dB\n",
+	       fast.displayedLevel(), slow.displayedLevel());
+	check(diff < 2.0, "decay follows elapsed time, not the update rate");
+
+	/* And it is a decay, not a jump: after half a second the bar has left
+	 * -10 but has not arrived at -50. */
+	check(fast.displayedLevel() < -10.0 && fast.displayedLevel() > -50.0,
+	      "the level decays rather than snapping to the new value");
+}
+
+void meter_band_colours_both_faults(void)
+{
+	LevelMeter m(QStringLiteral("rx"));
+	m.resize(300, 40);
+	m.setScale(-60.0, 0.0);
+	m.setBand(-24.0, -12.0);
+
+	/* Rendered rather than inspected, because the colour is what an operator
+	 * sees and a getter could agree with the header while the paint did not.
+	 * The sample is taken at the far left, which every non-empty bar covers. */
+	auto barColourAt = [&m](double level) {
+		/* Reset first: setValue only seeds the displayed level on the
+		 * first reading, and after that the ballistics own it. Starting
+		 * from "no data" makes each sample an instant attack, which is
+		 * what isolates the colour from the decay. */
+		m.setUnknown(QString());
+		m.setValue(level, level);
+		m.advanceForTest(0);
+		QImage shot(m.size(), QImage::Format_RGB32);
+		m.render(&shot);
+		return shot.pixel(2, 10 + 8);   /* inside the trough */
+	};
+
+	const QRgb tooQuiet = barColourAt(-40.0);
+	const QRgb correct = barColourAt(-18.0);
+	const QRgb hot = barColourAt(-4.0);
+
+	check(tooQuiet != correct,
+	      "40 dB too quiet does not look the same as correct");
+	check(hot != correct, "and neither does too loud");
+	check(qGreen(correct) > qRed(correct) && qGreen(correct) > qBlue(correct),
+	      "a reading inside the band is green");
+}
+
 }   // namespace
 
 int main(int argc, char **argv)
@@ -176,5 +248,7 @@ int main(int argc, char **argv)
 	QApplication app(argc, argv);
 	scan_line_thickness();
 	image_covers_canvas();
+	meter_decay_is_time_based();
+	meter_band_colours_both_faults();
 	return failures ? 1 : 0;
 }

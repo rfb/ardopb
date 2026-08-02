@@ -962,3 +962,34 @@ and the code as it was built disagreed.
 
    Also settled: **open decision 1 is void** -- amendment 1 chose Widgets, so
    there is no QML/C++ split left to decide.
+
+6. **§9's level meter is built, with two corrections that only appeared once it
+   ran.**
+
+   **The decay formula was not time-invariant.** §9 specified
+   `m_level += (raw - m_level) * min(1, dt / 0.300)`, which is a first-order
+   approximation: it agrees with an exponential for small `dt` and diverges badly
+   for large. Half a second delivered as one step clamps the factor to 1 and
+   snaps straight to the new value; the same half second in ten steps lands 6 dB
+   short. The built widget uses `raw + (level - raw) * exp(-dt/tau)`, which is
+   exact for any step.
+
+   This matters more than it looks, because the step size is *precisely* what is
+   not under our control -- a repaint can be late, and a loaded machine can
+   deliver one 500 ms tick instead of fifteen. The entire reason the ballistics
+   were moved onto a clock was so the meter behaves the same regardless, and the
+   linear form quietly gave that property back. The test asserts it directly:
+   one 500 ms step and ten 50 ms steps must land in the same place, and they now
+   agree to two decimal places.
+
+   **34 px was measured against a drawing, not against text.** The tick band was
+   10 px, of which 3 is the tick mark, leaving a 7 px box for a line of type --
+   so every scale number rendered cut in half. The bands are now 15/15/13 and the
+   minimum height is 43.
+
+   Both were found by running it and looking, which is worth recording: the first
+   by a test written because amendment 4 said to write one, the second by a
+   screenshot. Neither was visible in the source.
+
+   Open question 3 (whether the peak should latch a clip rather than decay) is
+   **not** built and remains open.

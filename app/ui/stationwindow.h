@@ -10,7 +10,7 @@
 #include "constellationwidget.h"
 #include "consolepage.h"
 #include "devicespage.h"
-#include "gaugewidget.h"
+#include "levelmeter.h"
 #include "modemthread.h"
 #include "spinesource.h"
 #include "stationpage.h"
@@ -118,8 +118,8 @@ private:
 	QTimer m_slowTick;
 	WaterfallWidget *m_waterfall = nullptr;
 	ConstellationWidget *m_constellation = nullptr;
-	GaugeWidget *m_vu = nullptr;
-	GaugeWidget *m_sn = nullptr;
+	LevelMeter *m_vu = nullptr;
+	LevelMeter *m_sn = nullptr;
 	StatusLamps *m_lamps = nullptr;
 	QPlainTextEdit *m_log = nullptr;
 

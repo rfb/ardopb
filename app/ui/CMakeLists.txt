@@ -50,6 +50,7 @@ add_executable(ardop-station
     devicespage.cpp
     stationpage.cpp
     consolepage.cpp
+    levelmeter.cpp
     modemthread.cpp
     spinesource.cpp
 
@@ -103,8 +104,10 @@ endif()
 #
 add_executable(test_widgets EXCLUDE_FROM_ALL
     test_widgets.cpp
+    levelmeter.cpp
     ${ARDOP_ROOT}/gui/waterfallwidget.cpp
-    ${ARDOP_ROOT}/gui/telemetryclient.cpp)
+    ${ARDOP_ROOT}/gui/telemetryclient.cpp
+    ${ARDOP_ROOT}/gui/panelsource.h)
 target_include_directories(test_widgets PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR} ${ARDOP_ROOT} ${ARDOP_ROOT}/core ${ARDOP_ROOT}/gui)
 target_link_libraries(test_widgets PRIVATE
