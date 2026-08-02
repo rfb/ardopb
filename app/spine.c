@@ -262,10 +262,24 @@ static void observe(void *ctx, const ardop_obs *o)
 					   o->data_len);
 		break;
 
-	/* Everything else is discrete state the runtime already mirrors into the
+	/* The rest is discrete state the runtime already mirrors into the
 	 * ARDOP_TLM_STATUS record on the display queue, and putting it on the
-	 * lossless queue as well would be two sources for one truth. */
+	 * lossless queue as well would be two sources for one truth. STATE is
+	 * the exception, and only for the one field STATUS does not carry. */
 	case ARDOP_OBS_STATE:
+		/*
+		 * The remote callsign, which analysis/16 §7 calls "the first
+		 * thing an operator looks for" and which nothing else carries.
+		 *
+		 * ARDOP_TLM_STATUS has state, mode, busy, PTT, S/N, quality,
+		 * bandwidth and buffer length -- but not who you are talking to,
+		 * so today it only reaches a host client as a CONNECTED line.
+		 * Embedded it is free: the observation already has it, and this
+		 * is the callback that was throwing it away.
+		 */
+		emit(sp, APP_EV_STATE, (int)o->state, false, NULL,
+		     o->remote ? o->remote : "", NULL, 0);
+		break;
 	case ARDOP_OBS_MODE:
 	case ARDOP_OBS_BANDWIDTH:
 	case ARDOP_OBS_RX_FRAME:

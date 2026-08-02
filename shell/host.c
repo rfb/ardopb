@@ -26,10 +26,57 @@ static const char *const kBandwidths[] = {
 };
 #define NUM_BANDWIDTHS ((int)(sizeof kBandwidths / sizeof kBandwidths[0]))
 
-/* The host-facing protocol state names, from ARDOPC.c's ARDOPStates. */
-static const char *host_state_name(const ardop_runtime *rt)
+const char *ardop_host_bandwidth_name(ardop_arq_bandwidth bw)
 {
-	switch (rt->link.state) {
+	if ((int)bw < 0 || (int)bw >= NUM_BANDWIDTHS)
+		return NULL;
+	return kBandwidths[bw];
+}
+
+bool ardop_host_bandwidth_for_name(const char *name, ardop_arq_bandwidth *out)
+{
+	if (!name)
+		return false;
+	for (int i = 0; i < NUM_BANDWIDTHS; i++)
+		if (strcmp(name, kBandwidths[i]) == 0) {
+			if (out)
+				*out = (ardop_arq_bandwidth)i;
+			return true;
+		}
+	return false;
+}
+
+/* The protocol mode names. Three of them, so a switch rather than a table --
+ * and the switch is what makes the compiler complain if a mode is ever added. */
+const char *ardop_host_mode_name(ardop_link_mode mode)
+{
+	switch (mode) {
+	case ARDOP_MODE_ARQ: return "ARQ";
+	case ARDOP_MODE_FEC: return "FEC";
+	case ARDOP_MODE_RXO: return "RXO";
+	}
+	return NULL;
+}
+
+bool ardop_host_mode_for_name(const char *name, ardop_link_mode *out)
+{
+	static const ardop_link_mode kAll[] = {ARDOP_MODE_ARQ, ARDOP_MODE_FEC,
+					       ARDOP_MODE_RXO};
+	if (!name)
+		return false;
+	for (size_t i = 0; i < sizeof kAll / sizeof kAll[0]; i++)
+		if (strcmp(name, ardop_host_mode_name(kAll[i])) == 0) {
+			if (out)
+				*out = kAll[i];
+			return true;
+		}
+	return false;
+}
+
+/* The host-facing protocol state names, from ARDOPC.c's ARDOPStates. */
+const char *ardop_host_state_name(ardop_link_state state)
+{
+	switch (state) {
 	case ARDOP_LINK_DISC:        return "DISC";
 	case ARDOP_LINK_ISS_CON_REQ:
 	case ARDOP_LINK_ISS_CON_ACK:
@@ -42,6 +89,11 @@ static const char *host_state_name(const ardop_runtime *rt)
 	case ARDOP_LINK_FEC_SEND:    return "FECSEND";
 	}
 	return "DISC";
+}
+
+static const char *host_state_name(const ardop_runtime *rt)
+{
+	return ardop_host_state_name(rt->link.state);
 }
 
 /* Whether the current state is a live connection DISCONNECT can act on
@@ -279,30 +331,24 @@ void ardop_host_command(ardop_runtime *rt, const char *line, uint64_t now,
 			       kBandwidths[l->bw_setting]);
 			return;
 		}
-		int i = 0;
-		for (; i < NUM_BANDWIDTHS; i++)
-			if (strcmp(params, kBandwidths[i]) == 0)
-				break;
-		if (i == NUM_BANDWIDTHS)
+		ardop_arq_bandwidth bw;
+		if (!ardop_host_bandwidth_for_name(params, &bw))
 			replyf(reply, cap, "FAULT Syntax Err: ARQBW %s", params);
 		else {
-			l->bw_setting = (ardop_arq_bandwidth)i;
-			replyf(reply, cap, "ARQBW now %s", kBandwidths[i]);
+			l->bw_setting = bw;
+			replyf(reply, cap, "ARQBW now %s",
+			       ardop_host_bandwidth_name(bw));
 		}
 		return;
 	}
 	if (strcmp(kw, "PROTOCOLMODE") == 0) {
 		if (params == NULL) {
-			const char *m = l->mode == ARDOP_MODE_ARQ ? "ARQ"
-				      : l->mode == ARDOP_MODE_RXO ? "RXO" : "FEC";
-			replyf(reply, cap, "PROTOCOLMODE %s", m);
+			replyf(reply, cap, "PROTOCOLMODE %s",
+			       ardop_host_mode_name(l->mode));
 			return;
 		}
 		ardop_link_mode m;
-		if (strcmp(params, "ARQ") == 0)      m = ARDOP_MODE_ARQ;
-		else if (strcmp(params, "FEC") == 0) m = ARDOP_MODE_FEC;
-		else if (strcmp(params, "RXO") == 0) m = ARDOP_MODE_RXO;
-		else {
+		if (!ardop_host_mode_for_name(params, &m)) {
 			replyf(reply, cap, "FAULT Syntax Err: PROTOCOLMODE %s",
 			       params);
 			return;

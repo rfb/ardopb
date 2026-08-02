@@ -90,4 +90,34 @@ bool ardop_host_data_parse(const uint8_t *buf, size_t avail,
 			   const uint8_t **payload, size_t *payload_len,
 			   size_t *consumed);
 
+/**
+ * @brief The wire name for an ARQ bandwidth setting, or NULL.
+ *
+ * Exposed so the interface can offer the choices without writing them down a
+ * second time. [analysis/16](../analysis/16-user-interface.md)'s exit criterion
+ * is that no protocol name appears in the UI; the table these come from is the
+ * one ported verbatim from ARQ.c's ARQBandwidths, and it stays the only copy.
+ */
+const char *ardop_host_bandwidth_name(ardop_arq_bandwidth bw);
+
+/** @brief The inverse. @return false if @p name is not a bandwidth. */
+ARDOP_MUSTUSE bool ardop_host_bandwidth_for_name(const char *name,
+						 ardop_arq_bandwidth *out);
+
+/**
+ * @brief The host-facing name for a link state ("DISC", "ISS", "IRS", ...).
+ *
+ * The collapsed set the protocol reports, not the full internal enum: several
+ * machine states answer to one host-facing name, which is what a host client and
+ * an operator both want to see.
+ */
+const char *ardop_host_state_name(ardop_link_state state);
+
+/** @brief The wire name for a protocol mode ("ARQ", "FEC", "RXO"), or NULL. */
+const char *ardop_host_mode_name(ardop_link_mode mode);
+
+/** @brief The inverse. @return false if @p name is not a mode. */
+ARDOP_MUSTUSE bool ardop_host_mode_for_name(const char *name,
+					    ardop_link_mode *out);
+
 #endif /* ARDOP_SHELL_HOST_H_ */

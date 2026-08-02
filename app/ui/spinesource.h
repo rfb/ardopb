@@ -74,6 +74,17 @@ signals:
 	void ownerChanged(bool tncAttached, const QString &text);
 	void received(const QByteArray &tag, const QByteArray &data);
 
+	/**
+	 * @brief The link state changed, and who it changed with.
+	 *
+	 * analysis/16 §7: the remote callsign is the first thing an operator
+	 * looks for and no telemetry record carries it. Embedded, the event bus
+	 * has it. **TelemetryClient has no equivalent**, which is why this signal
+	 * sits below the shared five rather than among them -- a remote panel
+	 * shows the state without the callsign until §7's second half is built.
+	 */
+	void linkState(int state, const QString &remote);
+
 private slots:
 	void pump();
 

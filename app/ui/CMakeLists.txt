@@ -48,6 +48,8 @@ add_executable(ardop-station
     main.cpp
     stationwindow.cpp
     devicespage.cpp
+    stationpage.cpp
+    consolepage.cpp
     modemthread.cpp
     spinesource.cpp
 

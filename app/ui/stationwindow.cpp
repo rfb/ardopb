@@ -9,6 +9,7 @@
 #include <cmath>
 
 extern "C" {
+#include "shell/host.h"
 #include "shell/settings.h"
 }
 
@@ -42,6 +43,14 @@ StationWindow::StationWindow(ModemThread *modem, QWidget *parent)
 
 	m_devices = new DevicesPage(modem, this);
 	m_tabs->addTab(m_devices, tr("Devices"));
+
+	/* Station before Console: the order is the order an operator needs them
+	 * in, which is also the order of how often they are opened. */
+	m_station = new StationPage(modem, this);
+	m_tabs->addTab(m_station, tr("Station"));
+
+	m_console = new ConsolePage(modem, this);
+	m_tabs->addTab(m_console, tr("Console"));
 
 	setCentralWidget(m_tabs);
 
@@ -100,6 +109,26 @@ StationWindow::StationWindow(ModemThread *modem, QWidget *parent)
 		this, &StationWindow::onDeviceEvent);
 	connect(&m_source, &SpineSource::ownerChanged,
 		this, &StationWindow::onOwnerChanged);
+	connect(&m_source, &SpineSource::linkState,
+		this, &StationWindow::onLinkState);
+
+	connect(m_station, &StationPage::message, this, &StationWindow::log);
+
+	/*
+	 * Settings are written on a timer rather than on every keystroke.
+	 *
+	 * Every field on the Station screen applies to the modem the moment it
+	 * changes -- that part must not be delayed. Writing the file is a
+	 * different question: a rewrite per character would put an atomic
+	 * replace of the config file in the middle of an operator typing their
+	 * callsign. One second after the last change is soon enough, and the
+	 * window also saves on close so nothing is lost by waiting.
+	 */
+	m_saveTick.setSingleShot(true);
+	m_saveTick.setInterval(1000);
+	connect(&m_saveTick, &QTimer::timeout, this, &StationWindow::saveStation);
+	connect(m_station, &StationPage::settingsChanged, this,
+		[this] { m_saveTick.start(); });
 
 	m_source.start(30);
 }
@@ -193,6 +222,9 @@ void StationWindow::onAudio(float rms, float peak)
 void StationWindow::onStatus(const LinkStatus &st)
 {
 	m_lamps->setStatus(st);
+	m_station->setLinkState(
+		QString::fromUtf8(ardop_host_state_name((ardop_link_state)st.state)),
+		m_remoteCall);
 	if (st.sn != 0 || st.quality != 0)
 		m_sn->setValue(st.sn, tr("%1 dB   Q %2")
 					      .arg(st.sn).arg(st.quality));
@@ -216,11 +248,21 @@ void StationWindow::onConnectionChanged(bool up, const QString &detail)
 void StationWindow::onHostMessage(const QString &text)
 {
 	log(text);
+	m_console->appendMessage(text);
 }
 
 void StationWindow::onReply(const QString &text)
 {
+	/*
+	 * Replies go to the Console in full and to the panel log as well.
+	 *
+	 * They are the modem answering a question, and the Console is where the
+	 * question is visible -- but an operator who never opens the Console
+	 * should still see that something replied, because the commonest reply
+	 * worth noticing is a FAULT.
+	 */
 	log(text);
+	m_console->appendReply(text);
 }
 
 void StationWindow::onFault(int code, const QString &text)
@@ -244,4 +286,40 @@ void StationWindow::onOwnerChanged(bool attached, const QString &text)
 	 */
 	m_owner->setText(attached ? tr("TNC client owns the link") : QString());
 	log(text);
+}
+
+void StationWindow::onLinkState(int state, const QString &remote)
+{
+	m_remoteCall = remote;
+	m_station->setLinkState(
+		QString::fromUtf8(ardop_host_state_name((ardop_link_state)state)),
+		remote);
+
+	/* The status bar gains the one field the telemetry record does not
+	 * carry, next to the state it belongs with. */
+	m_conn->setText(remote.isEmpty()
+				? m_conn->text()
+				: tr("connected to %1").arg(remote));
+}
+
+void StationWindow::applySavedStation(const ardop_settings *s)
+{
+	m_station->applySaved(s);
+}
+
+void StationWindow::saveStation()
+{
+	char path[512];
+	if (!ardop_settings_path(path, sizeof path))
+		return;
+
+	/* Load first: the store preserves keys it does not know, so writing our
+	 * section back cannot disturb the device selection or anybody else's
+	 * future section. */
+	ardop_settings s {};
+	ardop_settings_load(&s, path);
+	m_station->store(&s);
+	if (!ardop_settings_save(&s, path))
+		log(tr("could not save settings to %1")
+			    .arg(QString::fromUtf8(path)));
 }

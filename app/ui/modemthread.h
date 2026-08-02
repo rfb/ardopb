@@ -70,6 +70,30 @@ public:
 	bool requestDeviceClose();
 	bool requestPttTest(unsigned ms);
 	bool submitLine(const QString &line);
+
+	/**
+	 * @brief Queue a typed link command.
+	 *
+	 * The typed path rather than a formatted line, for §3's reason: a
+	 * command built from an enum cannot be malformed, where one built from a
+	 * string can be, and CONNECT is the one command in the program that puts
+	 * a transmitter on the air without an operator holding anything down.
+	 *
+	 * ::ARDOP_CMD_SEND_DATA is rejected by the spine -- it would bypass the
+	 * transmit credit. Use the data path.
+	 */
+	bool submitCmd(const ardop_host_cmd &cmd);
+
+	/**
+	 * @brief Connect to @p call at @p bw.
+	 *
+	 * Separate from submitCmd because the callsign has to be parsed, and a
+	 * bad callsign is an operator typo rather than a programming error: it
+	 * comes back as a message, not a rejected command.
+	 *
+	 * @param[out] why  Filled with the reason when this returns false.
+	 */
+	bool connectTo(const QString &call, ardop_arq_bandwidth bw, QString *why);
 	bool submitConfig(app_cfg_key key, const QString &value);
 	bool submitConfig(app_cfg_key key, long value);
 	bool submitConfig(app_cfg_key key, bool value);

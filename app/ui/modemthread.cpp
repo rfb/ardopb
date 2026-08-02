@@ -2,6 +2,10 @@
 
 #include <QByteArray>
 
+extern "C" {
+#include "codec/stationid.h"
+}
+
 /**
  * @file modemthread.cpp
  * @brief The modem loop, on its own thread (see modemthread.h).
@@ -109,6 +113,46 @@ bool ModemThread::submitConfig(app_cfg_key key, const QString &value)
 	/* The string is copied into the queue slot, so the QByteArray only has to
 	 * outlive this call -- which it does. */
 	return app_submit_config(m_spine, key, v);
+}
+
+bool ModemThread::submitCmd(const ardop_host_cmd &cmd)
+{
+	if (!m_spine)
+		return false;
+	return app_submit_cmd(m_spine, &cmd);
+}
+
+bool ModemThread::connectTo(const QString &call, ardop_arq_bandwidth bw,
+			    QString *why)
+{
+	if (!m_spine) {
+		if (why)
+			*why = tr("the modem is not running");
+		return false;
+	}
+
+	const QByteArray utf8 = call.trimmed().toUpper().toUtf8();
+	ardop_stationid target {};
+	const ardop_stationid_err err =
+		ardop_stationid_from_str(utf8.constData(), &target);
+	if (err != ARDOP_STATIONID_OK) {
+		/* core/ owns the wording, so the operator and the TNC protocol
+		 * give the same account of a bad callsign. */
+		if (why)
+			*why = QString::fromUtf8(ardop_stationid_strerror(err));
+		return false;
+	}
+
+	ardop_host_cmd cmd {};
+	cmd.kind = ARDOP_CMD_CONNECT;
+	cmd.target = target;
+	cmd.bandwidth = bw;
+	if (!app_submit_cmd(m_spine, &cmd)) {
+		if (why)
+			*why = tr("the command queue is full");
+		return false;
+	}
+	return true;
 }
 
 bool ModemThread::submitConfig(app_cfg_key key, long value)

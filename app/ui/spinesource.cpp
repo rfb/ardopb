@@ -131,6 +131,10 @@ void SpineSource::drainEvents()
 		case APP_EV_DEVICE:
 			emit deviceEvent(m_event.code, text);
 			break;
+		case APP_EV_STATE:
+			emit linkState(m_event.code,
+				       QString::fromUtf8(m_event.text));
+			break;
 		case APP_EV_OWNER:
 			emit ownerChanged(m_event.flag, text);
 			break;

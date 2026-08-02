@@ -163,6 +163,7 @@ typedef enum {
 	APP_EV_OWNER,     /**< @c flag: a TNC client attached (true) or left. */
 	APP_EV_FAULT,     /**< @c text + @c code (an ::app_fault). */
 	APP_EV_DEVICE,    /**< @c text + @c code (an ::app_device_code). */
+	APP_EV_STATE,     /**< @c text: the other station, or empty. @c code: state. */
 } app_event_kind;
 
 /**
@@ -179,7 +180,8 @@ typedef struct {
 	char text[APP_TEXT_MAX];  /**< HOST_MSG / REPLY / FAULT. NUL-terminated. */
 	char tag[4];              /**< RX_DATA: "ARQ"/"FEC"/... NUL-terminated. */
 	bool flag;                /**< OWNER: attached. */
-	int code;                 /**< FAULT: ::app_fault. DEVICE: ::app_device_code. */
+	int code;                 /**< FAULT: ::app_fault. DEVICE: ::app_device_code.
+	                           *   STATE: an ::ardop_link_state. */
 	size_t data_len;          /**< RX_DATA. */
 	uint8_t data[ARDOP_DEMOD_MAX_PAYLOAD];  /**< RX_DATA. */
 } app_event;

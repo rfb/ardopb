@@ -69,6 +69,12 @@ int main(int argc, char **argv)
 			app_device_selection sel {};
 			app_devices_selection_load(&sel, &settings);
 			window.applySavedSelection(sel);
+
+			/* After the devices, because a callsign pushed at a
+			 * modem with no audio device is queued and applied
+			 * anyway -- but the log reads in the order things
+			 * happened, and the device is what happened first. */
+			window.applySavedStation(&settings);
 		}
 	}
 

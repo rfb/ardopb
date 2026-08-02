@@ -8,10 +8,12 @@
 #include <QTimer>
 
 #include "constellationwidget.h"
+#include "consolepage.h"
 #include "devicespage.h"
 #include "gaugewidget.h"
 #include "modemthread.h"
 #include "spinesource.h"
+#include "stationpage.h"
 #include "statuslamps.h"
 #include "waterfallwidget.h"
 
@@ -47,6 +49,16 @@ public:
 	 */
 	void applySavedSelection(const app_device_selection &sel);
 
+	/**
+	 * @brief Load the saved station identity and push it to the modem.
+	 *
+	 * Separate from applySavedSelection because they answer different
+	 * questions and can fail independently: a station with no sound card is
+	 * still a station with a callsign, and an operator who has lost their
+	 * device selection should not also have to retype their grid.
+	 */
+	void applySavedStation(const ardop_settings *s);
+
 private slots:
 	void onSpectrum(const SpectrumRow &row);
 	void onConstellation(const ConstellationFrame &f);
@@ -58,6 +70,11 @@ private slots:
 	void onFault(int code, const QString &text);
 	void onDeviceEvent(int code, const QString &text);
 	void onOwnerChanged(bool attached, const QString &text);
+	void onLinkState(int state, const QString &remote);
+
+private slots:
+	/** @brief Write `station.*` out. Debounced -- see the implementation. */
+	void saveStation();
 
 private:
 	QWidget *buildPanel();
@@ -68,6 +85,9 @@ private:
 
 	QTabWidget *m_tabs = nullptr;
 	DevicesPage *m_devices = nullptr;
+	StationPage *m_station = nullptr;
+	ConsolePage *m_console = nullptr;
+	QTimer m_saveTick;
 	QTimer m_slowTick;
 	WaterfallWidget *m_waterfall = nullptr;
 	ConstellationWidget *m_constellation = nullptr;
@@ -81,6 +101,7 @@ private:
 	QLabel *m_owner = nullptr;
 
 	bool m_geometrySet = false;
+	QString m_remoteCall;   /**< From APP_EV_STATE; see spinesource.h. */
 };
 
 #endif /* ARDOP_UI_STATIONWINDOW_H_ */
