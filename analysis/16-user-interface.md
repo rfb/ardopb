@@ -367,7 +367,117 @@ transmit-level record at all and the meter can only ever be labelled RX. A TX
 level meter would need the runtime to emit the same record from the modulator
 pull, which is a change in `shell/`, not here.
 
-### Open questions
+### Design detail
+
+One widget, replacing both `GaugeWidget`s.
+
+```c++
+class LevelMeter : public QWidget {
+public:
+    LevelMeter(const QString &label, QWidget *parent = nullptr);
+
+    /* The scale, in whatever unit the caller is measuring. */
+    void setScale(double min, double max);
+
+    /* Where the value is supposed to sit. Drawn behind the bar, and what the
+     * colour is decided against -- not a single threshold. */
+    void setBand(double lo, double hi);
+
+    /* Values below `lo` are "too quiet" rather than "fine", which is the
+     * defect this replaces. Pass the same number twice for a one-sided
+     * scale, which is what S/N wants. */
+    void setValue(double level, double peak);
+    void setUnknown(const QString &caption);   /* no data yet */
+
+    QSize minimumSizeHint() const override { return QSize(220, 34); }
+    QSize sizeHint()        const override { return QSize(420, 40); }
+
+protected:
+    void paintEvent(QPaintEvent *) override;
+
+private:
+    double toX(double v) const;    /* value -> pixel, clamped to the scale */
+
+    QString  m_label, m_caption;
+    double   m_min = -60, m_max = 0, m_bandLo = -24, m_bandHi = -12;
+    double   m_level = -1e9, m_peak = -1e9;   /* displayed, after ballistics */
+    double   m_rawLevel = -1e9;
+    QElapsedTimer m_clock;         /* wall time: see below */
+    qint64   m_lastTickMs = 0, m_peakHoldUntilMs = 0;
+    QTimer   m_repaint;            /* 30 Hz, independent of the data rate */
+    bool     m_haveData = false;
+};
+```
+
+**The ballistics run on a repaint timer, not on `setValue`.** That is the whole
+reason for `QElapsedTimer`: the audio record arrives once per captured block, and
+the block belongs to the backend — 300 samples at 48 kHz is 40 Hz, the 1200
+default is 10 Hz. A decay applied per record would fall four times faster on one
+sound card than another. So `setValue` only updates the raw figures, and a 30 Hz
+timer advances the displayed ones by elapsed milliseconds:
+
+```c++
+void LevelMeter::tick()          /* every ~33 ms */
+{
+    const qint64 now = m_clock.elapsed();
+    const double dt  = double(now - m_lastTickMs) / 1000.0;
+    m_lastTickMs = now;
+
+    /* Level: instant attack, ~300 ms decay -- the VU integration time, chosen
+     * so the bar is readable rather than flickering. */
+    if (m_rawLevel >= m_level)
+        m_level = m_rawLevel;
+    else
+        m_level += (m_rawLevel - m_level) * std::min(1.0, dt / 0.300);
+
+    /* Peak: instant attack, hold, then a straight fall in dB per second. */
+    if (m_rawPeak >= m_peak) {
+        m_peak = m_rawPeak;
+        m_peakHoldUntilMs = now + 1500;
+    } else if (now > m_peakHoldUntilMs) {
+        m_peak -= 20.0 * dt;                 /* the broadcast PPM convention */
+        m_peak = std::max(m_peak, m_level);  /* never below the bar */
+    }
+    update();
+}
+```
+
+**Painting**, top to bottom in a 34-40 px strip:
+
+| band | contents |
+|---|---|
+| top ~10 px | tick labels at the decade marks and at both band edges |
+| middle ~16 px | the trough: band shading, then the filled bar, then the peak line |
+| bottom ~12 px | `label` on the left, `-16.2 dBFS   pk -9.4` on the right |
+
+The trough is drawn in three passes so the band remains visible where the bar has
+not reached it: band rectangle first in a low-contrast fill, then the bar clipped
+to its own width, then a 2 px vertical line for the peak. The bar's colour comes
+from where `m_level` falls:
+
+```c++
+below m_bandLo      QColor(0x50, 0x60, 0x70)   /* dim: present but too quiet */
+inside the band     QColor(0x2e, 0xa0, 0x4e)   /* green */
+above m_bandHi      QColor(0xd0, 0x92, 0x1c)   /* amber: headroom going */
+within 1 dB of max  QColor(0xc0, 0x39, 0x2b)   /* red: clipping */
+```
+
+**Wiring** replaces the two dials in `StationWindow::buildPanel` with a vertical
+pair, and the row above the waterfall loses ~64 px of height:
+
+```c++
+m_vu = new LevelMeter(tr("RX"), page);
+m_vu->setScale(-60.0, 0.0);
+m_vu->setBand(-24.0, -12.0);      /* was: green everywhere below -12 */
+
+m_sn = new LevelMeter(tr("S/N"), page);
+m_sn->setScale(-25.0, 30.0);
+m_sn->setBand(5.0, 30.0);         /* one-sided: more is simply better */
+```
+
+`onAudio` and `onStatus` change only in the call they make. `GaugeWidget` stays
+in the tree either way — the standalone remote panel uses it, and it is not this
+proposal's business to change what `gui/` looks like.### Open questions
 
 1. **Where do the band edges come from?** Hardcoded constants are the honest
    starting point, but the right values depend on the sound card's headroom and
@@ -512,6 +622,192 @@ the shack builds the same history as one embedding the modem.
 At roughly sixteen bytes a record, ten thousand frames is 160 kB and covers a
 long Winlink session. When it wraps, the oldest go; a session longer than the
 ring is one where the recent part is what matters.
+
+### Design detail
+
+Four pieces: a record on the wire, a ring that holds them, and two views over the
+same ring.
+
+#### 1. The record, in `shell/telemetry.h`
+
+```c
+ARDOP_TLM_FRAME = 5,
+
+/* added to ardop_telemetry, alongside the existing per-kind fields */
+uint64_t frame_at;      /* elapsed samples, from the loop clock */
+uint8_t  frame_dir;     /* ardop_tlm_dir */
+/* frame_type, quality and sn already exist and are reused */
+
+typedef enum {
+    ARDOP_TLM_DIR_RX = 0,
+    ARDOP_TLM_DIR_TX,
+    ARDOP_TLM_DIR_RX_FAILED,
+} ardop_tlm_dir;
+```
+
+Sixteen payload bytes: `u64 at`, `u8 type`, `u8 dir`, `i16 quality`, `i16 sn`,
+little-endian like every other record. `ardop_tlm_encode` and `ardop_tlm_parse`
+each gain one case, and `test/core/test_telemetry.c` one round-trip.
+
+#### 2. Emission, in `shell/runtime.c`
+
+Three call sites, all next to observations that already fire, so no new
+traversal and nothing new computed on the audio path:
+
+| where | direction |
+|---|---|
+| the `ARDOP_EV_FRAME_DECODED` branch, beside `ARDOP_OBS_RX_FRAME` | `RX` |
+| beside `ARDOP_OBS_RX_FRAME_BAD` | `RX_FAILED` |
+| `start_tx`, beside `ARDOP_OBS_TX_FRAME` | `TX` |
+
+Each fills the record and calls the existing sink. `rt->now` is the elapsed
+sample count and is already current at all three points.
+
+**Gated on the telemetry sink being present**, like the spectrum and the
+constellation (`shell/runtime.h:133-135`), so a headless `ardopb` pays nothing.
+
+#### 3. The ring, in the interface
+
+```c++
+struct FrameRecord {
+    quint64 at;          /* elapsed samples */
+    quint8  frameType;
+    quint8  dir;
+    qint16  quality;     /* RX only; -1 when not applicable */
+    qint16  sn;
+    quint32 turnMs;      /* computed on insert; 0 when not a turnaround */
+};
+
+class SessionHistory : public QObject {
+public:
+    void append(const FrameRecord &r);   /* computes turnMs, then stores */
+    int  count() const;
+    const FrameRecord &at(int i) const;  /* 0 is the oldest held */
+    void mark(const QString &why);       /* a session boundary */
+
+signals:
+    void appended(int index);
+    void wrapped();                      /* the view must rebase its indices */
+
+private:
+    QVector<FrameRecord> m_ring;         /* fixed capacity, never reallocated */
+    int m_head = 0, m_count = 0;
+    quint64 m_base = 0;                  /* samples at the first record held */
+    quint64 m_lastRxEnd = 0;
+};
+```
+
+**Turn time is computed on insert**, because it needs the *previous* record and
+the view should not have to look backwards:
+
+```c++
+if (r.dir == TX && m_lastRxEnd)
+    rec.turnMs = quint32((r.at - m_lastRxEnd) * 1000 / 12000);
+if (r.dir != TX)
+    m_lastRxEnd = r.at;
+```
+
+A frame's `at` is when it was *observed*, so this is the gap between one frame
+being decoded and the next transmission starting — which is the quantity
+[15](15-platform-audio-and-ptt.md) §8's 250 ms budget is about. Divide by 12000
+only for display; the stored figure stays in samples.
+
+Capacity 10 000: at 16 bytes plus the computed field, around 200 kB, and long
+enough for a full Winlink session.
+
+#### 4. The macro view
+
+```c++
+class HistoryGrid : public QWidget {
+    /* Cells of kCell x kCell with kGap between, wrapped to the widget width.
+     * No scrolling: the whole ring is always visible, which is the point --
+     * the pattern is readable before any individual cell is. Cell size falls
+     * as the ring fills, to a floor of 3 px, below which the view stops
+     * showing the oldest rather than becoming unreadable. */
+    static constexpr int kCell = 7, kGap = 1, kMinCell = 3;
+
+    int indexAt(const QPoint &p) const;   /* hit test, for the shared cursor */
+
+signals:
+    void frameClicked(int index);
+
+public slots:
+    void setCursor(int index);            /* driven by the table */
+};
+```
+
+Painting is one `fillRect` per cell, plus a two-pixel diagonal for
+`RX_FAILED` — the shape difference that keeps failure off hue alone. Colour:
+
+```c++
+RX          lerp(QColor(0x1d,0x3a,0x5c), QColor(0x4f,0xa3,0xe8), quality/100.0)
+TX          QColor(0xd8, 0x9b, 0x2e)      /* amber; no quality exists */
+RX_FAILED   QColor(0xc0, 0x39, 0x2b) + the diagonal
+cursor      a 1 px outline in the palette's highlight colour
+```
+
+Blue for received and amber for transmitted, deliberately not red against green.
+Quality rides *lightness* within the received hue, so the two dimensions do not
+compete.
+
+Dead air is a gap rather than a cell: a run whose `at` differs from its
+predecessor's by more than one frame's duration leaves a blank of width
+proportional to `log(gap)`, which keeps a two-second turnaround visible without
+letting a thirty-second one dominate the row.
+
+#### 5. The micro view
+
+A `QAbstractTableModel` over the same `SessionHistory` — not a copy — with seven
+columns, deriving everything from `frameType` through `ardop_frame_spec_for()`:
+
+| column | source |
+|---|---|
+| at | `at / 12000`, as `mm:ss.s` |
+| dir | `dir` |
+| mode | `spec->name` |
+| bytes | `ardop_frame_payload_bytes(type)`, blank for control frames |
+| Q | `quality`, blank for TX |
+| S/N | `sn`, blank for TX |
+| turn | `turnMs`, blank when not a turnaround |
+
+`rowCount` follows `SessionHistory::count()`; `appended` becomes
+`beginInsertRows`, and `wrapped` a `beginRemoveRows` for row 0. Hosted in a
+`QTableView` with `setUniformRowHeights(true)`, because ten thousand rows is
+enough for the layout cost to show.
+
+#### 6. The shared cursor
+
+```c++
+connect(m_grid,  &HistoryGrid::frameClicked, this, &HistoryPage::selectFrame);
+connect(m_table->selectionModel(), &QItemSelectionModel::currentRowChanged,
+        this, [this](const QModelIndex &i) { selectFrame(i.row()); });
+
+void HistoryPage::selectFrame(int index)
+{
+    if (index == m_cursor)   /* the guard that stops the two signals looping */
+        return;
+    m_cursor = index;
+    m_grid->setCursor(index);
+    m_table->selectRow(index);
+    m_table->scrollTo(m_table->model()->index(index, 0),
+                      QAbstractItemView::PositionAtCenter);
+}
+```
+
+#### 7. What it costs elsewhere
+
+| file | change |
+|---|---|
+| `shell/telemetry.{h,c}` | one record kind, one enum, encode and parse |
+| `shell/runtime.c` | three emissions beside existing observations |
+| `test/core/test_telemetry.c` | one round-trip case |
+| `app/ui/spinesource.{h,cpp}` | one signal, one case in `drainDisplay` — **not coalesced**, unlike status |
+| `gui/telemetryclient.{h,cpp}` | the same signal, so `--remote` gets the history too |
+| `app/ui/` | `sessionhistory`, `historygrid`, `historytable`, `historypage` |
+
+Nothing in `core/`. Nothing in the spine — `app/spine.c` does not learn what a
+frame record is, because the display queue carries the wire format and passes it
+through untouched, which is what §6 bought.
 
 ### Open questions
 
