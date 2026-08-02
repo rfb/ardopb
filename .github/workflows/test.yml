@@ -78,6 +78,30 @@ jobs:
           ./app/ardop-spine --loopback --telemetry \
             --script test/app/session.script
 
+      # The device manager against a real backend. miniaudio's synthetic device
+      # runs a real device thread, so this exercises the open, the platform
+      # bind, the block the backend asked for and the credit -- on a runner with
+      # no sound card. test_devices drives the manager as a library; this proves
+      # the program built around it starts.
+      - name: Device manager, end to end
+        run: ./app/ardop-spine --audio-null-device --script test/app/devices.script
+
+      # The two entry points an operator types first. Neither can assert much on
+      # a runner with no audio hardware -- --detect exits 1 when it finds no
+      # radio, which is correct there -- but "it ran, printed something and came
+      # back" is exactly the class of regression that otherwise reaches a user
+      # before it reaches us. The timeout is the real assertion: these must not
+      # hang, and --detect walks a device tree.
+      - name: Operator entry points
+        run: |
+          timeout 30 ./app/ardop-spine --list-devices > devices.txt; rc=$?
+          test $rc -le 1 || { echo "--list-devices exited $rc"; exit 1; }
+          timeout 30 ./app/ardop-spine --detect > detect.txt; rc=$?
+          test $rc -le 1 || { echo "--detect exited $rc"; exit 1; }
+          test -s devices.txt || { echo "--list-devices printed nothing"; exit 1; }
+          test -s detect.txt || { echo "--detect printed nothing"; exit 1; }
+          cat devices.txt detect.txt
+
       - name: Golden-corpus conformance
         run: make golden-core golden-shell golden-tx
 
@@ -186,6 +210,19 @@ jobs:
 
       - name: Unit and integration tests
         run: make test-core
+
+      # Running the spine on Windows, not merely compiling it. The whole reason
+      # this job exists is that portability is a claim about behaviour, and the
+      # loopback session is the one test that drives a complete ARQ exchange --
+      # connect, transfer under backpressure, verify every byte, disconnect --
+      # with no radio. A build that compiles and cannot complete a session is
+      # exactly the failure a compile-only job cannot see.
+      - name: Station spine, end to end
+        run: |
+          make app
+          ./app/ardop-spine --loopback --telemetry \
+            --script test/app/session.script
+          ./app/ardop-spine --audio-null-device --script test/app/devices.script
 
       # Worth stating plainly: golden-tx passing here means the modulator emits
       # byte-identical on-air audio compiled by a different toolchain on a

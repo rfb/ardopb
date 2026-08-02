@@ -140,6 +140,10 @@ identically connected and only one of them transmits.
 card with the keying interface on the same USB hardware. It prints what it found
 and applies nothing — confirm it keys before trusting it.
 
+**The keying paths have never been run against real hardware.** If you own a
+radio and can help, [`analysis/19`](analysis/19-field-testing.md) says exactly
+what to try and what to send back.
+
 CM108 on Linux needs a udev rule; the diagnostic prints it, and it is also in
 [`shell/README.md`](shell/README.md).
 

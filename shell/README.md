@@ -129,6 +129,8 @@ then `sudo udevadm control --reload && sudo udevadm trigger`, and replug.
 ## What has not been run against hardware
 
 Stated plainly, because the alternative is an operator finding out on the air.
+[`analysis/19`](../analysis/19-field-testing.md) is the same list turned into
+something you can hand to somebody who owns a radio.
 
 - **CM108 keying.** The report bytes, the chip table, the auto-selection policy
   and the sysfs parser are all unit-tested; nothing has been written to a real
