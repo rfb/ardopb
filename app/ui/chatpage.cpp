@@ -51,8 +51,11 @@ void ChatPage::onStateChanged(int state, const QString &peer)
 	m_state = state;
 	if (!peer.isEmpty())
 		m_peer = peer;
-	if (state == ASP_LINK_IDLE)
+	if (state == ASP_LINK_IDLE) {
 		m_peer.clear();
+		/* Per session: the next caller deserves to be told too. */
+		m_saidBinary = false;
+	}
 	updateGate();
 }
 
@@ -135,6 +138,27 @@ void ChatPage::onTextArrived(const QString &text, bool raw)
 	 */
 	m_transcript->append(raw ? QStringLiteral(" <") : QStringLiteral("<<"),
 			     text, "#2ecc71");
+}
+
+/*
+ * Said once per session, not once per chunk.
+ *
+ * A file arriving this way is hundreds of payloads, and a line each would bury
+ * the explanation in the noise it is explaining.
+ */
+void ChatPage::onBinaryArrived(qint64 bytes)
+{
+	(void)bytes;
+	if (m_saidBinary)
+		return;
+	m_saidBinary = true;
+	m_transcript->append(
+		QStringLiteral("!!"),
+		tr("The other station is sending data rather than text -- most "
+		   "likely piping a file with ardop-cat, which has no way to "
+		   "name it or check it. It cannot be received here; ask them "
+		   "to send it from the Files screen instead."),
+		"#c0392b");
 }
 
 void ChatPage::onNote(const QString &text)

@@ -406,6 +406,45 @@ static void test_chat_interleaves_with_a_transfer(void **state)
 
 /* --- 5: a peer that does not speak ASP -------------------------------------- */
 
+/*
+ * A raw byte pipe has to be able to recognise us, and refuse.
+ *
+ * `apps/ardop-cat` writes whatever arrives straight to stdout. If the station on
+ * the other end is running the application, that stream is ASP framing
+ * interleaved with the file, which produces a corrupt file and an exit status of
+ * zero -- the worst combination available.
+ *
+ * So `asp_looks_like_hello` is asserted here, against what `asp_open` *actually
+ * emits*, rather than in the tool against a signature written out a second time.
+ * A change to HELLO that silently disabled the check fails this.
+ */
+static void test_a_raw_pipe_can_recognise_us(void **state)
+{
+	(void)state;
+	static station a, b;
+
+	wire_up(&a, &b, "N0AAA", "N0BBB");
+
+	/* Whatever a fresh session says first is what the pipe will see first. */
+	assert_true(a.wire_len > 0);
+	assert_true(asp_looks_like_hello(a.wire, a.wire_len));
+
+	/* And one byte at a time, because a first payload could be short. */
+	assert_false(asp_looks_like_hello(a.wire, 1));
+	assert_false(asp_looks_like_hello(a.wire, 6));
+
+	/* Things that are not us. A PNG in particular: its first byte is 0x89,
+	 * and a file whose first byte happened to be 0x01 must still not match
+	 * without the magic behind it. */
+	static const uint8_t png[] = {0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a};
+	static const uint8_t nearly[] = {0x01, 0x10, 'A', 'S', 'P', '/', '2', 0};
+	const char *typed = "hello there, running plain ardopcf here\r\n";
+
+	assert_false(asp_looks_like_hello(png, sizeof png));
+	assert_false(asp_looks_like_hello(nearly, sizeof nearly));
+	assert_false(asp_looks_like_hello(typed, strlen(typed)));
+}
+
 static void test_plain_peer_degrades_to_raw(void **state)
 {
 	(void)state;
@@ -613,6 +652,7 @@ int main(void)
 		cmocka_unit_test(test_bad_prefix_restarts_from_zero),
 		cmocka_unit_test(test_chat_interleaves_with_a_transfer),
 		cmocka_unit_test(test_plain_peer_degrades_to_raw),
+		cmocka_unit_test(test_a_raw_pipe_can_recognise_us),
 		cmocka_unit_test(test_unknown_type_mid_transfer),
 		cmocka_unit_test(test_hostile_offer_names),
 		cmocka_unit_test(test_transfer_survives_a_stingy_link),

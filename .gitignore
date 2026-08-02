@@ -77,8 +77,7 @@ newArdopSampleArrays.c
 /ardopb
 
 # host-client apps (built by `make apps`)
-/apps/ardop-tx
-/apps/ardop-rx
+/apps/ardop-cat
 /apps/ardop-chat
 
 # the station application's spine harness (built by `make app`)

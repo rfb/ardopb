@@ -17,7 +17,7 @@
 # Targets:
 #   make               ardopb + the host-client apps (the default)
 #   make ardopb        the modem
-#   make apps          ardop-tx / ardop-rx / ardop-chat
+#   make apps          ardop-cat / ardop-chat
 #   make test-core     the in-process unit/integration tests (needs cmocka)
 #   make check-pure    assert core/ has no mutable globals and no allocation
 #   make check-headers assert every core/ header compiles standalone
@@ -195,7 +195,7 @@ ardopb: ardopb$(EXE)
 endif
 
 # --- apps/ : host-client applications (plain TCP clients) ------------------
-APPS = apps/ardop-tx$(EXE) apps/ardop-rx$(EXE) apps/ardop-chat$(EXE)
+APPS = apps/ardop-cat$(EXE) apps/ardop-chat$(EXE)
 
 # -I. so the apps can reach shell/net.h and shell/sys.h. They remain plain host
 # clients with no dependency on the modem's C API -- net/sys are a platform
@@ -206,8 +206,9 @@ apps/%.o: apps/%.c
 
 APP_OBJS = apps/hostclient.o shell/net.o shell/sys.o
 APP_LINK = $(CC) $(STATIC) $^ -o $@ $(PLATFORM_LDLIBS)
-apps/ardop-tx$(EXE):   apps/ardop_tx.o   $(APP_OBJS) ; $(APP_LINK)
-apps/ardop-rx$(EXE):   apps/ardop_rx.o   $(APP_OBJS) ; $(APP_LINK)
+# The one app that links a piece of the protocol: app/asp_wire.o, purely so
+# that asp_looks_like_hello and the HELLO it looks for cannot drift apart.
+apps/ardop-cat$(EXE):  apps/ardop_cat.o  app/asp_wire.o $(APP_OBJS) ; $(APP_LINK)
 apps/ardop-chat$(EXE): apps/ardop_chat.o $(APP_OBJS) ; $(APP_LINK)
 
 apps: $(APPS)

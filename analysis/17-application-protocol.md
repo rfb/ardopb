@@ -326,10 +326,9 @@ framing by hand with nothing checking the two agree. ASP should not repeat that.
 
 ## Open decisions
 
-1. **Whether `apps/ardop-tx`/`ardop-rx` adopt ASP** or stay as the raw pipe. They
-   are useful precisely because they are `cat`; a `--asp` flag is probably the
-   answer, but then the framing has a second implementation and needs the
-   round-trip test that `test_telemetry.c` does for the telemetry format.
+1. ~~**Whether `apps/ardop-tx`/`ardop-rx` adopt ASP** or stay as the raw pipe.~~
+   **Answered: they stay the raw pipe, and are renamed to say so.** See
+   amendment 10.
 2. **Compression.** Deferred out of version 1 above, but a capability flag and a
    single well-defined algorithm (deflate) would help on text-heavy links.
 3. **Whether `TEXT` needs a message id on ARQ** for UI-level delivery receipts.
@@ -584,3 +583,75 @@ framing by hand with nothing checking the two agree. ASP should not repeat that.
    profile around the message rather than the message: no session, no peer, the
    `FECREPEATS` duplicates to deduplicate on `(callsign, msg_id)`, and a screen
    where a broadcast is addressed to nobody.
+
+10. **Open decision 1, answered: the pipe stays a pipe, and is renamed to say so.
+    `ardop-tx` and `ardop-rx` are now one binary, `ardop-cat`.**
+
+    The decision above framed this as "do they adopt ASP", and worried that a
+    `--asp` flag would mean "the framing has a second implementation". That
+    worry is void: amendment 1 gave the session no transport and no storage, so
+    a CLI client would *link `asp.c`* with an `asp_io` over the host socket.
+    Adopting ASP is far cheaper than this document assumed.
+
+    It is still the wrong thing, and for the reason the decision itself gives:
+    *"they are useful precisely because they are `cat`."* Since there is now a
+    real protocol for named, checksummed, resumable transfers, the pipe's job is
+    to be the pipe. What was wrong was not its behaviour but its **name** — this
+    document's own opening line is "`ardop-tx` is `cat` over ARQ", and the tool
+    was called `tx` as though it were the general way to send data.
+
+    ### What was actually broken, measured
+
+    Two of the four cross-combinations silently destroyed data:
+
+    | | → `ardop-rx` | → the station app |
+    |---|---|---|
+    | **`ardop-tx` sends a file** | works | the file lands **in the chat window**; nothing written |
+    | **the station app sends a file** | ASP framing written **into the file**; exit 0 | works |
+    | **chat** | one 18-byte greeting, then clean | works |
+
+    Driving the real `asp.c` against raw bytes: a fresh session puts
+    `\x01\x10ASP/1\x01\x03\x00\x00\x00\x05N0AAA` on the wire, and a PNG streamed
+    at it is delivered as `RAW CHAT TEXT`. The chat pairing genuinely works --
+    §2's raw mode doing its job -- apart from that greeting, which is
+    unavoidable because a station has to say hello to discover the peer cannot
+    hear it.
+
+    ### netcat's shape, not netcat's silence
+
+    `nc` is one binary with the direction as a flag, makes no claim about
+    content, and does **not** detect protocol mismatches -- pointed at an HTTPS
+    port it prints garbage, and that is correct for `nc`.
+
+    The first two carry over. The third does not, and the reason is worth
+    recording because it is the whole difference: **with netcat you are on both
+    ends.** You chose to run it twice. Over HF the far end is a stranger who may
+    be running the station application, Pat, ardopcf or a terminal, and "you get
+    what is on the wire" is safe on a terminal and unsafe when the wire's
+    contents become a file somebody trusts.
+
+    So `asp_looks_like_hello` is exported from `asp_wire.c` -- beside the
+    encoder, so the check and the thing it checks for cannot drift, and asserted
+    in `test_asp.c` against what `asp_open` actually emits rather than against a
+    signature written out twice. `ardop-cat` links that one pure object and
+    nothing else of the protocol. Receiving a greeting writes nothing and exits
+    2; sending to one warns and continues, because the operator may know exactly
+    what they are doing.
+
+    It also settles the defect this document opens with: **`ardop-cat` reads the
+    tag.** `apps/ardop_rx.c` received it into a buffer and never looked at it, so
+    an `ERR` marker or an `IDF` could land in the middle of a file. Only `ARQ`
+    payload is the stream now, and anything else is reported once and skipped.
+
+    ### Not done
+
+    **Full duplex.** `nc` is bidirectional because TCP is. ARQ is half duplex
+    with an explicit turnover, and the completion rule -- everything drained and
+    acked, then disconnect -- is one-directional by nature. Possible, since two
+    opposite streams need no multiplexing, but it is a feature rather than a
+    rename, and "when is it finished" gets materially harder in both directions
+    at once.
+
+    **Compatibility aliases.** None. This is a hard fork whose only release is a
+    rolling prerelease, and carrying `ardop-tx` as a symlink from the first
+    release onwards would be inheriting a name we just decided was wrong.

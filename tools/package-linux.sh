@@ -44,7 +44,7 @@ rm -rf "$OUT/$NAME" "$NAME.tar.gz"
 mkdir -p "$OUT/$NAME"
 
 cp ardopb "$OUT/$NAME/"
-cp apps/ardop-tx apps/ardop-rx apps/ardop-chat "$OUT/$NAME/"
+cp apps/ardop-cat apps/ardop-chat "$OUT/$NAME/"
 
 # ardop-spine ships too, and it is the reason a first-time operator downloads
 # this at all: it is the only binary that can find a radio (--detect), and the
@@ -56,7 +56,7 @@ cp app/ardop-spine "$OUT/$NAME/"
 
 # Stripped here rather than by dropping -g from CFLAGS, so a developer who
 # builds locally keeps a debuggable binary.
-strip "$OUT/$NAME"/ardopb "$OUT/$NAME"/ardop-tx "$OUT/$NAME"/ardop-rx \
+strip "$OUT/$NAME"/ardopb "$OUT/$NAME"/ardop-cat \
 	"$OUT/$NAME"/ardop-chat "$OUT/$NAME"/ardop-spine
 
 # The field-test scripts and the guide that walks through them. Shipped together
@@ -91,8 +91,7 @@ ardopb for Linux
   ardop-spine   the station program: finds your radio, remembers the choice
   ardopb        the modem
   ardop-chat    keyboard-to-keyboard chat over a link
-  ardop-tx      pipe a file or stream into a link
-  ardop-rx      receive a stream to stdout
+  ardop-cat     a raw byte pipe over a link, in either direction
 
 Nothing here needs installing. Copy the files anywhere on your PATH, or run
 them from this folder.

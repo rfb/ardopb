@@ -5,30 +5,63 @@ thin clients: a modem daemon (`ardopb --host P`, or the inherited `ardopcf`) own
 the sound card and speaks the host protocol; these apps connect to it over TCP.
 Because the modem is shared, you can run several at once against one radio.
 
-Build with `make apps` → `apps/ardop-tx`, `apps/ardop-rx`, `apps/ardop-chat`.
+Build with `make apps` → `apps/ardop-cat`, `apps/ardop-chat`.
 
 All take `--host HOST:PORT` (default `127.0.0.1:8515`), where `PORT` is the
 command port and `PORT+1` is the data port.
 
-## ardop-tx / ardop-rx — a pipe over the radio
+## ardop-cat — a pipe over the radio
 
-Reliable one-way byte stream over an ARQ connection. The sending station's modem
-must know its call (set when `ardopb` launches); the receiving station's modem
-must be listening (`ardopb --listen`).
+netcat's shape: one binary, and the direction is a flag. The sending station's
+modem must know its call (set when `ardopb` launches); the receiving station's
+modem must be listening (`ardopb --listen`).
 
 ```
 # receiver (station B):
-ardop-rx --host 127.0.0.1:8700 > received.bin
+ardop-cat --host 127.0.0.1:8700 --listen > received.bin
 
 # sender (station A), dialing B's callsign:
-cat send.bin | ardop-tx --host 127.0.0.1:8600 N0BBB
+ardop-cat --host 127.0.0.1:8600 N0BBB < send.bin
 ```
 
-`ardop-tx` dials the target, streams stdin with flow control (so the modem's
-send buffer never overflows), waits for it all to drain and be acked, then
-disconnects. `ardop-rx` writes each received payload to stdout and exits when the
-peer disconnects (end of stream). Exit status is non-zero on connect failure or a
-dropped link.
+Sending dials the target, streams stdin with flow control (so the modem's send
+buffer never overflows), waits for it all to drain and be acked, then
+disconnects. Listening writes each received `ARQ` payload to stdout and exits
+when the peer disconnects, which is end of stream. Exit status is non-zero on
+connect failure or a dropped link.
+
+**One direction per invocation.** `nc` is full duplex because TCP is; this link
+is half duplex with an explicit turnover, and the completion rule above is
+one-directional by nature. A bidirectional pipe would be a feature, not a flag.
+
+### What it does not do, on purpose
+
+No filename, no length, no checksum, no resume, no completion signal — it is
+`cat`, and it is named for it. The bytes that arrive are the bytes that were
+sent, in order, or it exits non-zero. Check the result yourself, the way you
+would with `nc`.
+
+For a transfer that carries a name, verifies a checksum end to end and can be
+resumed after a dropped link, both ends run `ardop-station`, which speaks
+[ASP](../analysis/17-application-protocol.md).
+
+### It refuses to be pointed at a station application
+
+This is the one place it does *not* follow netcat. `nc` aimed at an HTTPS port
+prints binary garbage, and that is correct for `nc` — you are on both ends, and
+a terminal is where it lands. Here the far end is a stranger, and what would land
+is a file you go on to trust: ASP's framing interleaved with the contents, a
+corrupt file, and an exit status of zero.
+
+So the first payload is checked for ASP's greeting (`asp_looks_like_hello`, which
+lives beside the encoder so the two cannot drift; `test_asp.c` asserts it against
+what a real session actually emits). Receiving one writes nothing and exits 2
+with a message naming what to use instead. Sending to one warns and continues,
+because the operator may know exactly what they are doing.
+
+It also *reads the tag* now, which the tools it replaces did not: only
+`ARQ`-tagged payload is the stream, so an error marker or a station
+identification can no longer land in the middle of your file.
 
 ## ardop-chat — basic two-way chat
 
@@ -58,7 +91,7 @@ can exercise the apps end to end on one machine:
 
 ```
 make ardopb apps
-tools/loopback.sh pipe      # transfers a file with ardop-tx/ardop-rx, checks it
+tools/loopback.sh pipe      # transfers a file with ardop-cat, checks it
 ```
 
 For chat over the loopback, `tools/loopback.sh up`, start two daemons on the

@@ -97,6 +97,17 @@ public:
 	 */
 	static bool carriesSession(int state);
 
+	/**
+	 * @brief Whether raw bytes are somebody typing rather than somebody's file.
+	 *
+	 * Public and static so the judgement can be tested directly, because it
+	 * is a heuristic and it is wrong in two directions: calling a file text
+	 * fills the transcript with mojibake, and calling text a file loses a
+	 * message. See the implementation for why it is a proportion rather than
+	 * a UTF-8 validity check.
+	 */
+	static bool looksLikeTyping(const char *data, size_t len);
+
 public slots:
 	/** @brief Follow the link. Opens and closes the session. */
 	void onLinkState(int state, const QString &remote);
@@ -131,6 +142,16 @@ signals:
 
 	/** @brief A chat line. @p raw when the peer is not speaking ASP. */
 	void textArrived(const QString &text, bool raw);
+
+	/**
+	 * @brief Raw bytes arrived that are not text at all.
+	 *
+	 * A peer running `ardop-cat` is piping a file at us, and this session
+	 * has no protocol to receive it with -- in raw mode everything is chat.
+	 * Reported separately so the transcript can say what is happening
+	 * instead of filling with mojibake, which is what rendering it does.
+	 */
+	void binaryArrived(qint64 bytes);
 
 	/**
 	 * @brief An offer needs an answer.

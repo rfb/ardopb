@@ -207,9 +207,57 @@ bool AspSession::cancel(bool inbound)
 
 /* --- the hooks -------------------------------------------------------------- */
 
+bool AspSession::looksLikeTyping(const char *p, size_t len)
+{
+	if (len == 0)
+		return true;
+
+	/* A NUL settles it alone: no text contains one, and every binary format
+	 * worth worrying about is full of them. */
+	if (memchr(p, 0, len))
+		return false;
+
+	/*
+	 * Otherwise it is a proportion, not a yes/no, and that is the whole
+	 * design of this check.
+	 *
+	 * The obvious test -- "does it decode as UTF-8" -- is wrong in a way
+	 * that matters here. §2's raw mode exists precisely for stations that do
+	 * not follow this specification, and a plain terminal sending Latin-1
+	 * produces a replacement character for every accented letter. Refusing
+	 * to show "café" because one byte was not UTF-8 would break the case the
+	 * feature is for.
+	 *
+	 * So: how much of this could not be read? A stray accent is a few per
+	 * cent; a PNG or a zip is most of it.
+	 */
+	const QString s = QString::fromUtf8(p, int(len));
+	int bad = 0;
+	for (const QChar c : s) {
+		const char16_t u = c.unicode();
+		if (u == 0xFFFD)
+			bad++;
+		else if (u < 0x20 && u != '\n' && u != '\r' && u != '\t')
+			bad++;
+	}
+	return bad * 5 < s.size();   /* under 20% unreadable is someone typing */
+}
+
 void AspSession::onText(void *ctx, const char *text, size_t len, bool raw)
 {
 	auto *self = static_cast<AspSession *>(ctx);
+
+	/*
+	 * In raw mode every byte received is handed up as chat text, which is
+	 * right when the peer is a terminal or ardop-chat and wrong when it is
+	 * `ardop-cat` piping a file at us -- measured: a PNG header arrives as
+	 * raw chat text. Rendering that fills the transcript with mojibake and
+	 * tells the operator nothing about what is actually happening.
+	 */
+	if (raw && !looksLikeTyping(text, len)) {
+		emit self->binaryArrived(qint64(len));
+		return;
+	}
 	emit self->textArrived(QString::fromUtf8(text, int(len)), raw);
 }
 

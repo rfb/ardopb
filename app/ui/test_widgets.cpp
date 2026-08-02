@@ -357,6 +357,54 @@ void session_follows_the_link(void)
 	      "a turnover does not end the session");
 }
 
+/*
+ * Telling somebody typing from somebody's file.
+ *
+ * In raw mode every received byte is handed up as chat text, so a station
+ * piping a file with ardop-cat fills the transcript with mojibake. Detecting
+ * that is a heuristic, and it is wrong in two directions: call a file text and
+ * the transcript is ruined, call text a file and a message is lost.
+ *
+ * The second direction is the one with a trap in it. Raw mode exists *for*
+ * stations that do not follow this specification, so "does it decode as UTF-8"
+ * is too strict -- a plain terminal sending Latin-1 produces a replacement
+ * character for every accented letter, and refusing to show a word because one
+ * byte was not UTF-8 breaks the case the feature is for.
+ */
+void typing_versus_a_file(void)
+{
+	auto text = [](const char *s) {
+		return AspSession::looksLikeTyping(s, strlen(s));
+	};
+
+	check(text("hello there, running plain ardopcf here\r\n"),
+	      "ASCII from a terminal is text");
+	check(text("caf\xc3\xa9 and a \xe2\x80\x94 dash"),
+	      "UTF-8 accents and punctuation are text");
+	check(text("\xd0\xbf\xd1\x80\xd0\xb8\xd0\xb2\xd0\xb5\xd1\x82"),
+	      "Cyrillic is text");
+	check(text("\xe6\x97\xa5\xe6\x9c\xac\xe8\xaa\x9e"), "CJK is text");
+
+	/* Latin-1 from a terminal that never heard of UTF-8: one bad byte in a
+	 * line of otherwise perfectly good words. */
+	check(text("that was a nice caf\xe9 in Br\xfcssel, 73"),
+	      "a Latin-1 terminal is still someone typing");
+
+	static const char png[] = "\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR";
+	static const char zip[] = "PK\x03\x04\x14\x00\x00\x00\x08\x00\xed\xa5";
+	check(!AspSession::looksLikeTyping(png, sizeof png - 1),
+	      "a PNG header is not someone typing");
+	check(!AspSession::looksLikeTyping(zip, sizeof zip - 1),
+	      "nor is a zip header");
+
+	/* A NUL settles it on its own, however short the sample. */
+	check(!AspSession::looksLikeTyping("ab\x00" "cd", 5),
+	      "anything with a NUL in it is not text");
+
+	/* An empty payload is not evidence of anything; do not accuse. */
+	check(AspSession::looksLikeTyping("", 0), "nothing is not a file");
+}
+
 }   // namespace
 
 int main(int argc, char **argv)
@@ -406,5 +454,6 @@ int main(int argc, char **argv)
 	history_wraps_without_losing_order();
 	transcript_renders_text_as_text();
 	session_follows_the_link();
+	typing_versus_a_file();
 	return failures ? 1 : 0;
 }

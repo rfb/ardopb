@@ -116,7 +116,7 @@ void asp_app_close(asp_app *a);
  *
  * Only `ARQ`-tagged data. §1: `ERR` and `IDF` tagged payload is never parsed as
  * protocol, because an error marker or a station ID in the middle of a file is
- * exactly the bug `apps/ardop_rx.c` has.
+ * exactly the bug `apps/ardop_rx.c` had before `ardop-cat` replaced it.
  */
 void asp_app_rx(asp_app *a, const char *tag, const void *data, size_t len);
 

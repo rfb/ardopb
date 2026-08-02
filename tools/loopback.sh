@@ -24,7 +24,7 @@
 #   tools/loopback.sh down    remove the cables
 #   tools/loopback.sh check   verify the cable carries audio (beacon -> listener)
 #   tools/loopback.sh demo    up, run ardopb<->ardopb (connect + data), down
-#   tools/loopback.sh pipe    up, transfer a file with ardop-tx/ardop-rx, down
+#   tools/loopback.sh pipe    up, transfer a file with ardop-cat, down
 #
 # For a real interop test, `up`, then in two terminals (with the printed env):
 #   ardopcf 8515 b2a_mon a2b -H "MYCALL N0AAA"      # inherited, station A
@@ -140,12 +140,12 @@ PY
 	echo "cables removed."
 }
 
-# Pipe demo: transfer a random file with the ardop-tx / ardop-rx apps over the
-# cables and verify it arrives bit-exact.
+# Pipe demo: transfer a random file with ardop-cat over the cables and verify it
+# arrives bit-exact. One binary, two invocations -- the direction is the flag.
 cmd_pipe() {
-	local tx="$HERE/apps/ardop-tx" rx="$HERE/apps/ardop-rx"
+	local cat="$HERE/apps/ardop-cat"
 	[ -x "$ARDOPB" ] || { echo "build first: make ardopb" >&2; exit 1; }
-	[ -x "$tx" ] && [ -x "$rx" ] || { echo "build first: make apps" >&2; exit 1; }
+	[ -x "$cat" ] || { echo "build first: make apps" >&2; exit 1; }
 	cmd_up >/dev/null
 	local d; d="$(mktemp -d)"
 	echo "launching two ardopb daemons over the cables..."
@@ -155,11 +155,11 @@ cmd_pipe() {
 		>"$d/B.log" 2>&1 </dev/null &
 	sleep 3
 	head -c 500 /dev/urandom > "$d/in.bin"
-	( "$rx" --host 127.0.0.1:8700 > "$d/out.bin" 2>"$d/rx.err" ) &
+	( "$cat" --host 127.0.0.1:8700 --listen > "$d/out.bin" 2>"$d/rx.err" ) &
 	local rxpid=$!
 	sleep 1
 	echo "transferring 500 bytes N0AAA -> N0BBB over audio..."
-	timeout 120 "$tx" --host 127.0.0.1:8600 N0BBB < "$d/in.bin" \
+	timeout 120 "$cat" --host 127.0.0.1:8600 N0BBB < "$d/in.bin" \
 		>"$d/tx.err" 2>&1 || true
 	wait "$rxpid" 2>/dev/null || true
 	pkill -9 ardopb 2>/dev/null || true

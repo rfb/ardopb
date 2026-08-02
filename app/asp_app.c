@@ -238,7 +238,9 @@ void asp_app_close(asp_app *a)
 void asp_app_rx(asp_app *a, const char *tag, const void *data, size_t len)
 {
 	/* §1: only ARQ-tagged payload is protocol. An ERR marker or a station ID
-	 * parsed as a message is how apps/ardop_rx.c corrupts files. */
+	 * parsed as a message is how `apps/ardop_rx.c` used to corrupt files --
+	 * it read the tag into a buffer and never looked at it. Its replacement,
+	 * `ardop-cat`, looks; so does this. */
 	if (!tag || strcmp(tag, "ARQ") != 0)
 		return;
 

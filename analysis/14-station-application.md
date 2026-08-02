@@ -53,7 +53,7 @@ Four processes and three transports, all of which the app collapses:
 
 ```
   ardopb ──8515 cmd──┐
-    │    ──8516 data─┼── ardop-tx / ardop-rx / ardop-chat   (apps/, 216 ln client)
+    │    ──8516 data─┼── ardop-cat / ardop-chat             (apps/, 216 ln client)
     │    ──8517 tlm──┴── ardop-gui                          (gui/, read-only)
     └─ ALSA (Linux only), serial-RTS PTT (Linux only)
 ```

@@ -203,6 +203,24 @@ size_t asp_hello_put(uint8_t *out, size_t cap, const asp_hello *h)
 	return (size_t)(p - out);
 }
 
+bool asp_looks_like_hello(const void *data, size_t len)
+{
+	const uint8_t *p = data;
+	const size_t magic = strlen(ASP_MAGIC);
+
+	/*
+	 * type, then a *one-byte* varint, then the magic.
+	 *
+	 * One byte is not an assumption: a HELLO payload is the magic, a
+	 * version, four capability bytes and a callsign of at most
+	 * ASP_MAX_CALL -- well under the 128 that would need a second varint
+	 * byte, and asp_hello_put cannot produce a longer one. So the magic is
+	 * always at offset 2 and this needs no varint decoder.
+	 */
+	return len >= 2 + magic && p[0] == (uint8_t)ASP_MSG_HELLO &&
+	       memcmp(p + 2, ASP_MAGIC, magic) == 0;
+}
+
 bool asp_hello_get(const uint8_t *p, size_t len, asp_hello *h)
 {
 	const size_t magic = strlen(ASP_MAGIC);

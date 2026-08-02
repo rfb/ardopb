@@ -182,6 +182,24 @@ asp_frame_status asp_frame_get(const uint8_t *buf, size_t avail,
 			       asp_msg_type *type, const uint8_t **payload,
 			       size_t *len, size_t *consumed);
 
+/**
+ * @brief Does this look like the first thing an ASP station says?
+ *
+ * `HELLO`, its length, and ::ASP_MAGIC. Specific enough that no plausible file
+ * begins with it, and cheap enough to check on the first payload of any stream.
+ *
+ * It lives here, beside the encoder, so that the check and the thing it checks
+ * for cannot drift apart -- the caller with the strongest need for it is
+ * `apps/ardop_cat.c`, which is a raw byte pipe with no other knowledge of this
+ * protocol at all, and which would otherwise write ASP framing into somebody's
+ * file and exit successfully. `test_asp.c` asserts it against what ::asp_open
+ * actually emits rather than against a constant written twice.
+ *
+ * @return false for anything else, including a partial HELLO. This answers
+ *         "should I refuse", not "is this valid"; ::asp_hello_get parses.
+ */
+bool asp_looks_like_hello(const void *data, size_t len);
+
 /* --- payloads --------------------------------------------------------------- */
 
 /** @brief ::ASP_MSG_HELLO. */

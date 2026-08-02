@@ -65,7 +65,7 @@ device, reads no clock of its own, binds no socket, and never blocks. All state
 lives in caller-owned structs. Dependencies point one way.
 
 ```
-  apps/     ardop-tx  ardop-rx  ardop-chat        TCP host-protocol clients
+  apps/     ardop-cat  ardop-chat                 TCP host-protocol clients
     |  (host protocol over TCP)                   app/   the station app's spine
   shell/    runtime . driver loop . host iface      |    -- embeds the modem
     |        . miniaudio / null backends           /        instead of dialling it
@@ -229,10 +229,26 @@ of source both platforms share and are run once on the Linux CI job.
 The **apps** are thin clients that connect to a running modem's host port:
 
 ```
-cat file | ardop-tx --host 127.0.0.1:8515 N0DEST     # reliable pipe over ARQ
-ardop-rx --host 127.0.0.1:8515 > file                 # the receiving end
-ardop-chat --host 127.0.0.1:8515 --call N0DEST        # basic two-way chat
+ardop-cat --host 127.0.0.1:8515 N0DEST < file        # a raw pipe over ARQ
+ardop-cat --host 127.0.0.1:8515 --listen > file      # the receiving end
+ardop-chat --host 127.0.0.1:8515 --call N0DEST       # basic two-way chat
 ```
+
+`ardop-cat` is a pipe and nothing more — no filename, no length, no checksum,
+netcat's guarantee. For a transfer with a name and a checksum on it, both ends
+run `ardop-station`, which speaks a real protocol
+([ASP](analysis/17-application-protocol.md)). The two do not mix, and `ardop-cat`
+says so rather than writing framing into your file:
+
+| the other end is | `ardop-cat` | `ardop-chat` | `ardop-station` |
+|---|---|---|---|
+| **`ardop-cat`** | a pipe | — | refuses: it is not chat |
+| **`ardop-chat`** | — | chat | chat, in both directions |
+| **`ardop-station`** | refuses, and says which to use | chat | files, chat, resume, checksums |
+
+Chat works across all of it because ASP degrades to plain UTF-8 with a station
+that does not answer its greeting, which is deliberate — most stations on the air
+are not running this program.
 
 ## Testing without a radio
 
@@ -242,7 +258,7 @@ null sinks) so two `ardopb` instances can talk over real audio on one machine:
 ```
 tools/loopback.sh check     # confirm the virtual cable carries audio
 tools/loopback.sh demo      # run a full ARQ connect + data exchange
-tools/loopback.sh pipe      # transfer a file with ardop-tx/ardop-rx, verify it
+tools/loopback.sh pipe      # transfer a file with ardop-cat, verify it
 ```
 
 ## Verification and guarantees

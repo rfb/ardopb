@@ -171,6 +171,8 @@ StationWindow::StationWindow(ModemThread *modem, QWidget *parent)
 	connect(m_asp, &AspSession::stateChanged, m_files,
 		&FilesPage::onStateChanged);
 	connect(m_asp, &AspSession::textArrived, m_chat, &ChatPage::onTextArrived);
+	connect(m_asp, &AspSession::binaryArrived, m_chat,
+		&ChatPage::onBinaryArrived);
 	connect(m_asp, &AspSession::offerArrived, m_files,
 		&FilesPage::onOfferArrived);
 	connect(m_asp, &AspSession::progress, m_files, &FilesPage::onProgress);

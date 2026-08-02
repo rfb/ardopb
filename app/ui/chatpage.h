@@ -47,6 +47,9 @@ public:
 public slots:
 	void onStateChanged(int state, const QString &peer);
 	void onTextArrived(const QString &text, bool raw);
+
+	/** @brief The peer is piping a file at us; say so, once. */
+	void onBinaryArrived(qint64 bytes);
 	void onNote(const QString &text);
 
 private slots:
@@ -62,6 +65,7 @@ private:
 	QLabel *m_status = nullptr;
 
 	int m_state = 0;   /**< ::asp_link_state. */
+	bool m_saidBinary = false;
 	QString m_peer;
 };
 
