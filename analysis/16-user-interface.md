@@ -269,6 +269,120 @@ where `gui/` lives, and the panel is a mode, not a program.
 
 ---
 
+## 9. Proposal: a horizontal level meter
+
+*Not built. Proposed here so the reasoning survives whoever picks it up.*
+
+### Two problems, and the second is the real one
+
+**Space.** `GaugeWidget` is a semicircular dial with a `minimumSizeHint` of
+120×104 (`gui/gaugewidget.h:41`), and there are two of them side by side. That is
+roughly 240×104 spent on two numbers, in the row above the waterfall — and the
+waterfall is the instrument that actually earns vertical space, because it is the
+only one showing something an operator cannot get from a text label.
+
+**The scale lies, and that matters more.** The VU gauge is configured
+`setScale(-60, 0, -12, -6)`: green below −12 dBFS, yellow to −6, red above. So
+everything from −60 to −12 is green — including −50, which is unusable. The
+meter reports "fine" for a signal the demodulator can do nothing with.
+
+That is the wrong question. For a modem it is not "is this loud enough to hear"
+but **"is this inside the window the demodulator wants"**, and the window has two
+edges:
+
+- too quiet and the S/N estimate and the constellation both degrade, with nothing
+  on screen to say why;
+- too loud and clipping destroys the 16QAM amplitude decision *before* it shows
+  up as a decode failure — the fault that looks like a bad channel and is not.
+
+A meter with one bad edge cannot express that. The most common real fault in
+digital-mode operating is a mis-set input level, and this instrument is the one
+that should catch it.
+
+### What a VU meter is, and why we want more than one
+
+The reference is the classic horizontal panel VU — a Hoyt 685VU and its
+relatives. Two things are worth taking from it and one worth leaving.
+
+Take the **horizontal format**: a bar reads at a glance, sits in a strip rather
+than a square, and puts the scale where an operator already expects it.
+
+Take the **marked target region**: a VU face is not a bare gradient. It is a
+scale with a place you are supposed to be, and the red zone is a statement about
+consequences rather than a colour ramp.
+
+Leave the **ballistics**. A true VU meter is a 300 ms averaging instrument and
+deliberately hides peaks — which is exactly the information needed to know
+whether the input is clipping. Hence the two indicators asked for: an
+instantaneous reading for drive level, and a peak that follows it.
+
+### The design
+
+```
+  RX   ·40      ·30      ·20      ·12      ·6     0 dBFS
+      ┌──────────────────────────────────────────────────┐
+      │▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░│  ▏        │
+      └────────────────────────┬──────────────┴──────────┘
+                          target band            peak
+       -16.2 dBFS   pk -9.4
+```
+
+| | |
+|---|---|
+| filled bar | the instantaneous level, smoothed |
+| shaded band | where the level is supposed to sit, drawn behind the bar |
+| thin vertical line | the peak, held and then falling |
+| colour | below the band dim, inside it green, above it amber, clipping red |
+
+The colour follows the *band*, not a single threshold, so "too quiet" finally has
+a reading. The numeric caption keeps both figures, because RMS is what the
+demodulator sees and peak is what clips, and an operator setting a level needs
+both.
+
+### Ballistics
+
+Two time constants, and **both driven by wall time rather than by telemetry
+records** — the audio record arrives once per captured block, and the block size
+is a property of the backend (300 samples at 48 kHz, 1200 by default), so a
+meter counting records would decay at different speeds on different sound cards.
+
+| | |
+|---|---|
+| level, attack | fast — within one update |
+| level, decay | ~300 ms, the VU integration time, so the bar is readable rather than flickering |
+| peak, attack | instant |
+| peak, hold | ~1.5 s, long enough to read |
+| peak, fall | ~20 dB/s once the hold expires, the broadcast PPM convention |
+
+### What it replaces, and what it does not
+
+One widget with two configurations replaces both dials: the same bar serves S/N
+with a different scale and band, where the "target" is simply "above the floor
+the mode needs". That is the space saving — one strip of perhaps 40 px where
+there were two squares of 104.
+
+It does **not** solve the transmit side. `ardop_runtime_telemetry_audio` is
+called from the loop's receive path only (`shell/loop.c`), so there is no
+transmit-level record at all and the meter can only ever be labelled RX. A TX
+level meter would need the runtime to emit the same record from the modulator
+pull, which is a change in `shell/`, not here.
+
+### Open questions
+
+1. **Where do the band edges come from?** Hardcoded constants are the honest
+   starting point, but the right values depend on the sound card's headroom and
+   on whether the operator drives the radio's ALC. They may want to be settings.
+2. **Does the band belong to the meter or to a diagnosis?** Open decision 5 above
+   already notes that nothing joins S/N, level and constellation into "your mic
+   gain is too high". This meter makes that diagnosis possible for one of the
+   three; it does not make it.
+3. **Whether the peak indicator should latch a clip.** A single sample at full
+   scale is worth knowing about after it has gone, and a peak that has already
+   decayed does not say it happened. A clip count, or a marker that stays until
+   cleared, may be worth more than the moving peak.
+
+---
+
 ## Open decisions
 
 1. **QML for the instrument panel too, or only for the chrome?** The panels could
@@ -301,3 +415,41 @@ where `gui/` lives, and the panel is a mode, not a program.
 - The narrow layout renders usably at 360 × 640 with nothing clipped.
 - The telemetry ring drops rather than blocks under a stalled UI, and the modem
   thread's timing is unaffected — measured, not assumed.
+
+
+---
+
+## Amendments made during implementation
+
+Recorded here rather than silently worked around, following
+[15](15-platform-audio-and-ptt.md)'s discipline: each is a place this document
+and the code as it was built disagreed.
+
+1. **Qt Widgets, not Qt Quick.** §1 chose Quick and rejected Widgets as
+   desktop-only. That was correct when the target was four platforms including
+   Android — and the port was subsequently scoped to Linux and Windows, which
+   removes the premise. With two desktop platforms, Widgets reuses `gui/`'s
+   waterfall, constellation, gauge and lamp painting directly, where Quick means
+   reimplementing all of it as `QQuickPaintedItem` or Canvas. §2's "the maths
+   carries, the painting does not" cuts both ways: under Widgets the painting
+   carries too.
+
+   It also costs nothing in dependencies. `qt6-base` supplies Widgets and
+   Network, so neither the development machine nor the MSYS2 CI job needs the
+   declarative module.
+
+   **Deferred, not reversed. The trigger for revisiting is an actual Android
+   target**, at which point the instrument painting is what moves and the seam
+   beneath it — `app/spine.h`, the device manager, the C library — does not.
+
+2. **§5's "delete the duplicated protocol tables" is already done and is not a
+   port concern.** `gui/constellationwidget.cpp` gets its frame names from
+   `core/codec/frame.c` by compiling that file in, which `gui/CMakeLists.txt`
+   has done since it was written.
+
+3. **§8's `--remote` mode is not implemented yet.** The standalone panel survives
+   as a separate binary, `ardop-gui`, shipped in the same download as the
+   application because they need the same Qt libraries. Making it a mode is
+   cheap now that both sources emit the same signals -- `SpineSource` and
+   `TelemetryClient` are interchangeable behind the panel widgets, which was the
+   point of keeping the wire format in the display queue (§6).

@@ -49,7 +49,7 @@ Local technical review of `ardopcf`, written to answer two questions:
 | 13 | [Completing the rebuild](13-completing-the-rebuild.md) | The full remaining scope once the core ARQ loopback works: finish the link protocol, build the platform shell, validate and cut over |
 | 14 | [The station application](14-station-application.md) | **A new program on the finished core.** The embedding seam, the modem thread, and hosting the TNC ports inside an application that also drives the modem |
 | 15 | [Platform audio and PTT](15-platform-audio-and-ptt.md) | Backends beyond ALSA, device enumeration, the push/pull bridge, resampling as a *timing* question, PTT methods, Android |
-| 16 | [The user interface](16-user-interface.md) | The toolkit evaluation and its recommendation; what survives from `gui/` and what does not; the screens and the responsive layout |
+| 16 | [The user interface](16-user-interface.md) | The toolkit evaluation and its recommendation; what survives from `gui/` and what does not; the screens and the responsive layout; a proposal for a horizontal level meter |
 | 17 | [The application protocol](17-application-protocol.md) | Chat and file transfer as a byte-level wire spec: framing, resume, and degrading to raw text against a station that does not speak it |
 | 19 | [Field testing](19-field-testing.md) | What only a radio can tell us, written to be handed to somebody who owns one: the keying and detection paths that have never met hardware, and what to report back |
 
