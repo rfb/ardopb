@@ -86,6 +86,15 @@ void SpineSource::drainDisplay()
 			haveConstellation = true;
 			break;
 		}
+		case ARDOP_TLM_FRAME:
+			/*
+			 * Not coalesced, unlike status. A status update is a
+			 * mirror and only the last one matters; a frame record
+			 * is an event, and dropping one loses a frame from the
+			 * history for good.
+			 */
+			emit frameObserved(r);
+			break;
 		case ARDOP_TLM_AUDIO:
 			lastRms = r.rms;
 			lastPeak = r.peak;

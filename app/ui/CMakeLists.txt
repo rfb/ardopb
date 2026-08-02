@@ -51,6 +51,9 @@ add_executable(ardop-station
     stationpage.cpp
     consolepage.cpp
     levelmeter.cpp
+    sessionhistory.cpp
+    historygrid.cpp
+    historypage.cpp
     modemthread.cpp
     spinesource.cpp
 
@@ -105,6 +108,7 @@ endif()
 add_executable(test_widgets EXCLUDE_FROM_ALL
     test_widgets.cpp
     levelmeter.cpp
+    sessionhistory.cpp
     ${ARDOP_ROOT}/gui/waterfallwidget.cpp
     ${ARDOP_ROOT}/gui/telemetryclient.cpp
     ${ARDOP_ROOT}/gui/panelsource.h)

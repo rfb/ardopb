@@ -86,6 +86,19 @@ signals:
 	 */
 	void linkState(int state, const QString &remote);
 
+	/**
+	 * @brief One frame was sent or heard, for the session history.
+	 *
+	 * By value, and the whole record: it is 40 bytes, it is emitted at most
+	 * a few times a second, and passing a reference into the decoder's own
+	 * buffer would hand the consumer something the next pop overwrites.
+	 *
+	 * On the display queue rather than the event queue, because a history is
+	 * a display and the queue that may drop under load is the right one for
+	 * it -- a lost record costs a cell, where a lost event costs a session.
+	 */
+	void frameObserved(const ardop_telemetry &rec);
+
 private slots:
 	void pump();
 

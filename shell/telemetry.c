@@ -160,6 +160,18 @@ size_t ardop_tlm_encode(const ardop_telemetry *t, uint8_t *out, size_t cap)
 		put_u32(&p, t->buffer_len);
 		break;
 
+	case ARDOP_TLM_FRAME:
+		need = ARDOP_TLM_HEADER_LEN + 14u;
+		if (cap < need)
+			return 0;
+		put_u32(&p, (uint32_t)(t->frame_at >> 32));
+		put_u32(&p, (uint32_t)(t->frame_at & 0xffffffffu));
+		put_u8(&p, t->frame_type);
+		put_u8(&p, t->frame_dir);
+		put_i16(&p, t->quality);
+		put_i16(&p, t->sn);
+		break;
+
 	default:
 		return 0;
 	}
@@ -243,6 +255,18 @@ bool ardop_tlm_parse(const uint8_t *buf, size_t avail, ardop_tlm_decoded *out,
 		out->rec.quality = get_i16(b + 6);
 		out->rec.bandwidth = get_i16(b + 8);
 		out->rec.buffer_len = get_u32(b + 10);
+		return true;
+
+	case ARDOP_TLM_FRAME:
+		if (payload != 14u)
+			return false;
+		out->rec.kind = ARDOP_TLM_FRAME;
+		out->rec.frame_at = ((uint64_t)get_u32(b) << 32) |
+				    (uint64_t)get_u32(b + 4);
+		out->rec.frame_type = b[8];
+		out->rec.frame_dir = b[9];
+		out->rec.quality = get_i16(b + 10);
+		out->rec.sn = get_i16(b + 12);
 		return true;
 
 	default:

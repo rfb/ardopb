@@ -31,6 +31,7 @@
 #include <cstring>
 
 #include "levelmeter.h"
+#include "sessionhistory.h"
 #include "waterfallwidget.h"
 
 namespace {
@@ -205,6 +206,80 @@ void meter_band_colours_both_faults(void)
 	      "a reading inside the band is green");
 }
 
+/*
+ * The history ring. Two properties, both of which would be silent when wrong.
+ *
+ * Turn time is computed on insert from the *previous* record, so it is the one
+ * derived quantity in the ring and the one place an off-by-one would produce
+ * plausible-looking nonsense. And the ring's indexing has to survive a wrap:
+ * "index 0 is the oldest still held" is easy to write and easy to get wrong by
+ * exactly one place.
+ */
+void feed(SessionHistory *h, quint64 at, quint8 dir)
+{
+	ardop_telemetry t {};
+	t.kind = ARDOP_TLM_FRAME;
+	t.frame_at = at;
+	t.frame_dir = dir;
+	t.quality = 50;
+	t.sn = 10;
+	h->append(t);
+}
+
+void history_turn_time(void)
+{
+	SessionHistory h;
+
+	/* Heard at 0, replied at 3000 samples: a quarter second at 12 kHz. */
+	feed(&h, 0, ARDOP_TLM_DIR_RX);
+	feed(&h, 3000, ARDOP_TLM_DIR_TX);
+
+	check(h.count() == 2, "two frames held");
+	check(h.at(0).turnMs == 0, "a received frame has no turn time");
+	printf("    turn: %u ms\n", h.at(1).turnMs);
+	check(h.at(1).turnMs == 250,
+	      "a transmission after a reception measures the gap");
+
+	/* A second transmission with nothing heard between is not a turnaround:
+	 * it continues the same transmission, and reporting a turn time for it
+	 * would double-count the one already measured. */
+	feed(&h, 9000, ARDOP_TLM_DIR_TX);
+	check(h.at(2).turnMs == 0, "back-to-back transmissions are not turns");
+
+	/* The first transmission of a session, with nothing heard before it,
+	 * must not report a turn measured from the epoch. */
+	SessionHistory fresh;
+	feed(&fresh, 600000, ARDOP_TLM_DIR_TX);
+	check(fresh.at(0).turnMs == 0,
+	      "transmitting first does not report a turn from the epoch");
+}
+
+void history_wraps_without_losing_order(void)
+{
+	SessionHistory h;
+
+	/* Fill it, then push one more. Timestamps are the index, so the order is
+	 * checkable by reading them back. */
+	for (int i = 0; i < SessionHistory::kCapacity + 5; i++)
+		feed(&h, quint64(i), ARDOP_TLM_DIR_RX);
+
+	check(h.count() == SessionHistory::kCapacity,
+	      "the ring stops at its capacity");
+	printf("    oldest held: %llu, newest: %llu\n",
+	       (unsigned long long)h.at(0).at,
+	       (unsigned long long)h.at(h.count() - 1).at);
+	check(h.at(0).at == 5, "index 0 is the oldest still held");
+	check(h.at(h.count() - 1).at == SessionHistory::kCapacity + 4,
+	      "and the last index is the newest");
+
+	/* Monotonic all the way through, which is what a wrap gets wrong. */
+	bool ordered = true;
+	for (int i = 1; i < h.count(); i++)
+		if (h.at(i).at != h.at(i - 1).at + 1)
+			ordered = false;
+	check(ordered, "every record in between is in order across the wrap");
+}
+
 }   // namespace
 
 int main(int argc, char **argv)
@@ -250,5 +325,7 @@ int main(int argc, char **argv)
 	image_covers_canvas();
 	meter_decay_is_time_based();
 	meter_band_colours_both_faults();
+	history_turn_time();
+	history_wraps_without_losing_order();
 	return failures ? 1 : 0;
 }

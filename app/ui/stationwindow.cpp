@@ -65,6 +65,13 @@ StationWindow::StationWindow(ModemThread *modem, QWidget *parent)
 	m_console = new ConsolePage(modem, this);
 	m_tabs->addTab(m_console, tr("Console"));
 
+	/* The history is fed from the display queue, so it exists wherever the
+	 * panel does -- but only the embedded build has a tab for it today; see
+	 * the remote constructor. */
+	m_history = new SessionHistory(this);
+	m_historyPage = new HistoryPage(m_history, this);
+	m_tabs->addTab(m_historyPage, tr("History"));
+
 	setCentralWidget(m_tabs);
 
 	/* The device state changes on the modem thread and has no event of its
@@ -118,6 +125,8 @@ StationWindow::StationWindow(ModemThread *modem, QWidget *parent)
 		this, &StationWindow::onOwnerChanged);
 	connect(m_spineSource, &SpineSource::linkState,
 		this, &StationWindow::onLinkState);
+	connect(m_spineSource, &SpineSource::frameObserved, m_history,
+		&SessionHistory::append);
 
 	connect(m_station, &StationPage::message, this, &StationWindow::log);
 
@@ -319,6 +328,14 @@ void StationWindow::onConnectionChanged(bool up, const QString &detail)
 		m_constellation->clear();
 		m_waterfall->clear();
 		m_geometrySet = false;
+
+		/* The frame timestamps are elapsed samples on a clock that
+		 * belongs to the device. A new device restarts it, so keeping
+		 * the old records would put the session in the wrong order --
+		 * and silently, which is the worst way for a history to be
+		 * wrong. */
+		if (m_history)
+			m_history->clear();
 	}
 }
 

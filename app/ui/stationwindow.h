@@ -10,8 +10,10 @@
 #include "constellationwidget.h"
 #include "consolepage.h"
 #include "devicespage.h"
+#include "historypage.h"
 #include "levelmeter.h"
 #include "modemthread.h"
+#include "sessionhistory.h"
 #include "spinesource.h"
 #include "stationpage.h"
 #include "statuslamps.h"
@@ -114,6 +116,8 @@ private:
 	DevicesPage *m_devices = nullptr;
 	StationPage *m_station = nullptr;
 	ConsolePage *m_console = nullptr;
+	SessionHistory *m_history = nullptr;
+	HistoryPage *m_historyPage = nullptr;
 	QTimer m_saveTick;
 	QTimer m_slowTick;
 	WaterfallWidget *m_waterfall = nullptr;

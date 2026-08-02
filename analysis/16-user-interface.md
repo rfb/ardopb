@@ -993,3 +993,37 @@ and the code as it was built disagreed.
 
    Open question 3 (whether the peak should latch a clip rather than decay) is
    **not** built and remains open.
+
+7. **§10's session history is built. Three things the design detail had wrong,
+   all of them silent failures.**
+
+   **The turn-time sentinel collided with a real value.** The ring used
+   `m_lastRxEnd == 0` to mean "nothing heard yet", but `at` is elapsed samples
+   and the first frame after a device opens can legitimately be at 0 -- so the
+   first turnaround of every session reported 0 ms. A plausible-looking number,
+   which is the worst kind of wrong for a figure an operator is going to tune
+   against. A separate flag now carries the meaning.
+
+   **Only the *first* transmission after a reception is a turnaround.** §10 said
+   "the gap between one frame being decoded and the next transmission starting",
+   which is right and which the first implementation did not do: it measured
+   *every* transmission from the same reception, so a three-frame transmission
+   reported three turn times, each larger than the last. A column of numbers that
+   all look like turn times but mean different things is worse than a blank.
+
+   **`clear()` needs its own signal.** §10 gave the ring `appended` and `wrapped`.
+   A device change discards the history -- it must, because the timestamps are
+   elapsed samples on a clock that belongs to the device, and keeping them across
+   a restart would silently misorder the session -- and a model told about that as
+   a "wrap" keeps handing the view rows that no longer address anything.
+
+   Two layout defects found by rendering it: the grid asked for a fixed height and
+   drew three rows of cells into a 150 px black rectangle, because a size hint
+   that depends on the width is asked for before the width exists; and the summary
+   label said "no frames yet" over a full table, because it was only updated on
+   append and a page built after frames have arrived never gets one.
+
+   **What §6 bought, collected.** Nothing in `core/` changed. `app/spine.c` never
+   learns what a frame record is -- the display queue carries the wire format and
+   passes it through untouched. The whole feature is one record kind, three
+   emissions beside observations that already fire, and four files in `app/ui/`.
