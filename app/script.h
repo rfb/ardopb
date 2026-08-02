@@ -79,6 +79,26 @@ void app_script_event(app_script *sc, int side, const app_event *ev);
 void app_script_tick(app_script *sc, uint64_t elapsed);
 
 /**
+ * @brief Run ASP on both sides, with @p dir_a and @p dir_b for received files.
+ *
+ * Optional. Without it the script's data directives move raw bytes, which is
+ * what they did before there was a protocol to put on top.
+ *
+ * The point of driving ASP from here rather than only from `test_asp.c` is that
+ * this harness carries the **real** link: two spines, the real modulator and the
+ * real demodulator, with genuine ARQ timing and genuine backpressure. `test_asp.c`
+ * proves the protocol against a byte queue; this proves it against the thing it
+ * will actually run on.
+ *
+ * @return false if either side could not be started.
+ */
+bool app_script_asp(app_script *sc, const char *call_a, const char *dir_a,
+		    const char *call_b, const char *dir_b);
+
+/** @brief Service both ASP sessions. Call once per step, after the spines. */
+void app_script_asp_service(app_script *sc);
+
+/**
  * @brief Whether the caller should drain the display queue this step.
  *
  * False while `@stress display` is running, which is how that directive

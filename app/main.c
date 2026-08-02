@@ -56,6 +56,8 @@ static const char kUsage[] =
 	"  --audio-backend NAME alsa, pulseaudio, wasapi, coreaudio, jack\n"
 	"  --ptt SPEC           none | rts:DEV | dtr:DEV | rigctld:HOST:PORT\n"
 	"  --host PORT          host the TNC interface on PORT and PORT+1\n"
+	"  --asp DIR_A DIR_B    run the application protocol on both sides,\n"
+	"                       receiving into those directories\n"
 	"  --config PATH        load the saved device selection from PATH\n"
 	"  --telemetry          compute spectrum and constellation telemetry\n"
 	"  --list-devices       print the sound devices and exit\n"
@@ -136,6 +138,7 @@ int main(int argc, char **argv)
 {
 	const char *script_path = NULL;
 	const char *config_path = NULL;
+	const char *asp_dir_a = NULL, *asp_dir_b = NULL;
 	const char *ptt_spec = NULL;
 	const char *audio_backend = NULL;
 	const char *cap = NULL, *play = NULL;
@@ -190,6 +193,9 @@ int main(int argc, char **argv)
 			config_path = argv[++i];
 		} else if (strcmp(a, "--telemetry") == 0) {
 			telemetry = true;
+		} else if (strcmp(a, "--asp") == 0 && i + 2 < argc) {
+			asp_dir_a = argv[++i];
+			asp_dir_b = argv[++i];
 		} else {
 			fputs(kUsage, stderr);
 			return 2;
@@ -320,6 +326,12 @@ int main(int argc, char **argv)
 	}
 
 	app_script *sc = app_script_open(script_path, sp, peer);
+	if (sc && asp_dir_a &&
+	    !app_script_asp(sc, "N0AAA", asp_dir_a, "N0BBB", asp_dir_b)) {
+		fprintf(stderr, "ardop-spine: cannot start ASP\n");
+		rc = 1;
+		goto out;
+	}
 	if (!sc) {
 		rc = 1;
 		goto out;
@@ -355,6 +367,10 @@ int main(int argc, char **argv)
 				while (app_display_pop(peer, &rec))
 					;
 		}
+
+		/* After the spines, so credit reflects what this step freed --
+		 * §7's "refill on the event" with the event being the step. */
+		app_script_asp_service(sc);
 
 		app_script_tick(sc, app_elapsed(sp));
 

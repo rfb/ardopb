@@ -237,6 +237,10 @@ apps: $(APPS)
 #   files, no devices, no allocation -- which is why it can be built and proved
 #   before any of them exist, and why the harness can carry a second decoder to
 #   check this one against.
+# ASP_APP_OBJS is the only file that names both the protocol and the spine, so
+#   neither has to know about the other -- app/asp.c still compiles with no
+#   spine in sight and app/spine.c has never heard of a file transfer. Same
+#   reason SPINE_DEVICE_OBJS is its own group.
 # SPINE_TNC_OBJS hosts the TNC interface for guest clients. Its own group
 #   because it is the one part of the seam that needs sockets, and because both
 #   the harness and the shipping application link it -- the application is what
@@ -244,6 +248,7 @@ apps: $(APPS)
 # SPINE_HARNESS is the phase-1 driver. The shipping application will not link it.
 SPINE_OBJS        = app/spine.o app/ring.o
 ASP_OBJS          = app/asp_wire.o app/asp.o
+ASP_APP_OBJS      = app/asp_app.o
 SPINE_DEVICE_OBJS = app/devices.o
 SPINE_TNC_OBJS    = app/tnc_host_tcp.o
 SPINE_HARNESS     = app/main.o app/script.o app/loopback.o
@@ -252,6 +257,7 @@ app/%.o: app/%.c
 	$(CC) -I. $(CORE_CPPFLAGS) $(CFLAGS) $(CORE_CFLAGS) -c -o $@ $<
 
 app/ardop-spine$(EXE): $(CORE_OBJS) $(TEMPLATES) $(SHELL_OBJS) $(SPINE_OBJS) \
+		$(ASP_OBJS) $(ASP_APP_OBJS) \
 		$(SPINE_DEVICE_OBJS) $(SPINE_TNC_OBJS) $(SPINE_HARNESS) \
 		shell/backend_null.o \
 		shell/host_tcp.o $(AUDIO_BACKEND_OBJS)
@@ -269,7 +275,8 @@ app: app/ardop-spine$(EXE)
 # So the Makefile stays the authority and hands CMake one artifact. Adding a file
 # to any group above is picked up by the Qt build with no CMake change at all.
 ARDOP_LIB_OBJS = $(CORE_OBJS) $(TEMPLATES) $(SHELL_OBJS) $(SPINE_OBJS) \
-	$(ASP_OBJS) $(SPINE_DEVICE_OBJS) $(SPINE_TNC_OBJS) shell/host_tcp.o \
+	$(ASP_OBJS) $(ASP_APP_OBJS) $(SPINE_DEVICE_OBJS) $(SPINE_TNC_OBJS) \
+	shell/host_tcp.o \
 	shell/backend_null.o $(AUDIO_BACKEND_OBJS)
 
 libardop.a: $(ARDOP_LIB_OBJS)

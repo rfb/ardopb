@@ -1,5 +1,7 @@
 #include "app/script.h"
 
+#include "app/asp_app.h"
+
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -62,6 +64,14 @@ struct app_script {
 
 	/* @stress display. */
 	uint64_t stress_until;
+
+	/* ASP, when the script asked for it. */
+	bool asp_on;
+	asp_app asp[2];
+	char asp_expect[256];   /* @asp-wait file=NAME */
+	bool asp_arrived;
+	int asp_texts;
+	char asp_last_text[256];
 
 	bool failed;
 	bool done;
@@ -184,6 +194,14 @@ void app_script_event(app_script *sc, int side, const app_event *ev)
 		break;
 
 	case APP_EV_RX_DATA:
+		/* With ASP running the payload is protocol, not raw bytes, so
+		 * it goes to the session rather than into the comparison
+		 * buffer -- the files on disk are what gets compared. */
+		if (sc->asp_on) {
+			asp_app_rx(&sc->asp[side], ev->tag, ev->data,
+				   ev->data_len);
+			break;
+		}
 		/* Only the peer's receptions are collected: the script sends
 		 * from side a and checks what arrived at side b. */
 		if (side == 1) {
@@ -219,6 +237,103 @@ void app_script_event(app_script *sc, int side, const app_event *ev)
 		}
 		break;
 	}
+}
+
+/* --- ASP ------------------------------------------------------------------- */
+
+/*
+ * The harness's own view of an ASP session.
+ *
+ * Deliberately thin: everything interesting is asserted by the *files on disk*
+ * and by test_asp.c. What this adds is that the bytes went through a real
+ * modulator, a real demodulator and real ARQ retries on the way.
+ */
+static void asp_note(void *ctx, const char *text)
+{
+	app_script *sc = ctx;
+	show(sc, 0, text);
+}
+
+static void asp_text(void *ctx, const char *text, size_t len, bool raw)
+{
+	app_script *sc = ctx;
+	char line[APP_TEXT_MAX];
+	size_t n = len < sizeof line - 8 ? len : sizeof line - 8;
+	snprintf(line, sizeof line, "%s\"%.*s\"", raw ? "raw " : "text ",
+		 (int)n, text);
+	sc->asp_texts++;
+	snprintf(sc->asp_last_text, sizeof sc->asp_last_text, "%.*s", (int)n,
+		 text);
+	show(sc, 1, line);
+}
+
+static void asp_offered(void *ctx, const asp_offer *o, const char *safe_name,
+		      uint32_t resumable)
+{
+	app_script *sc = ctx;
+	char line[APP_TEXT_MAX];
+	/* Both names bounded explicitly: a peer-supplied name is up to 255 bytes
+	 * and two of them plus the text do not fit, which the compiler is right
+	 * to insist on. */
+	snprintf(line, sizeof line,
+		 "offered \"%.90s\" as \"%.90s\", %u bytes, holding %u",
+		 o->name, safe_name, (unsigned)o->size, (unsigned)resumable);
+	show(sc, 1, line);
+}
+
+static void asp_done(void *ctx, bool inbound, asp_result_code result,
+		     const char *path)
+{
+	app_script *sc = ctx;
+	char line[APP_TEXT_MAX];
+	snprintf(line, sizeof line, "%s transfer finished, result %d%s%s",
+		 inbound ? "inbound" : "outbound", (int)result,
+		 path ? " -> " : "", path ? path : "");
+	show(sc, inbound ? 1 : 0, line);
+	if (inbound && result == ASP_RESULT_OK)
+		sc->asp_arrived = true;
+}
+
+static void asp_link(void *ctx, asp_link_state state, const char *peer_call)
+{
+	app_script *sc = ctx;
+	char line[APP_TEXT_MAX];
+	snprintf(line, sizeof line, "ASP link %s with %s",
+		 state == ASP_LINK_ASP ? "up" : "raw",
+		 peer_call[0] ? peer_call : "(unnamed)");
+	show(sc, 1, line);
+}
+
+bool app_script_asp(app_script *sc, const char *call_a, const char *dir_a,
+		    const char *call_b, const char *dir_b)
+{
+	/* Side b auto-accepts: a script is unattended, and the prompt path is
+	 * what test_asp.c covers. */
+	static asp_app_hooks hooks_a, hooks_b;
+	hooks_a = (asp_app_hooks){.ctx = sc, .note = asp_note,
+				  .text_arrived = asp_text,
+				  .transfer_done = asp_done,
+				  .link_changed = asp_link};
+	hooks_b = hooks_a;
+	hooks_b.offer_arrived = asp_offered;
+
+	if (!asp_app_open(&sc->asp[0], sc->side[0], call_a, dir_a, &hooks_a))
+		return false;
+	if (sc->side[1] &&
+	    !asp_app_open(&sc->asp[1], sc->side[1], call_b, dir_b, &hooks_b))
+		return false;
+	sc->asp[1].auto_accept = true;
+	sc->asp_on = true;
+	return true;
+}
+
+void app_script_asp_service(app_script *sc)
+{
+	if (!sc->asp_on)
+		return;
+	asp_app_service(&sc->asp[0]);
+	if (sc->side[1])
+		asp_app_service(&sc->asp[1]);
 }
 
 /* --- directive helpers ----------------------------------------------------- */
@@ -408,6 +523,95 @@ static bool directive(app_script *sc, char *rest)
 			arm(sc, NULL);
 		}
 		return pump_send(sc);
+	}
+
+	if (strcmp(verb, "asp-send") == 0) {
+		if (!sc->asp_on) {
+			fail(sc, "@asp-send needs --asp");
+			return false;
+		}
+		if (!sc->started) {
+			char *path = word(&rest);
+			if (!path || !asp_app_send_file(&sc->asp[0], path)) {
+				fail(sc, "@asp-send: cannot offer %s",
+				     path ? path : "(none)");
+				return false;
+			}
+			sc->asp_arrived = false;
+			arm(sc, NULL);
+		}
+		return true;
+	}
+
+	if (strcmp(verb, "asp-text") == 0) {
+		if (!sc->asp_on) {
+			fail(sc, "@asp-text needs --asp");
+			return false;
+		}
+		while (*rest == ' ')
+			rest++;
+		if (!asp_app_send_text(&sc->asp[0], rest)) {
+			fail(sc, "@asp-text: refused");
+			return false;
+		}
+		return true;
+	}
+
+	if (strcmp(verb, "asp-wait") == 0) {
+		if (!sc->asp_on) {
+			fail(sc, "@asp-wait needs --asp");
+			return false;
+		}
+		char *what = word(&rest);
+		if (!what) {
+			fail(sc, "@asp-wait needs a condition");
+			return false;
+		}
+		arm(sc, word(&rest));
+
+		if (strncmp(what, "link", 4) == 0) {
+			/*
+			 * Both HELLOs exchanged. Worth its own condition because
+			 * it is not instant on a real link: the answering
+			 * station is the IRS and cannot send until it gets a
+			 * turn, which is what AUTOBREAK is for (analysis/17 §7).
+			 * A script that offered a file before this would be
+			 * refused, and refused for a reason that looks like a
+			 * bug rather than like timing.
+			 */
+			if (sc->asp[0].session.state == ASP_LINK_ASP &&
+			    (!sc->side[1] ||
+			     sc->asp[1].session.state == ASP_LINK_ASP))
+				return true;
+			if (expired(sc)) {
+				fail(sc, "@asp-wait link timed out (a=%d b=%d)",
+				     (int)sc->asp[0].session.state,
+				     (int)sc->asp[1].session.state);
+				return false;
+			}
+			return false;
+		}
+		if (strncmp(what, "file", 4) == 0) {
+			if (sc->asp_arrived)
+				return true;
+			if (expired(sc)) {
+				fail(sc, "@asp-wait file timed out");
+				return false;
+			}
+			return false;
+		}
+		if (strncmp(what, "text=", 5) == 0) {
+			if (strstr(sc->asp_last_text, what + 5) != NULL)
+				return true;
+			if (expired(sc)) {
+				fail(sc, "@asp-wait text=%s timed out",
+				     what + 5);
+				return false;
+			}
+			return false;
+		}
+		fail(sc, "@asp-wait: unknown condition %s", what);
+		return false;
 	}
 
 	if (strcmp(verb, "wait") == 0) {

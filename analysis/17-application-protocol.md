@@ -401,7 +401,56 @@ framing by hand with nothing checking the two agree. ASP should not repeat that.
    callsign with different SSIDs therefore have separate `msg_id` spaces, which is
    the behaviour the open decision was asking for.
 
-7. **Still to build:** the application's own `asp_io` -- the one that reads and
-   writes real files and talks to the spine -- and the Chat and Files screens.
-   The protocol itself is complete and the nine tests of §10 pass, so what remains
-   is plumbing rather than design.
+7. **§7 is wrong, and it took the real link to show it. `AUTOBREAK` loses data.**
+
+   This is the important one, and it is a design problem rather than a bug in any
+   one file.
+
+   §7 says turnover is the link's job: *"`AUTOBREAK TRUE` already does this in
+   core -- on an `IDLE` keep-alive from the ISS, an IRS with queued data sends
+   `BREAK`. The app sets it and does not reimplement it."* Both halves are true.
+   What §7 does not say is what a `BREAK` costs the sender.
+
+   `core/link/link.c:665-671`, `iss_yield_on_break()`:
+
+   > *The IRS sent BREAK: discard our unsent queue, ACK the break, and yield the
+   > link... SaveQueueOnBreak (letting the app restore the data) is dropped.*
+
+   So when the receiver breaks -- which it must, because a `ACCEPT` or a `RESULT`
+   is data and only the ISS may send data -- **the sender's queued bytes are
+   thrown away**, including bytes `app_tx_submit` already accepted and reported
+   as taken. Driving ASP over the real ARQ loopback loses 2048 bytes out of 16953
+   at the first turnover, and because the protocol has no per-chunk offsets (§4,
+   correctly) the receiver cannot tell: it sees a continuous stream that has
+   silently jumped forward, desynchronises on the next message header, and reports
+   a malformed frame.
+
+   Without `AUTOBREAK` the transfer never starts at all: the receiver can never
+   send its `HELLO`, let alone an `ACCEPT`. So the two available settings are
+   "deadlock" and "silent corruption", and §7 recommends the second.
+
+   **`test_asp.c` could not have found this.** It drives the protocol over a byte
+   queue that never discards anything, which is exactly what made it a good test
+   of the protocol and useless as a test of the stack. This is the argument for
+   the harness path (`ardop-spine --asp`) existing at all.
+
+   ### The fix, and why it is not in this change
+
+   The clean answer does not touch the wire format and does not change what goes
+   on the air: **the link should report how many queued bytes it discarded**, the
+   spine should surface that, and the sender should rewind `tx_offset` by exactly
+   that many and re-send. Discarded means never transmitted, so a rewind cannot
+   duplicate anything the receiver already has, and §4's "no per-chunk offsets"
+   survives untouched -- the sender already knows its own offset, it just needs to
+   be told it was moved.
+
+   That is a change to `core/link`'s observable behaviour, which is not something
+   to slip into a plumbing commit. Raised separately.
+
+   Until then, **ASP file transfer over ARQ is not reliable**, and the harness
+   script that demonstrates it is deliberately not in CI: a test that fails for a
+   known reason teaches nothing that this note does not.
+
+8. **Still to build:** the Chat and Files screens. The protocol is complete, its
+   own tests pass, and the application-side `asp_io` is written -- what it is
+   waiting on is amendment 7.
