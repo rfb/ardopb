@@ -10,9 +10,10 @@
 #
 # Produces two zips, not one:
 #
-#   ardopb-windows-x86_64.zip     ~600 KB   the station program, the modem and
-#                                           the host-client apps
-#   ardop-gui-windows-x86_64.zip  ~30 MB    the instrument panel and its Qt DLLs
+#   ardopb-windows-x86_64.zip          ~600 KB  the command-line station program,
+#                                               the modem and the host-client apps
+#   ardop-station-windows-x86_64.zip   ~32 MB   the windowed application, the
+#                                               remote panel, and their Qt DLLs
 #
 # The split is not cosmetic. Every byte over about a megabyte here is Qt and its
 # dependency chain -- ICU alone is ~30 MB of locale data -- while the modem and
@@ -27,7 +28,7 @@ set -euo pipefail
 
 OUT="${1:-dist}"
 MODEM_NAME="ardopb-windows-x86_64"
-GUI_NAME="ardop-gui-windows-x86_64"
+GUI_NAME="ardop-station-windows-x86_64"
 
 # Under MSYS2 the plain names are the right ones. Overridable so the modem half
 # of this script can be smoke-tested from a Linux cross-build:
@@ -99,10 +100,11 @@ ardopb for Windows
 Nothing here needs installing and nothing needs a DLL beside it. Copy the
 files anywhere and run them.
 
-The graphical instrument panel -- waterfall, constellation, gauges -- is a
-separate download, ardop-gui-windows-x86_64.zip, because it carries the Qt
-libraries and is about a hundred times the size of this one. You do not need
-it to run a link.
+The windowed application -- device pickers, waterfall, constellation, gauges --
+is a separate download, ardop-station-windows-x86_64.zip, because it carries
+the Qt libraries and is about fifty times the size of this one. You do not need
+it to run a link, and ardop-spine.exe does the same setting-up from a command
+line.
 
 Quick start
 -----------
@@ -185,19 +187,32 @@ EOF
 (cd "$OUT" && zip -qr "$DEST/$MODEM_NAME.zip" "$MODEM_NAME")
 echo "package-windows: wrote $MODEM_NAME.zip"
 
-# --- the GUI --------------------------------------------------------------
-if [ -f gui/build/ardop-gui.exe ]; then
+# --- the windowed application ---------------------------------------------
+#
+# Both Qt programs go in one download because they need the same 30 MB of Qt
+# DLLs, and shipping that twice to give somebody two 1 MB executables would be a
+# strange trade. ardop-station is the application; ardop-gui is the standalone
+# panel for watching a modem on another machine, and survives until --remote
+# makes it a mode of the same binary.
+if [ -f app/ui/build/ardop-station.exe ] || [ -f gui/build/ardop-gui.exe ]; then
 	mkdir -p "$OUT/$GUI_NAME"
-	cp gui/build/ardop-gui.exe "$OUT/$GUI_NAME/"
-	"$STRIP" "$OUT/$GUI_NAME/ardop-gui.exe"
+	[ -f app/ui/build/ardop-station.exe ] \
+		&& cp app/ui/build/ardop-station.exe "$OUT/$GUI_NAME/"
+	[ -f gui/build/ardop-gui.exe ] \
+		&& cp gui/build/ardop-gui.exe "$OUT/$GUI_NAME/"
+	"$STRIP" "$OUT/$GUI_NAME"/*.exe
 
 	# windeployqt copies Qt's own DLLs and the platform plugin.
-	if command -v windeployqt6 >/dev/null 2>&1; then
-		windeployqt6 --release --no-translations --no-system-d3d-compiler \
-			--no-opengl-sw "$OUT/$GUI_NAME/ardop-gui.exe"
-	elif command -v windeployqt >/dev/null 2>&1; then
-		windeployqt --release --no-translations --no-system-d3d-compiler \
-			--no-opengl-sw "$OUT/$GUI_NAME/ardop-gui.exe"
+	WDQ=""
+	command -v windeployqt6 >/dev/null 2>&1 && WDQ=windeployqt6
+	[ -z "$WDQ" ] && command -v windeployqt >/dev/null 2>&1 && WDQ=windeployqt
+	if [ -n "$WDQ" ]; then
+		# Once per executable, into the same folder. They share almost
+		# every DLL, so the second run is nearly a no-op.
+		for exe in "$OUT/$GUI_NAME"/*.exe; do
+			"$WDQ" --release --no-translations \
+				--no-system-d3d-compiler --no-opengl-sw "$exe"
+		done
 	else
 		echo "package-windows: windeployqt not found; the GUI will not" >&2
 		echo "                 run on a machine without Qt installed" >&2
@@ -231,34 +246,59 @@ if [ -f gui/build/ardop-gui.exe ]; then
 	stamp "$OUT/$GUI_NAME"
 
 	cat > "$OUT/$GUI_NAME/README-WINDOWS.txt" <<'EOF'
-ardop-gui for Windows
-=====================
+ardop station for Windows
+=========================
 
-  ardop-gui.exe     the instrument panel (waterfall, constellation, gauges)
+  ardop-station.exe   the application: a modem, its devices, and a window
+  ardop-gui.exe       a read-only panel for watching a modem on another machine
 
-The panel is a viewer. It does not contain a modem and cannot key a radio --
-it connects to a running ardopb and draws what that modem reports. Get the
-modem from ardopb-windows-x86_64.zip if you do not have it already.
+Keep the DLLs in this folder next to them. They are Qt and its dependencies,
+and neither program will start without them.
 
-Keep the DLLs in this folder next to ardop-gui.exe. They are Qt and its
-dependencies, and the panel will not start without them.
+Start here
+----------
 
-Quick start
------------
+Run ardop-station.exe. It opens whatever devices it used last time, or the
+system default on a first run, and the Devices tab is where you change that.
 
-1. Start the modem with telemetry enabled -- without --telemetry there is
-   nothing for the panel to connect to:
+  Panel     the waterfall, constellation, meters and the modem's own log
+  Devices   pick a sound card and a way to key the radio
 
-       ardopb.exe MYCALL --audio --ptt rts:COM3 --host 8515 --telemetry
+On the Devices tab, "Detected radios" tries to work out which serial port
+belongs to your radio by looking for a keying interface on the same USB
+hardware as a sound card. Detection is not implemented on Windows yet, so it
+will say so; use the pickers underneath.
 
-2. Attach the panel:
+Choosing anything only fills the fields in. Apply opens the devices. Test PTT
+is the only control that puts a signal on the air.
 
-       ardop-gui.exe --host 127.0.0.1:8517
+Before you key anything
+-----------------------
 
-   The modem may be on another machine; give that machine's address instead.
+The keying paths in this build have NEVER been run against a real radio.
+They are unit-tested down to the byte, which is not the same thing.
 
-No console window opens behind the panel -- it is built as a GUI-subsystem
-binary. Diagnostics go to the modem's own console, not this one.
+Use a dummy load. Turn the power down. Ctrl-C and closing the window both
+unkey; if you ever see a transmitter stay keyed after the program exits,
+please report that ahead of anything else.
+
+The right keying method is a property of the radio, and picking the wrong one
+fails SILENTLY. A Xiegu or an Icom keys by CAT command and ignores RTS
+entirely; a DigiRig Mobile keys by RTS; a DigiRig Lite keys by CM108 GPIO. All
+three look identically connected and only one of them transmits.
+
+FIELD-TESTING.md in the other download walks through it in order of risk and
+says what to send back.
+
+Watching another station
+------------------------
+
+ardop-gui.exe is the standalone panel. It contains no modem and cannot key a
+radio -- it connects to a running ardopb somewhere and draws what that modem
+reports:
+
+    ardopb.exe MYCALL --audio --host 8515 --telemetry     (on the other machine)
+    ardop-gui.exe --host 192.168.1.20:8517                (here)
 
 Antivirus
 ---------
@@ -269,8 +309,8 @@ about them. Check the SHA-256 against the release page if that matters to you.
 Bug reports
 -----------
 
-Please include the contents of VERSION (in this folder) and the modem's
-console output.
+Please include the contents of VERSION (in this folder) and whatever the
+Panel tab's log said.
 EOF
 
 	(cd "$OUT" && zip -qr "$DEST/$GUI_NAME.zip" "$GUI_NAME")

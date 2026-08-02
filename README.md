@@ -187,15 +187,16 @@ needed:
 
 | download | what it is |
 | --- | --- |
-| **[ardopb-windows-x86_64.zip](../../releases/download/continuous/ardopb-windows-x86_64.zip)** | the modem and the host-client apps, for Windows |
-| **[ardopb-linux-x86_64.tar.gz](../../releases/download/continuous/ardopb-linux-x86_64.tar.gz)** | the same, for a Linux PC |
+| **[ardop-station-windows-x86_64.zip](../../releases/download/continuous/ardop-station-windows-x86_64.zip)** | the windowed application and the remote panel, for Windows |
+| **[ardopb-windows-x86_64.zip](../../releases/download/continuous/ardopb-windows-x86_64.zip)** | the command-line station program, the modem and the apps |
+| **[ardopb-linux-x86_64.tar.gz](../../releases/download/continuous/ardopb-linux-x86_64.tar.gz)** | the same command-line set, for a Linux PC |
 | **[ardopb-linux-aarch64.tar.gz](../../releases/download/continuous/ardopb-linux-aarch64.tar.gz)** | the same, for a 64-bit Raspberry Pi |
-| **[ardop-gui-windows-x86_64.zip](../../releases/download/continuous/ardop-gui-windows-x86_64.zip)** | the instrument panel, and its Qt libraries |
 
-The modem download is under 300 KB; the panel is a separate one because Qt and
-ICU are two orders of magnitude larger than the modem, and you do not need the
-panel to run a link. On Linux, build the panel from source (see
-[`gui/`](gui/)) — distro Qt is one `apt` line.
+The command-line download is around 600 KB; the windowed one is a separate
+download because Qt and ICU are two orders of magnitude larger than the modem,
+and you do not need a window to run a link — `ardop-spine` does the same
+setting-up from a command line. On Linux, build the window from source (see
+[`app/ui/`](app/ui/)) — distro Qt is one `apt` line.
 
 The Linux tarballs need glibc 2.34 or newer — Debian 12, Ubuntu 22.04 and
 later, Raspberry Pi OS bookworm. Nothing in them links an audio library:

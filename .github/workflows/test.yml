@@ -116,8 +116,15 @@ jobs:
       - name: Resampler against the corpus
         run: make golden-resample golden-resample-alias
 
-      - name: Build the GUI
+      # Not packaged on Linux -- Qt is already in every distribution and far
+      # larger than the modem, so it is built from source here (see
+      # README-LINUX.txt). Built in CI regardless, because a UI that does not
+      # compile is a UI nobody finds out about until they try.
+      - name: Build the windowed application
         run: |
+          make lib
+          cmake -S app/ui -B app/ui/build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build app/ui/build
           cmake -S gui -B gui/build -G Ninja -DCMAKE_BUILD_TYPE=Release
           cmake --build gui/build
 
@@ -176,9 +183,24 @@ jobs:
       - name: Package
         run: tools/package-linux.sh dist
 
+      # The *directory*, not the tarball. GitHub zips whatever it is given, so
+      # uploading an archive produces a zip containing an archive and two
+      # unpackings to get at a binary. Uploading the folder makes GitHub's own
+      # zip the archive.
       - uses: actions/upload-artifact@v4
         with:
           name: ardopb-linux-${{ matrix.arch }}
+          path: dist/ardopb-linux-${{ matrix.arch }}/
+          retention-days: 30
+
+      # The tarball as well, but only when something will actually publish it.
+      # It has to survive as a tarball because a GitHub artifact zip does not
+      # carry the executable bit, and a release whose binaries are not
+      # executable is a release nobody can run.
+      - uses: actions/upload-artifact@v4
+        if: github.event_name == 'push'
+        with:
+          name: release-ardopb-linux-${{ matrix.arch }}
           path: ardopb-linux-${{ matrix.arch }}.tar.gz
           retention-days: 30
 
@@ -236,8 +258,18 @@ jobs:
       - name: Golden-corpus conformance
         run: make golden-core golden-shell golden-tx
 
-      - name: Build the GUI
+      # Both Qt programs. The station application is the product; the panel is
+      # the standalone remote viewer, and they ship together because they need
+      # the same 30 MB of Qt DLLs.
+      #
+      # qt6-base is enough for both -- Widgets and Network, no declarative
+      # module -- which is one of the things that made Widgets the cheaper
+      # choice for a two-platform port.
+      - name: Build the windowed application
         run: |
+          make lib
+          cmake -S app/ui -B app/ui/build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build app/ui/build
           cmake -S gui -B gui/build -G Ninja -DCMAKE_BUILD_TYPE=Release
           cmake --build gui/build
 
@@ -249,16 +281,28 @@ jobs:
       # rest of the chain and is about a hundred times that. Shipping them
       # together made every headless operator download Qt to get a 600 KB
       # modem. See tools/package-windows.sh.
+      # Directories, so a download is one zip rather than a zip inside a zip.
       - uses: actions/upload-artifact@v4
         with:
           name: ardopb-windows-x86_64
-          path: ardopb-windows-x86_64.zip
+          path: dist/ardopb-windows-x86_64/
           retention-days: 30
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ardop-gui-windows-x86_64
-          path: ardop-gui-windows-x86_64.zip
+          name: ardop-station-windows-x86_64
+          path: dist/ardop-station-windows-x86_64/
+          retention-days: 30
+
+      # The zips as well, for the release jobs to attach. Only on a push, since
+      # nothing publishes from a pull request.
+      - uses: actions/upload-artifact@v4
+        if: github.event_name == 'push'
+        with:
+          name: release-windows
+          path: |
+            ardopb-windows-x86_64.zip
+            ardop-station-windows-x86_64.zip
           retention-days: 30
 
   # A rolling build of main, so an operator can get a current binary from a
@@ -281,6 +325,7 @@ jobs:
       # platform above needs no change here.
       - uses: actions/download-artifact@v4
         with:
+          pattern: release-*
           path: release
           merge-multiple: true
 
@@ -311,16 +356,18 @@ jobs:
             | `ardopb-windows-x86_64.zip` | the station program, the modem and the host-client apps |
             | `ardopb-linux-x86_64.tar.gz` | the same, for a Linux PC |
             | `ardopb-linux-aarch64.tar.gz` | the same, for a 64-bit Raspberry Pi |
-            | `ardop-gui-windows-x86_64.zip` | the instrument panel, and its Qt libraries |
+            | `ardop-station-windows-x86_64.zip` | the windowed application and the remote panel, with their Qt libraries |
 
             Start with `ardop-spine --detect`, which tries to work out which
             serial port belongs to your radio. **The keying paths have never
             been run against real hardware** -- `FIELD-TESTING.md` inside the
             download says what to try, in order of risk, and what to send back.
 
-            You do not need the panel to run a link. The Linux tarballs need
-            glibc 2.34 or newer (Debian 12, Ubuntu 22.04+, Raspberry Pi OS
-            bookworm); the Linux GUI is built from source, see `gui/`.
+            You do not need the windowed application to run a link -- the
+            command-line `ardop-spine` in the first download does the same
+            setting-up. The Linux tarballs need glibc 2.34 or newer (Debian 12,
+            Ubuntu 22.04+, Raspberry Pi OS bookworm); on Linux the windowed
+            application is built from source, see `app/ui/`.
 
             See the `README-WINDOWS.txt` or `README-LINUX.txt` inside the
             download to get started.
@@ -337,6 +384,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
+          pattern: release-*
           path: release
           merge-multiple: true
 
