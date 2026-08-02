@@ -115,7 +115,7 @@ app_loopback *app_loopback_open(const app_config *cfg)
 		s->ops.read_audio = read_audio;
 		s->ops.write_audio = write_audio;
 		s->ops.set_ptt = set_ptt;
-		app_set_platform(s->sp, &s->ops);
+		app_set_platform(s->sp, &s->ops, 0);
 	}
 	return lb;
 }

@@ -272,6 +272,85 @@ static void test_truncation_is_reported(void **state)
 	app_close(sp);
 }
 
+/*
+ * A device fault must be survivable.
+ *
+ * `shell/fault.h` names the intended reaction as "abort the ARQ session, unkey,
+ * tell the operator, offer reselection" -- and reselection needs the reverse
+ * edge. This used to be a one-way flag, which meant a spine that had seen one
+ * fault could never transmit again and a device-selection screen was
+ * structurally impossible: unplugging a USB interface meant restarting the
+ * program.
+ */
+static void test_fault_is_recoverable(void **state)
+{
+	(void)state;
+	app_spine *sp = app_open(NULL);
+	assert_non_null(sp);
+
+	app_step(sp);
+	assert_int_equal(app_run_state_of(sp), APP_RUN_OK);
+	assert_int_equal(app_tx_credit(sp), APP_TX_CHUNK);
+	(void)drain(sp);
+
+	app_report_fault(sp, APP_FAULT_CAPTURE, "capture device lost");
+
+	/* Typed, so an interface can offer "choose another capture device"
+	 * without matching on a sentence. */
+	app_event ev;
+	bool saw = false;
+	while (app_events_pop(sp, &ev))
+		if (ev.kind == APP_EV_FAULT && ev.code == APP_FAULT_CAPTURE)
+			saw = true;
+	assert_true(saw);
+
+	assert_int_equal(app_run_state_of(sp), APP_RUN_FAULTED);
+	assert_int_equal(app_fault_state(sp), APP_FAULT_CAPTURE);
+
+	uint8_t byte = 0;
+	app_tx_status why = APP_TX_OK;
+	assert_int_equal(app_tx_submit(sp, &byte, 1, &why), 0);
+	assert_int_equal(why, APP_TX_FAULTED);
+
+	/* First fault wins: a capture loss that also drops the keying line reads
+	 * as one failure, not two. */
+	app_report_fault(sp, APP_FAULT_PTT, "PTT control lost");
+	assert_int_equal(app_fault_state(sp), APP_FAULT_CAPTURE);
+
+	/* The caller repairs the device -- here, nothing to repair -- and says so. */
+	assert_int_equal(app_clear_fault(sp), APP_RUN_FAULTED);
+	assert_int_equal(app_run_state_of(sp), APP_RUN_OK);
+	assert_int_equal(app_fault_state(sp), APP_FAULT_NONE);
+	assert_int_equal(app_tx_credit(sp), APP_TX_CHUNK);
+
+	/* And transmission genuinely works again, not just the credit. */
+	uint8_t payload[64];
+	memset(payload, 0x5A, sizeof payload);
+	assert_int_equal(app_tx_submit(sp, payload, sizeof payload, &why),
+			 sizeof payload);
+	app_step(sp);
+	assert_int_equal(app_runtime(sp)->link.tx_len, sizeof payload);
+
+	app_close(sp);
+}
+
+/* Closing is terminal; a fault is not. Nothing may resurrect a spine that is
+ * being torn down. */
+static void test_closing_is_not_clearable(void **state)
+{
+	(void)state;
+	app_spine *sp = app_open(NULL);
+	assert_non_null(sp);
+	app_step(sp);
+
+	app_report_fault(sp, APP_FAULT_PLAYBACK, "playback device lost");
+	assert_int_equal(app_run_state_of(sp), APP_RUN_FAULTED);
+	assert_int_equal(app_clear_fault(sp), APP_RUN_FAULTED);
+	assert_int_equal(app_run_state_of(sp), APP_RUN_OK);
+
+	app_close(sp);
+}
+
 /* --- the TNC takeover rule ------------------------------------------------- */
 
 struct fake_tnc {
@@ -683,7 +762,7 @@ static void test_device_change_refused_while_transmitting(void **state)
 	for (int i = 0; i < 200; i++) {
 		app_loopback_step(lb);
 		if (ardop_runtime_tx_active(app_runtime(a))) {
-			assert_false(app_set_platform(a, NULL));
+			assert_false(app_set_platform(a, NULL, 0));
 			refused_once = true;
 			break;
 		}
@@ -704,6 +783,8 @@ int main(void)
 		cmocka_unit_test(test_ring_oversize_is_discarded),
 		cmocka_unit_test(test_credit_arithmetic),
 		cmocka_unit_test(test_truncation_is_reported),
+		cmocka_unit_test(test_fault_is_recoverable),
+		cmocka_unit_test(test_closing_is_not_clearable),
 		cmocka_unit_test(test_tnc_takeover),
 		cmocka_unit_test(test_config_shares_the_host_validator),
 		cmocka_unit_test(test_display_drops_are_counted),

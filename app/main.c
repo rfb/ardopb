@@ -58,6 +58,20 @@ static const char kUsage[] =
 
 enum backend_kind { BACKEND_LOOPBACK, BACKEND_NULL, BACKEND_MA };
 
+/* Map a device fault onto the spine's own vocabulary. The spine owns no devices
+ * and does not include shell/fault.h; whoever owns the backend translates. */
+static app_fault app_fault_of(ardop_fault f)
+{
+	switch (f) {
+	case ARDOP_FAULT_CAPTURE_LOST:      return APP_FAULT_CAPTURE;
+	case ARDOP_FAULT_PLAYBACK_LOST:
+	case ARDOP_FAULT_PLAYBACK_UNDERRUN: return APP_FAULT_PLAYBACK;
+	case ARDOP_FAULT_PTT_LOST:          return APP_FAULT_PTT;
+	case ARDOP_FAULT_NONE:              break;
+	}
+	return APP_FAULT_OTHER;
+}
+
 int main(int argc, char **argv)
 {
 	const char *script_path = NULL;
@@ -194,7 +208,10 @@ int main(int argc, char **argv)
 				return 1;
 			}
 		}
-		app_set_platform(sp, &ops);
+		/* The backend knows the block it wants; ardopb has always read it
+		 * (shell/main.c:332) and the spine did not. It arrives with the
+		 * backend so the two cannot disagree. */
+		app_set_platform(sp, &ops, mb ? ardop_backend_ma_block(mb) : 0);
 	}
 
 	/* The TNC interface. Bound after the spine exists and before the script
@@ -254,10 +271,15 @@ int main(int argc, char **argv)
 		/* Device faults are detected here, where the backend's type is
 		 * known, and reacted to in the spine, where a user interface can
 		 * see the reaction. */
-		ardop_fault f = mb ? ardop_backend_ma_fault(mb)
-				   : ardop_ptt_fault(ptt);
+		/* Both, with a fallthrough. A ternary here was a real defect: PTT
+		 * is only ever opened alongside the miniaudio backend, so
+		 * `mb ? ma_fault : ptt_fault` meant the PTT latch was unreachable
+		 * in the one configuration where a PTT exists. */
+		ardop_fault f = ardop_backend_ma_fault(mb);
+		if (f == ARDOP_FAULT_NONE)
+			f = ardop_ptt_fault(ptt);
 		if (f != ARDOP_FAULT_NONE) {
-			app_report_fault(sp, ardop_fault_str(f));
+			app_report_fault(sp, app_fault_of(f), ardop_fault_str(f));
 			rc = 1;
 			break;
 		}

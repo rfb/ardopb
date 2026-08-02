@@ -141,9 +141,11 @@ static void test_capture_delivers_at_the_modem_rate(void **state)
 }
 
 /*
- * A device that stops calling its callback must surface as a fault rather than
- * hanging the modem thread forever with no way to tell the operator. Closing
- * the backend is the strongest available stand-in for the cable being pulled.
+ * The loop reads this many modem samples per iteration, so it has to be a
+ * whole block the device can actually deliver.
+ *
+ * (This comment used to describe a capture-fault test, which the body never
+ * performed. The real one is test_capture_loss_faults below.)
  */
 static void test_block_size_is_sane(void **state)
 {

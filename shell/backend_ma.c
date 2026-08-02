@@ -362,6 +362,15 @@ void ardop_backend_ma_close(ardop_ma_backend *b)
 {
 	if (!b)
 		return;
+	/* Unkey first, and mean it. The header has always said this happens; it
+	 * did not, and got away with it only because ardopb closes the PTT object
+	 * immediately afterwards. The device manager rebuilds a backend while the
+	 * same PTT object stays open, which is exactly the case the promise was
+	 * for -- without this, a device change during a transmission would leave
+	 * the line asserted with the backend that raised it already gone. */
+	if (b->ptt)
+		ardop_ptt_set(b->ptt, false);
+
 	if (b->capture_started)
 		ma_device_uninit(&b->capture);
 	if (b->playback_started)

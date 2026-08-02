@@ -198,6 +198,7 @@ void app_script_event(app_script *sc, int side, const app_event *ev)
 		break;
 
 	case APP_EV_OWNER:
+	case APP_EV_DEVICE:
 		show(sc, side, ev->text);
 		break;
 	}

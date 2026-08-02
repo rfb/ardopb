@@ -42,17 +42,8 @@ struct ardop_ptt {
 	ardop_socket rig;   /* rigctld, or ARDOP_SOCKET_INVALID. */
 };
 
-const char *ardop_fault_str(ardop_fault f)
-{
-	switch (f) {
-	case ARDOP_FAULT_NONE:              return "none";
-	case ARDOP_FAULT_CAPTURE_LOST:      return "capture device lost";
-	case ARDOP_FAULT_PLAYBACK_LOST:     return "playback device lost";
-	case ARDOP_FAULT_PLAYBACK_UNDERRUN: return "playback underrun";
-	case ARDOP_FAULT_PTT_LOST:          return "PTT control lost";
-	}
-	return "unknown";
-}
+/* ardop_fault_str lives in shell/fault.c: rendering a fault name should not
+ * require linking a serial port and a rigctld socket. */
 
 /* --- parsing --------------------------------------------------------------- */
 

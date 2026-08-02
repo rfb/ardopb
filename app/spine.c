@@ -64,6 +64,7 @@ typedef struct {
 	uint8_t kind;      /* app_event_kind */
 	uint8_t flag;
 	char tag[4];
+	int32_t code;      /* app_fault on FAULT, app_device_code on DEVICE */
 	uint32_t text_len; /* bytes of text, NUL excluded */
 	uint32_t data_len;
 } ev_hdr;
@@ -98,7 +99,12 @@ struct app_spine {
 	/* Ownership and shutdown. */
 	_Atomic bool tnc_attached;
 	bool tnc_attached_local;   /* modem thread's edge detector */
-	bool stopping;
+
+	/* Whether transmission is permitted, and why not. Both modem-owned;
+	 * app_snapshot publishes copies. Recoverable, unlike the one-way flag
+	 * this replaced -- see app_run_state in spine.h. */
+	app_run_state run;
+	app_fault fault;
 
 	/* Counters, published for app_snapshot. */
 	_Atomic uint_least64_t display_drops;
@@ -122,6 +128,7 @@ const char *app_tx_status_str(app_tx_status s)
 	case APP_TX_TNC_OWNS:  return "TNC client owns the link";
 	case APP_TX_CONGESTED: return "event queue congested";
 	case APP_TX_NO_ROOM:   return "command queue full";
+	case APP_TX_FAULTED:   return "device fault; reselect or retry";
 	case APP_TX_CLOSED:    return "stopping";
 	}
 	return "unknown";
@@ -139,13 +146,14 @@ const char *app_tx_status_str(app_tx_status s)
  * The reserve is what makes an overflow reportable: ordinary records must leave
  * APP_EVENT_RESERVE bytes free, so when one is finally refused there is still
  * room for the single record that says so. */
-static bool queue_event(app_spine *sp, app_event_kind kind, bool flag,
+static bool queue_event(app_spine *sp, app_event_kind kind, int code, bool flag,
 			const char *tag, const char *text, const uint8_t *data,
 			size_t data_len, size_t reserve)
 {
 	ev_hdr h;
 	memset(&h, 0, sizeof h);
 	h.kind = (uint8_t)kind;
+	h.code = (int32_t)code;
 	h.flag = flag;
 	if (tag) {
 		snprintf(h.tag, sizeof h.tag, "%s", tag);
@@ -180,17 +188,18 @@ static bool queue_event(app_spine *sp, app_event_kind kind, bool flag,
  * that drains at all never gets here. If it does happen the count is published
  * and one fault record goes through the reserve -- what is never done is losing
  * a record silently. */
-static void emit(app_spine *sp, app_event_kind kind, bool flag, const char *tag,
-		 const char *text, const uint8_t *data, size_t data_len)
+static void emit(app_spine *sp, app_event_kind kind, int code, bool flag,
+		 const char *tag, const char *text, const uint8_t *data,
+		 size_t data_len)
 {
-	if (queue_event(sp, kind, flag, tag, text, data, data_len,
+	if (queue_event(sp, kind, code, flag, tag, text, data, data_len,
 			APP_EVENT_RESERVE))
 		return;
 
 	atomic_fetch_add_explicit(&sp->event_lost, 1, memory_order_relaxed);
 	if (!sp->overflow_reported) {
 		sp->overflow_reported = true;
-		(void)queue_event(sp, APP_EV_FAULT, false, NULL,
+		(void)queue_event(sp, APP_EV_FAULT, APP_FAULT_QUEUE, false, NULL,
 				  "event queue overflowed; received data was lost",
 				  NULL, 0, 0);
 	}
@@ -239,13 +248,13 @@ static void observe(void *ctx, const ardop_obs *o)
 		break;
 
 	case ARDOP_OBS_HOST_MSG:
-		emit(sp, APP_EV_HOST_MSG, false, NULL, o->text, NULL, 0);
+		emit(sp, APP_EV_HOST_MSG, 0, false, NULL, o->text, NULL, 0);
 		if (sp->tnc && sp->tnc->notify)
 			sp->tnc->notify(sp->tnc->ctx, o->text);
 		break;
 
 	case ARDOP_OBS_RX_DATA:
-		emit(sp, APP_EV_RX_DATA, false, o->tag, NULL, o->data,
+		emit(sp, APP_EV_RX_DATA, 0, false, o->tag, NULL, o->data,
 		     o->data_len);
 		if (sp->tnc && sp->tnc->send_data)
 			sp->tnc->send_data(sp->tnc->ctx, o->tag, o->data,
@@ -358,6 +367,8 @@ void app_close(app_spine *sp)
 	if (!sp)
 		return;
 
+	sp->run = APP_RUN_CLOSING;
+
 	/* Unkey before letting go of the backend. The caller closes the device
 	 * after this returns and the PTT after that, so the keying line outlives
 	 * the device that keyed it. */
@@ -370,7 +381,7 @@ void app_close(app_spine *sp)
 	free(sp);
 }
 
-bool app_set_platform(app_spine *sp, const ardop_platform_ops *ops)
+bool app_set_platform(app_spine *sp, const ardop_platform_ops *ops, size_t block)
 {
 	/* A device swap mid-transmission leaves the radio keyed with nothing able
 	 * to unkey it: PTT-down is emitted from inside ardop_runtime_pull_tx,
@@ -387,12 +398,18 @@ bool app_set_platform(app_spine *sp, const ardop_platform_ops *ops)
 	/* ardop_loop holds the ops by pointer and reads read_audio unguarded, so
 	 * it is re-initialised rather than patched. The clock is preserved: it is
 	 * a monotonic sample count and nothing requires it to belong to one
-	 * device. */
+	 * device.
+	 *
+	 * The block is NOT preserved, deliberately. It used to be, and because
+	 * ardop_loop_init always leaves it non-zero the restore always fired --
+	 * so a newly bound backend's smaller preferred block was overwritten by
+	 * the previous device's every single time, and every swap silently
+	 * reverted to the 100 ms default. It belongs to the backend, so it
+	 * arrives with the backend. */
 	uint64_t t = sp->loop.t;
-	size_t block = sp->loop.block;
 	ardop_loop_init(&sp->loop, &sp->rt, ops);
 	sp->loop.t = t;
-	if (block)
+	if (block && block <= ARDOP_LOOP_BLOCK)
 		sp->loop.block = block;
 	return true;
 }
@@ -407,9 +424,30 @@ ardop_runtime *app_runtime(app_spine *sp)
 	return &sp->rt;
 }
 
-bool app_stopping(const app_spine *sp)
+app_run_state app_run_state_of(const app_spine *sp)
 {
-	return sp->stopping;
+	return sp->run;
+}
+
+app_fault app_fault_state(const app_spine *sp)
+{
+	return sp->fault;
+}
+
+app_run_state app_clear_fault(app_spine *sp)
+{
+	app_run_state was = sp->run;
+
+	/* Closing is terminal; a fault is not. Nothing recovers a spine that is
+	 * being torn down, and pretending otherwise would let a device manager
+	 * resurrect one mid-shutdown. */
+	if (sp->run == APP_RUN_FAULTED) {
+		sp->run = APP_RUN_OK;
+		sp->fault = APP_FAULT_NONE;
+		sp->overflow_reported = false;
+		publish_credit(sp);
+	}
+	return was;
 }
 
 uint64_t app_elapsed(const app_spine *sp)
@@ -426,7 +464,7 @@ static void run_line(app_spine *sp, const char *line)
 	char reply[APP_TEXT_MAX];
 	ardop_host_command(&sp->rt, line, sp->loop.t, reply, sizeof reply);
 	if (reply[0])
-		emit(sp, APP_EV_REPLY, false, NULL, reply, NULL, 0);
+		emit(sp, APP_EV_REPLY, 0, false, NULL, reply, NULL, 0);
 }
 
 /* True for the commands that start, steer or end a session -- the ones that
@@ -467,7 +505,7 @@ static bool cmd_is_session(ardop_host_cmd_kind k)
 
 static void refuse(app_spine *sp)
 {
-	emit(sp, APP_EV_REPLY, false, NULL,
+	emit(sp, APP_EV_REPLY, 0, false, NULL,
 	     "FAULT TNC client owns the link", NULL, 0);
 }
 
@@ -532,7 +570,7 @@ static void apply_config(app_spine *sp, const cmd_hdr *h, const char *str)
 		sp->rt.busy_det = (int)v;
 		char msg[APP_TEXT_MAX];
 		snprintf(msg, sizeof msg, "BUSYDET now %d", sp->rt.busy_det);
-		emit(sp, APP_EV_REPLY, false, NULL, msg, NULL, 0);
+		emit(sp, APP_EV_REPLY, 0, false, NULL, msg, NULL, 0);
 		return;
 	}
 	}
@@ -557,7 +595,7 @@ static void apply(app_spine *sp, const uint8_t *rec, size_t n)
 		/* Credit is cut to zero while a guest is attached, so this
 		 * cannot arrive then -- but the check is free and the invariant
 		 * is the one that keeps two byte streams from interleaving. */
-		if (owned || sp->stopping)
+		if (owned || sp->run != APP_RUN_OK)
 			return;
 
 		ardop_host_cmd c;
@@ -579,7 +617,8 @@ static void apply(app_spine *sp, const uint8_t *rec, size_t n)
 			snprintf(msg, sizeof msg,
 				 "FAULT transmit queue took %zu of %zu bytes",
 				 took, tail_len);
-			emit(sp, APP_EV_FAULT, false, NULL, msg, NULL, 0);
+			emit(sp, APP_EV_FAULT, APP_FAULT_OTHER, false, NULL, msg,
+			     NULL, 0);
 		}
 		sp->tx_applied += tail_len;
 		break;
@@ -590,7 +629,7 @@ static void apply(app_spine *sp, const uint8_t *rec, size_t n)
 			refuse(sp);
 			return;
 		}
-		if (sp->stopping)
+		if (sp->run != APP_RUN_OK)
 			return;
 		ardop_runtime_host(&sp->rt, &h.cmd, sp->loop.t);
 		break;
@@ -614,7 +653,7 @@ static void apply(app_spine *sp, const uint8_t *rec, size_t n)
 			refuse(sp);
 			return;
 		}
-		if (sp->stopping)
+		if (sp->run != APP_RUN_OK)
 			return;
 		run_line(sp, line);
 		break;
@@ -626,7 +665,7 @@ static void apply(app_spine *sp, const uint8_t *rec, size_t n)
 						      : sizeof str - 1;
 		memcpy(str, tail, len);
 		str[len] = '\0';
-		if (sp->stopping)
+		if (sp->run != APP_RUN_OK)
 			return;
 		/* Configuration is applied whoever is attached, deliberately.
 		 * See line_is_session(). */
@@ -660,7 +699,11 @@ static void publish_credit(app_spine *sp)
 		lim = sp->tx_applied;
 		why = APP_TX_TNC_OWNS;
 	}
-	if (sp->stopping) {
+	if (sp->run == APP_RUN_FAULTED) {
+		lim = sp->tx_applied;
+		why = APP_TX_FAULTED;
+	}
+	if (sp->run == APP_RUN_CLOSING) {
 		lim = sp->tx_applied;
 		why = APP_TX_CLOSED;
 	}
@@ -689,7 +732,7 @@ void app_step(app_spine *sp)
 			sp->tnc_attached_local = now;
 			atomic_store_explicit(&sp->tnc_attached, now,
 					      memory_order_release);
-			emit(sp, APP_EV_OWNER, now, NULL,
+			emit(sp, APP_EV_OWNER, 0, now, NULL,
 			     now ? "TNC client attached; it owns the link"
 				 : "TNC client left",
 			     NULL, 0);
@@ -715,12 +758,28 @@ void app_step(app_spine *sp)
 	publish_credit(sp);
 }
 
-void app_report_fault(app_spine *sp, const char *what)
+void app_report_device(app_spine *sp, app_device_code code, const char *text)
 {
-	char msg[APP_TEXT_MAX];
-	snprintf(msg, sizeof msg, "FAULT %s", what ? what : "device lost");
+	emit(sp, APP_EV_DEVICE, (int)code, false, NULL, text ? text : "", NULL, 0);
+}
 
-	if (sp->rt.link.state != ARDOP_LINK_DISC) {
+void app_report_fault(app_spine *sp, app_fault code, const char *what)
+{
+	/* First fault wins, matching the backend's own latch. A capture loss that
+	 * also drops the keying line should read as one failure, not two. */
+	if (sp->run != APP_RUN_OK)
+		return;
+
+	char msg[APP_TEXT_MAX];
+	bool was_connected = sp->rt.link.state != ARDOP_LINK_DISC;
+
+	/* Say what happened to the session in the same breath. An operator who
+	 * reads "capture device lost" and nothing else will wonder whether their
+	 * transfer is still running; it is not, and it will not be resumed. */
+	snprintf(msg, sizeof msg, "FAULT %s%s", what ? what : "device lost",
+		 was_connected ? " -- the session was disconnected" : "");
+
+	if (was_connected) {
 		ardop_host_cmd c;
 		memset(&c, 0, sizeof c);
 		c.kind = ARDOP_CMD_DISCONNECT;
@@ -735,8 +794,9 @@ void app_report_fault(app_spine *sp, const char *what)
 	if (sp->tnc && sp->tnc->notify)
 		sp->tnc->notify(sp->tnc->ctx, msg);
 
-	emit(sp, APP_EV_FAULT, false, NULL, msg, NULL, 0);
-	sp->stopping = true;
+	emit(sp, APP_EV_FAULT, (int)code, false, NULL, msg, NULL, 0);
+	sp->run = APP_RUN_FAULTED;
+	sp->fault = code;
 	publish_credit(sp);
 }
 
@@ -894,6 +954,7 @@ bool app_events_pop(app_spine *sp, app_event *out)
 
 	memset(out, 0, sizeof *out);
 	out->kind = (app_event_kind)h.kind;
+	out->code = (int)h.code;
 	out->flag = h.flag != 0;
 	memcpy(out->tag, h.tag, sizeof out->tag);
 	out->tag[sizeof out->tag - 1] = '\0';
@@ -934,6 +995,8 @@ void app_snapshot(app_spine *sp, app_status *out)
 	memset(out, 0, sizeof *out);
 	out->tnc_attached = atomic_load_explicit(&sp->tnc_attached,
 						 memory_order_acquire);
+	out->run = sp->run;
+	out->fault = sp->fault;
 	out->tx_credit = app_tx_credit(sp);
 	out->tx_reason = (app_tx_status)atomic_load_explicit(
 		&sp->tx_reason, memory_order_relaxed);
