@@ -5,6 +5,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "shell/audio_devices.h"
 #include "shell/fault.h"
 #include "shell/platform.h"
 #include "shell/ptt.h"
@@ -69,8 +70,42 @@ void ardop_backend_ma_close(ardop_ma_backend *b);
 /** @brief The latched fault, or ::ARDOP_FAULT_NONE. */
 ardop_fault ardop_backend_ma_fault(const ardop_ma_backend *b);
 
-/** @brief Clear a latched fault after the application has handled it. */
-void ardop_backend_ma_clear_fault(ardop_ma_backend *b);
+/*
+ * There is deliberately no clear-fault and no reopen.
+ *
+ * A latched fault means the device is gone, not that a flag is set: after
+ * ::ARDOP_FAULT_CAPTURE_LOST the underlying device is untouched and
+ * unrecovered, so clearing the latch would only arrange to re-latch it on the
+ * next read. A function whose name promises recovery it does not perform is
+ * worse than no function at all -- and this one had no callers.
+ *
+ * Recovery is ardop_backend_ma_close() then ardop_backend_ma_open(), which works
+ * because the runtime outlives the backend by design (analysis/14 Decision 5):
+ * a rebuilt device inherits the link, the configuration and the sample clock.
+ * That is also the path `--audio` takes at start-up, so it is exercised on every
+ * run rather than only after a failure.
+ */
+
+/** @brief How the capture selection resolved. ::ARDOP_AUDIO_MATCH_ID is clean. */
+ardop_audio_match ardop_backend_ma_capture_match(const ardop_ma_backend *b);
+
+/** @brief How the playback selection resolved. */
+ardop_audio_match ardop_backend_ma_playback_match(const ardop_ma_backend *b);
+
+/**
+ * @brief The capture device actually opened, as it would be persisted.
+ *
+ * The point of returning the whole device rather than only the match: when a
+ * selection resolved by *name* because the id moved, this carries the new id, so
+ * an application can write it back and the next start matches exactly. Without
+ * it the resolution rule degrades to name-matching forever.
+ */
+void ardop_backend_ma_capture_device(const ardop_ma_backend *b,
+				     ardop_audio_device *out);
+
+/** @brief The playback device actually opened. */
+void ardop_backend_ma_playback_device(const ardop_ma_backend *b,
+				      ardop_audio_device *out);
 
 /**
  * @brief Samples the driver loop should move per iteration.

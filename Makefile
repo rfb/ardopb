@@ -298,6 +298,7 @@ CORE_TESTS = \
 	test/core/test_ring$(EXE) \
 	test/core/test_resample$(EXE) \
 	test/core/test_spine$(EXE) \
+	test/core/test_audio_devices$(EXE) \
 	test/core/test_backend_ma$(EXE)
 
 define newline
@@ -340,6 +341,16 @@ test-app-tsan: test/core/stress_spine.c $(TSAN_SRCS)
 	@$(CC) -I. $(CORE_CPPFLAGS) $(CFLAGS) $(CORE_CFLAGS) -O1 \
 		-fsanitize=thread $^ -o test/core/stress_spine -lpthread -lm
 	@test/core/stress_spine
+
+# test_audio_devices needs the enumeration half of MA_OBJS: the resolution rule
+# is pure, but the test also enumerates against miniaudio's synthetic backend so
+# it exercises the real path on both hosts with no sound card.
+test/core/test_audio_devices$(EXE): test/core/test_audio_devices.c $(CORE_OBJS) \
+		$(TEMPLATES) $(SHELL_OBJS) $(MA_OBJS) test/core/setup.o
+	$(CC) $(CORE_CPPFLAGS) -I. -Itest/core $(CFLAGS) \
+		$< $(CORE_OBJS) $(TEMPLATES) $(SHELL_OBJS) $(MA_OBJS) \
+		test/core/setup.o \
+		-lcmocka $(AUDIO_LDLIBS) $(PLATFORM_LDLIBS) -lm -o $@
 
 # The spine test needs app/ as well. It lives in test/core/ rather than a
 # test/app/ of its own because that directory is really "the in-process suite",
