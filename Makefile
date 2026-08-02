@@ -201,15 +201,20 @@ APPS = apps/ardop-cat$(EXE) apps/ardop-chat$(EXE)
 # clients with no dependency on the modem's C API -- net/sys are a platform
 # shim, and a second copy of a Winsock wrapper would be strictly worse than
 # sharing this one.
+# -Icore since apps/fecchat.c asks core/codec/frame.h how many bytes a frame
+# of the chosen FEC mode holds.
 apps/%.o: apps/%.c
-	$(CC) -Iapps -I. $(CFLAGS) $(CORE_CFLAGS) -c -o $@ $<
+	$(CC) -Iapps -I. -Icore $(CFLAGS) $(CORE_CFLAGS) -c -o $@ $<
 
 APP_OBJS = apps/hostclient.o shell/net.o shell/sys.o
 APP_LINK = $(CC) $(STATIC) $^ -o $@ $(PLATFORM_LDLIBS)
 # The one app that links a piece of the protocol: app/asp_wire.o, purely so
 # that asp_looks_like_hello and the HELLO it looks for cannot drift apart.
 apps/ardop-cat$(EXE):  apps/ardop_cat.o  app/asp_wire.o $(APP_OBJS) ; $(APP_LINK)
-apps/ardop-chat$(EXE): apps/ardop_chat.o $(APP_OBJS) ; $(APP_LINK)
+# core/codec/frame.o for the FEC profile: it needs to know how many bytes a
+# frame of the chosen mode holds, which is the budget a TEXT_B has to fit in.
+apps/ardop-chat$(EXE): apps/ardop_chat.o apps/fecchat.o app/asp_wire.o \
+                       core/codec/frame.o $(APP_OBJS) ; $(APP_LINK)
 
 apps: $(APPS)
 
@@ -372,6 +377,7 @@ CORE_TESTS = \
 	test/core/test_usbtopo$(EXE) \
 	test/core/test_backend_ma$(EXE) \
 	test/core/test_asp_wire$(EXE) \
+	test/core/test_fecchat$(EXE) \
 	test/core/test_asp$(EXE)
 
 define newline
@@ -456,6 +462,15 @@ test/core/test_devices$(EXE): test/core/test_devices.c $(CORE_OBJS) $(TEMPLATES)
 # test/app/ of its own because that directory is really "the in-process suite",
 # and a second directory would need a duplicate of the generic rule below and a
 # second CI step to run it.
+# The FEC broadcast profile lives in apps/ (it is a property of the chat tool,
+# not of the station application), but it is pure and belongs in this suite.
+test/core/test_fecchat$(EXE): test/core/test_fecchat.c apps/fecchat.o \
+		$(ASP_OBJS) core/codec/frame.o test/core/setup.o
+	$(CC) $(CORE_CPPFLAGS) -I. -Iapps -Itest/core $(CFLAGS) \
+		$< apps/fecchat.o $(ASP_OBJS) core/codec/frame.o \
+		test/core/setup.o \
+		-lcmocka $(PLATFORM_LDLIBS) -lm -o $@
+
 test/core/test_asp$(EXE) test/core/test_asp_wire$(EXE): \
 		test/core/test_asp%$(EXE): test/core/test_asp%.c $(ASP_OBJS) \
 		test/core/setup.o

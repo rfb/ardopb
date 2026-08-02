@@ -655,3 +655,48 @@ framing by hand with nothing checking the two agree. ASP should not repeat that.
     **Compatibility aliases.** None. This is a hard fork whose only release is a
     rolling prerelease, and carrying `ardop-tx` as a symlink from the first
     release onwards would be inheriting a name we just decided was wrong.
+
+11. **The FEC profile is implemented, and §6 had not costed it against a frame.**
+
+    `apps/fecchat.c` sends and receives `TEXT_B`, which nothing did before --
+    `ardop-chat --fec` broadcast bare lines. Two things were wrong with that, and
+    §6 names both: you could not tell who spoke, and deduplication was left to
+    `core/link.c`, which drops a frame whose type and CRC match the one *before
+    it*. That check's own comment admits the limit -- "identical consecutive
+    payloads are indistinguishable from repeats and are dropped" -- so a line
+    legitimately sent twice was swallowed, and two stations interleaving broke
+    the consecutive assumption the other way and let a real repeat through.
+    `(callsign, msg_id)` over five minutes has neither failure.
+
+    ### The header is expensive, and this document did not say so
+
+    §6 specifies `calllen | callsign | msg_id | text` without reference to what a
+    frame holds, and the gap is wide enough to change how the feature is used:
+
+    | mode | frame payload | left for text |
+    |---|---|---|
+    | `4PSK.200.100` (the default) | 64 B | **54** |
+    | `4FSK.200.50S` (the most robust) | 16 B | **6** |
+
+    Measured, not derived: 54 characters from `N0AAA` encodes to exactly 64
+    bytes, and the test asserts that rather than the arithmetic.
+
+    Six characters is not a chat line. The tool therefore computes the budget
+    from `ardop_frame_spec_for` for whichever `--fecmode` is chosen, prints it at
+    startup, and **splits a longer line into two complete messages at a space**
+    -- not into fragments, because §1 requires each message to be self-contained
+    and a fragment is not. Each half carries its own id and stands alone if the
+    other is lost.
+
+    The callsign comes from the modem's `MYCALL` rather than a new flag, and FEC
+    chat refuses to start without one: a second place to say the callsign is a
+    second place for it to be wrong, and §9 wants anything transmitting to
+    identify anyway.
+
+    ### What is still not done
+
+    The **station application has no FEC screen**. This closes the gap for the
+    command-line tool, which is where broadcast chat is most useful today, but
+    `asp_app_rx` still accepts only `ARQ`-tagged payload. A Broadcast screen in
+    the window would now be a view over `apps/fecchat.c`'s profile rather than
+    new protocol work.

@@ -63,10 +63,9 @@ It also *reads the tag* now, which the tools it replaces did not: only
 `ARQ`-tagged payload is the stream, so an error marker or a station
 identification can no longer land in the middle of your file.
 
-## ardop-chat — basic two-way chat
+## ardop-chat — keyboard-to-keyboard, two ways
 
-Line-oriented, half-duplex. Each line you type is sent; each received line prints
-as `peer> …`. Choose the transport at launch:
+Line-oriented, half-duplex. Choose the transport at launch:
 
 ```
 # ARQ (reliable, one peer): one side calls, the other listens
@@ -79,10 +78,56 @@ ardop-chat --host 127.0.0.1:8515 --fec --fecmode 4FSK.200.50S
 ```
 
 In ARQ mode, typing turns the link over (`AUTOBREAK`); Ctrl-D drains the last
-lines and hangs up. FEC mode broadcasts each line and needs no connection;
-`--fecmode` picks the frame type it broadcasts with (default `4PSK.200.100`,
-any name the `FECMODE` host command accepts). Slower, more robust modes carry
-less per frame but survive worse conditions.
+lines and hangs up. FEC mode broadcasts each line and needs no connection.
+
+**The two transports are framed differently, and that is the specification, not
+an inconsistency.**
+
+ARQ chat sends bare lines. There is a session, so the peer is already known and
+a callsign on every message would only restate it — and unframed text is what
+interoperates with a plain terminal, with `ardopcf`, and with `ardop-station`,
+which degrades to raw mode for exactly this case
+([analysis/17](../analysis/17-application-protocol.md) §2). So ARQ chat is the
+headless equivalent of the station application's Chat screen, and the two talk
+to each other.
+
+FEC chat cannot do that. There is no session and no peer, so §1 requires every
+message to be **self-contained and idempotent**, and §6's `TEXT_B` carries the
+sender's callsign and a message id. `apps/fecchat.c` is that profile — the first
+implementation of it in the tree.
+
+### What the framing buys on a broadcast channel
+
+**You can see who spoke.** Every line is prefixed with the sender's callsign,
+taken from the modem's `MYCALL` rather than a flag of its own. A broadcast
+without one is a column of text with no idea who said any of it.
+
+**Repeats are suppressed properly.** `FECREPEATS` sends every frame several
+times. `core/link.c` drops a frame whose type and CRC match the one before it,
+and its own comment admits the limit: *"identical consecutive payloads are
+indistinguishable from repeats and are dropped."* So today saying the same thing
+twice loses the second, and two stations interleaving break the "consecutive"
+assumption the other way. `(callsign, msg_id)` over a five-minute window has
+neither problem.
+
+**A station running something else is still heard.** §6: a `TEXT_B` that fails
+to parse is displayed as raw text rather than discarded, prefixed `?>`. A
+broadcast net where only our own messages were visible would be worse than no
+framing at all.
+
+### How much you can say
+
+This is the part worth knowing before you start typing, because it is small:
+
+| `--fecmode` | frame | characters per message |
+|---|---|---|
+| `4PSK.200.100` (default) | 64 B | **54** |
+| `4FSK.200.50S` (most robust) | 16 B | **6** |
+
+The header costs ten bytes for a five-character callsign, and a longer callsign
+costs more. `ardop-chat` prints your actual figure at startup and **splits a
+longer line at a space into two complete messages** rather than truncating it or
+fragmenting it — §1 means each piece has to stand alone if the other is lost.
 
 ## Trying it without a radio
 
