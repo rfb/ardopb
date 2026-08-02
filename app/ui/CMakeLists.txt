@@ -50,6 +50,7 @@ add_executable(ardop-station
     devicespage.cpp
     stationpage.cpp
     consolepage.cpp
+    guestspage.cpp
     levelmeter.cpp
     sessionhistory.cpp
     historygrid.cpp

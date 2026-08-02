@@ -233,16 +233,22 @@ apps: $(APPS)
 # SPINE_DEVICE_OBJS owns the sound card and the keying line. Portable C11 too,
 #   but it names the miniaudio backend and the PTT object, so a platform that
 #   gets its audio elsewhere replaces this one file and keeps the seam.
+# SPINE_TNC_OBJS hosts the TNC interface for guest clients. Its own group
+#   because it is the one part of the seam that needs sockets, and because both
+#   the harness and the shipping application link it -- the application is what
+#   Pat and Winlink connect to, which is the point of hosting it at all.
 # SPINE_HARNESS is the phase-1 driver. The shipping application will not link it.
 SPINE_OBJS        = app/spine.o app/ring.o
 SPINE_DEVICE_OBJS = app/devices.o
-SPINE_HARNESS     = app/main.o app/script.o app/loopback.o app/tnc_host_tcp.o
+SPINE_TNC_OBJS    = app/tnc_host_tcp.o
+SPINE_HARNESS     = app/main.o app/script.o app/loopback.o
 
 app/%.o: app/%.c
 	$(CC) -I. $(CORE_CPPFLAGS) $(CFLAGS) $(CORE_CFLAGS) -c -o $@ $<
 
 app/ardop-spine$(EXE): $(CORE_OBJS) $(TEMPLATES) $(SHELL_OBJS) $(SPINE_OBJS) \
-		$(SPINE_DEVICE_OBJS) $(SPINE_HARNESS) shell/backend_null.o \
+		$(SPINE_DEVICE_OBJS) $(SPINE_TNC_OBJS) $(SPINE_HARNESS) \
+		shell/backend_null.o \
 		shell/host_tcp.o $(AUDIO_BACKEND_OBJS)
 	$(CC) $(STATIC) $^ -o $@ $(AUDIO_LDLIBS) $(PTT_LDLIBS) $(PLATFORM_LDLIBS) -lm
 
@@ -258,8 +264,8 @@ app: app/ardop-spine$(EXE)
 # So the Makefile stays the authority and hands CMake one artifact. Adding a file
 # to any group above is picked up by the Qt build with no CMake change at all.
 ARDOP_LIB_OBJS = $(CORE_OBJS) $(TEMPLATES) $(SHELL_OBJS) $(SPINE_OBJS) \
-	$(SPINE_DEVICE_OBJS) shell/host_tcp.o shell/backend_null.o \
-	$(AUDIO_BACKEND_OBJS)
+	$(SPINE_DEVICE_OBJS) $(SPINE_TNC_OBJS) shell/host_tcp.o \
+	shell/backend_null.o $(AUDIO_BACKEND_OBJS)
 
 libardop.a: $(ARDOP_LIB_OBJS)
 	$(AR) rcs $@ $^

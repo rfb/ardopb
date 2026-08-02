@@ -72,6 +72,9 @@ StationWindow::StationWindow(ModemThread *modem, QWidget *parent)
 	m_historyPage = new HistoryPage(m_history, this);
 	m_tabs->addTab(m_historyPage, tr("History"));
 
+	m_guests = new GuestsPage(modem, this);
+	m_tabs->addTab(m_guests, tr("Guests"));
+
 	setCentralWidget(m_tabs);
 
 	/* The device state changes on the modem thread and has no event of its
@@ -127,6 +130,11 @@ StationWindow::StationWindow(ModemThread *modem, QWidget *parent)
 		this, &StationWindow::onLinkState);
 	connect(m_spineSource, &SpineSource::frameObserved, m_history,
 		&SessionHistory::append);
+	connect(m_spineSource, &SpineSource::guestEvent,
+		this, &StationWindow::onGuestEvent);
+	connect(m_guests, &GuestsPage::message, this, &StationWindow::log);
+	connect(m_guests, &GuestsPage::settingsChanged, this,
+		[this] { m_saveTick.start(); });
 
 	connect(m_station, &StationPage::message, this, &StationWindow::log);
 
@@ -371,6 +379,27 @@ void StationWindow::onDeviceEvent(int code, const QString &text)
 	log(text);
 }
 
+void StationWindow::onGuestEvent(int code, const QString &text)
+{
+	m_guests->onGuestEvent(code, text);
+
+	/*
+	 * A guest's setting change reaches the Station screen, so the two agree.
+	 * The event text is "COMMAND -> REPLY"; the reply is the half that says
+	 * what the modem actually did.
+	 */
+	if (code == APP_GUEST_COMMAND && m_station) {
+		const int arrow = text.indexOf(QLatin1String(" -> "));
+		if (arrow > 0)
+			m_station->applyExternalChange(text.mid(arrow + 4));
+	}
+
+	/* The ones an operator needs even with the Guests tab closed: something
+	 * attached, something was turned away, or the port would not bind. */
+	if (code != APP_GUEST_COMMAND)
+		log(text);
+}
+
 void StationWindow::onOwnerChanged(bool attached, const QString &text)
 {
 	/*
@@ -379,6 +408,10 @@ void StationWindow::onOwnerChanged(bool attached, const QString &text)
 	 * the send button does nothing deserves to see why without reading a log.
 	 */
 	m_owner->setText(attached ? tr("TNC client owns the link") : QString());
+	if (m_station)
+		m_station->setGuestOwned(attached);
+	if (m_guests)
+		m_guests->setAttached(attached);
 	log(text);
 }
 
@@ -399,6 +432,7 @@ void StationWindow::onLinkState(int state, const QString &remote)
 void StationWindow::applySavedStation(const ardop_settings *s)
 {
 	m_station->applySaved(s);
+	m_guests->applySaved(s);
 }
 
 void StationWindow::saveStation()
@@ -413,6 +447,7 @@ void StationWindow::saveStation()
 	ardop_settings s {};
 	ardop_settings_load(&s, path);
 	m_station->store(&s);
+	m_guests->store(&s);
 	if (!ardop_settings_save(&s, path))
 		log(tr("could not save settings to %1")
 			    .arg(QString::fromUtf8(path)));

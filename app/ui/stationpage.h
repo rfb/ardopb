@@ -73,6 +73,36 @@ public slots:
 	 */
 	void setLinkState(const QString &state, const QString &remote);
 
+	/**
+	 * @brief A TNC client owns the link, so our own session controls stop.
+	 *
+	 * The spine already refuses them. This makes the refusal visible, which
+	 * matters more than it sounds: a Connect button that silently does
+	 * nothing is indistinguishable from a broken radio.
+	 */
+	void setGuestOwned(bool owned);
+
+	/**
+	 * @brief Follow a setting a guest changed.
+	 *
+	 * [analysis/14](../../analysis/14-station-application.md) Decision 4
+	 * accepts a guest's configuration rather than refusing it, and promises
+	 * the interface will show what changed. Without this the promise is only
+	 * half kept: the Guests screen records that Pat set MYCALL, while this
+	 * screen goes on displaying the old one -- and a settings screen showing
+	 * a value that is not the modem's is worse than one showing nothing.
+	 *
+	 * @param reply A canonical `KEY now VALUE` line. Anything else is
+	 *              ignored, so this cannot be driven into a bad state by an
+	 *              unexpected message.
+	 *
+	 * **Displayed, not saved.** The running modem takes the guest's value;
+	 * the settings file keeps the operator's, so a restart returns to what
+	 * the operator chose. A guest borrows this station, it does not
+	 * reconfigure it permanently.
+	 */
+	void applyExternalChange(const QString &reply);
+
 signals:
 	/** @brief A setting changed and is worth writing to disk. */
 	void settingsChanged();
@@ -129,6 +159,7 @@ private:
 
 	bool m_callsignOk = false;
 	bool m_connected = false;
+	bool m_guestOwned = false;
 	bool m_loading = false;   /**< Suppresses signals while fields are filled. */
 };
 

@@ -213,7 +213,10 @@ QWidget *StationPage::buildSession()
  */
 void StationPage::updateGate()
 {
-	const bool canTx = m_callsignOk;
+	/* Two independent reasons to be closed, and the operator is told which:
+	 * no callsign is something they fix here, a guest holding the link is
+	 * something they fix by closing the other program. */
+	const bool canTx = m_callsignOk && !m_guestOwned;
 
 	m_connect->setEnabled(canTx && !m_connected);
 	m_sendid->setEnabled(canTx);
@@ -228,10 +231,77 @@ void StationPage::updateGate()
 			   "screen can put a signal on the air until this is "
 			   "accepted."));
 		m_mycallNote->setStyleSheet("color: #c0392b;");
+	} else if (m_guestOwned) {
+		m_mycallNote->setText(
+			tr("A TNC client is attached and owns the link. Its "
+			   "session and this one cannot share the transmit "
+			   "queue, so these controls resume when it "
+			   "disconnects -- see the Guests tab."));
+		m_mycallNote->setStyleSheet("color: #d89b2e;");
 	} else {
 		m_mycallNote->setText(QString());
 		m_mycallNote->setStyleSheet(QString());
 	}
+}
+
+void StationPage::applyExternalChange(const QString &reply)
+{
+	/* "KEY now VALUE". The canonical reply shape for every setting in the
+	 * protocol, which is why it is the thing parsed rather than the command:
+	 * the reply is what the modem says it did. */
+	const int sep = reply.indexOf(QLatin1String(" now "));
+	if (sep <= 0)
+		return;
+	const QString key = reply.left(sep);
+	const QString value = reply.mid(sep + 5).trimmed();
+	if (value.isEmpty())
+		return;
+
+	/* Suppressed throughout: this is the modem telling us, so echoing it
+	 * back as a command would be a loop, and saving it would let a guest
+	 * rewrite the operator's file. */
+	m_loading = true;
+
+	if (key == QLatin1String("MYCALL")) {
+		m_mycall->setText(value);
+		m_loading = false;
+		onMycallEdited();   /* re-runs validation and the gate */
+		return;
+	}
+	if (key == QLatin1String("GRIDSQUARE"))
+		m_grid->setText(value);
+	else if (key == QLatin1String("ARQBW") && m_arqbw->findText(value) >= 0)
+		m_arqbw->setCurrentText(value);
+	else if (key == QLatin1String("PROTOCOLMODE") &&
+		 m_protocol->findText(value) >= 0)
+		m_protocol->setCurrentText(value);
+	else if (key == QLatin1String("FECMODE") &&
+		 m_fecmode->findText(value) >= 0)
+		m_fecmode->setCurrentText(value);
+	else if (key == QLatin1String("FECREPEATS"))
+		m_fecrepeats->setValue(value.toInt());
+	else if (key == QLatin1String("BUSYDET"))
+		m_busydet->setValue(value.toInt());
+	else if (key == QLatin1String("LISTEN"))
+		m_listen->setChecked(value == QLatin1String("TRUE"));
+	else if (key == QLatin1String("AUTOBREAK"))
+		m_autobreak->setChecked(value == QLatin1String("TRUE"));
+	else if (key == QLatin1String("FSKONLY"))
+		m_fskonly->setChecked(value == QLatin1String("TRUE"));
+	else if (key == QLatin1String("USE600MODES"))
+		m_use600->setChecked(value == QLatin1String("TRUE"));
+	else if (key == QLatin1String("ENABLEPINGACK"))
+		m_pingack->setChecked(value == QLatin1String("TRUE"));
+
+	m_loading = false;
+}
+
+void StationPage::setGuestOwned(bool owned)
+{
+	if (owned == m_guestOwned)
+		return;
+	m_guestOwned = owned;
+	updateGate();
 }
 
 void StationPage::onMycallEdited()

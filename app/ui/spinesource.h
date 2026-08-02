@@ -99,6 +99,9 @@ signals:
 	 */
 	void frameObserved(const ardop_telemetry &rec);
 
+	/** @brief An attached TNC client did something. @p code is ::app_guest_code. */
+	void guestEvent(int code, const QString &text);
+
 private slots:
 	void pump();
 

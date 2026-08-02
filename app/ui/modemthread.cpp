@@ -2,6 +2,8 @@
 
 #include <QByteArray>
 
+#include <cstdio>
+
 extern "C" {
 #include "codec/stationid.h"
 }
@@ -53,9 +55,16 @@ void ModemThread::run()
 	 * app_devices_service sleeps instead, so an idle program does not spin.
 	 */
 	while (!m_stop.load(std::memory_order_acquire)) {
+		serviceHost();
 		app_devices_service(m_devices, m_spine);
 		app_step(m_spine);
 	}
+
+	/* Stop listening before the spine goes. app_step is what services the
+	 * transport, so a socket left open past this point is one nothing is
+	 * reading -- a client would connect and hang. */
+	requestHost(0);
+	serviceHost();
 
 	/*
 	 * Teardown order, and it is the one order that cannot leave a transmitter
@@ -65,6 +74,53 @@ void ModemThread::run()
 	 */
 	app_close(m_spine);
 	app_devices_close(m_devices, nullptr);
+}
+
+void ModemThread::requestHost(int port)
+{
+	m_hostWanted.store(port, std::memory_order_release);
+}
+
+void ModemThread::serviceHost()
+{
+	const int want = m_hostWanted.load(std::memory_order_acquire);
+	const int have = m_hostOpen.load(std::memory_order_relaxed);
+	if (want == have)
+		return;
+
+	/* Always tear down first, even when moving between two ports: two
+	 * listeners would mean two hosts, and the whole model is that there is
+	 * one. */
+	if (m_host) {
+		app_set_tnc(m_spine, nullptr);
+		ardop_host_tcp_close(m_host);
+		m_host = nullptr;
+		m_hostOpen.store(0, std::memory_order_release);
+		app_report_guest(m_spine, APP_GUEST_STOPPED,
+				 "TNC interface stopped");
+	}
+
+	if (want <= 0)
+		return;
+
+	m_host = ardop_host_tcp_open((uint16_t)want);
+	if (!m_host) {
+		char msg[APP_TEXT_MAX];
+		snprintf(msg, sizeof msg,
+			 "could not listen on %d and %d -- something else is "
+			 "using them",
+			 want, want + 1);
+		app_report_guest(m_spine, APP_GUEST_LISTEN_FAILED, msg);
+		/* Cleared so the interface's request and reality agree; an
+		 * operator who fixes the conflict asks again. */
+		m_hostWanted.store(0, std::memory_order_release);
+		return;
+	}
+
+	app_tnc_host_tcp_bind(&m_tnc, m_host);
+	app_tnc_host_tcp_watch(&m_watch, m_host, m_spine);
+	app_set_tnc(m_spine, &m_tnc);
+	m_hostOpen.store(want, std::memory_order_release);
 }
 
 void ModemThread::shutdown()

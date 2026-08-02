@@ -9,6 +9,7 @@
 extern "C" {
 #include "app/devices.h"
 #include "app/spine.h"
+#include "app/tnc_host_tcp.h"
 }
 
 /**
@@ -69,6 +70,24 @@ public:
 	bool requestDevices(const app_device_selection &sel);
 	bool requestDeviceClose();
 	bool requestPttTest(unsigned ms);
+
+	/**
+	 * @brief Ask for the TNC interface on @p port, or 0 to stop it.
+	 *
+	 * The socket is opened on the *modem thread*, not here, because
+	 * `app_set_tnc` writes state the modem thread reads and `spine.h`
+	 * divides its API by thread for a reason. Opening a listener is fast --
+	 * unlike a device rebuild -- so it costs the loop nothing to do it there,
+	 * and it needs no request ring: one atomic carries the whole intent.
+	 *
+	 * The result arrives as an ::APP_EV_GUEST event, because binding can
+	 * fail (the port is the commonest thing on a station to already be in
+	 * use) and an operator must be told.
+	 */
+	void requestHost(int port);
+
+	/** @brief The port currently listening, or 0. */
+	int hostPort() const { return m_hostOpen.load(std::memory_order_acquire); }
 	bool submitLine(const QString &line);
 
 	/**
@@ -110,9 +129,21 @@ protected:
 	void run() override;
 
 private:
+	/** @brief Open or close the listener to match the request. Modem thread. */
+	void serviceHost();
+
 	app_spine *m_spine = nullptr;
 	app_devices *m_devices = nullptr;
 	std::atomic<bool> m_stop { false };
+
+	/* The TNC server. m_hostWanted is written by the interface thread and
+	 * read by the modem thread; everything else here belongs to the modem
+	 * thread alone. */
+	std::atomic<int> m_hostWanted { 0 };
+	std::atomic<int> m_hostOpen { 0 };
+	ardop_host_tcp *m_host = nullptr;
+	app_tnc_ops m_tnc {};
+	app_tnc_watch m_watch {};
 };
 
 #endif /* ARDOP_UI_MODEMTHREAD_H_ */

@@ -583,22 +583,13 @@ static void apply_config(app_spine *sp, const cmd_hdr *h, const char *str)
 			 h->num ? "TRUE" : "FALSE");
 		break;
 
-	case APP_CFG_BUSYDET: {
-		/* The one direct write. Busy sensitivity lives on the runtime,
-		 * not the link, and there is no host command for it -- so there
-		 * is no text path to share. If BUSYDET is ever added to
-		 * shell/host.c, delete this case and let it join the rest. */
-		long v = h->num;
-		if (v < 0)
-			v = 0;
-		if (v > 10)
-			v = 10;
-		sp->rt.busy_det = (int)v;
-		char msg[APP_TEXT_MAX];
-		snprintf(msg, sizeof msg, "BUSYDET now %d", sp->rt.busy_det);
-		emit(sp, APP_EV_REPLY, 0, false, NULL, msg, NULL, 0);
-		return;
-	}
+	case APP_CFG_BUSYDET:
+		/* Was the one direct write here, with a note saying to delete it
+		 * if BUSYDET ever reached shell/host.c. It has, so this is now
+		 * an ordinary line like every other setting -- one validator,
+		 * and a guest can set it too. */
+		snprintf(line, sizeof line, "BUSYDET %ld", h->num);
+		break;
 	}
 
 	run_line(sp, line);

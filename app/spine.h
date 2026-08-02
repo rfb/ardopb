@@ -186,6 +186,8 @@ typedef enum {
 	APP_GUEST_DISCONNECTED,  /**< It left; the link is the app's again. */
 	APP_GUEST_REFUSED,       /**< A second client was turned away. */
 	APP_GUEST_COMMAND,       /**< It ran a command. @c text has the reply. */
+	APP_GUEST_LISTEN_FAILED, /**< The port could not be bound. */
+	APP_GUEST_STOPPED,       /**< The server was shut down. */
 } app_guest_code;
 
 /**

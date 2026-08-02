@@ -10,6 +10,7 @@
 #include "constellationwidget.h"
 #include "consolepage.h"
 #include "devicespage.h"
+#include "guestspage.h"
 #include "historypage.h"
 #include "levelmeter.h"
 #include "modemthread.h"
@@ -92,6 +93,7 @@ private slots:
 	void onDeviceEvent(int code, const QString &text);
 	void onOwnerChanged(bool attached, const QString &text);
 	void onLinkState(int state, const QString &remote);
+	void onGuestEvent(int code, const QString &text);
 
 private slots:
 	/** @brief Write `station.*` out. Debounced -- see the implementation. */
@@ -116,6 +118,7 @@ private:
 	DevicesPage *m_devices = nullptr;
 	StationPage *m_station = nullptr;
 	ConsolePage *m_console = nullptr;
+	GuestsPage *m_guests = nullptr;
 	SessionHistory *m_history = nullptr;
 	HistoryPage *m_historyPage = nullptr;
 	QTimer m_saveTick;

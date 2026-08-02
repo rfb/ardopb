@@ -449,6 +449,47 @@ void ardop_host_command(ardop_runtime *rt, const char *line, uint64_t now,
 	if (strcmp(kw, "RDY") == 0)
 		return;   /* no reply required. */
 
+	/*
+	 * INITIALIZE. docs/Host_Interface_Commands.md: "Performs initialization
+	 * of the modem. The first command that needs to be issued to the modem",
+	 * and it is the first line in every one of that document's three example
+	 * handshakes -- so a station that faults on it faults on the first thing
+	 * a client says to it.
+	 *
+	 * A no-op here, and correctly so: the runtime is already initialised by
+	 * the time any socket exists, and there is nothing left for this to do.
+	 * The documented return is None.
+	 */
+	if (strcmp(kw, "INITIALIZE") == 0)
+		return;
+
+	/*
+	 * BUSYDET, which was reachable from this program's own settings and not
+	 * from a guest's.
+	 *
+	 * app/spine.c carried a private direct write with the note "there is no
+	 * host command for it -- if BUSYDET is ever added to shell/host.c,
+	 * delete this case and let it join the rest". This is that, and the
+	 * spine's special case is now gone: one validator, one path, and a
+	 * client can set it exactly as ARIM expects to.
+	 */
+	if (strcmp(kw, "BUSYDET") == 0) {
+		if (params == NULL) {
+			replyf(reply, cap, "BUSYDET %d", rt->busy_det);
+			return;
+		}
+		char *end = NULL;
+		long v = strtol(params, &end, 10);
+		if (end == params || *end != '\0' || v < 0 || v > 10) {
+			replyf(reply, cap, "FAULT Syntax Err: BUSYDET %s",
+			       params);
+			return;
+		}
+		rt->busy_det = (int)v;
+		replyf(reply, cap, "BUSYDET now %ld", v);
+		return;
+	}
+
 	/* Unknown command. The reply text (typo and all) is the frozen wire
 	 * string the inherited TNC sends. */
 	replyf(reply, cap, "FAULT CMD %s not recoginized", kw);
