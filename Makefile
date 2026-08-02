@@ -26,7 +26,7 @@
 #   make clean
 
 .PHONY: all core apps app test-core check-pure check-headers check-standalone \
-	golden-core golden-shell golden-tx clean
+	golden-core golden-shell golden-tx golden-resample clean
 
 # `all` is the default goal explicitly. Without this the first non-pattern rule
 # in the file wins -- which was shell/backend_alsa.o, so a bare `make` built one
@@ -453,6 +453,30 @@ test/golden/shell_decode_wav$(EXE): test/golden/shell_decode_wav.c $(CORE_OBJS) 
 	$(CC) -I. $(CORE_CPPFLAGS) $(CFLAGS) $(CORE_CFLAGS) \
 		$< $(CORE_OBJS) $(SHELL_OBJS) $(TEMPLATES) $(PLATFORM_LDLIBS) \
 		-lm -o $@
+# The resampler against real modulated audio, not synthetic tones. See the
+# harness comment: -alias adds an out-of-band interferer that naive decimation
+# folds into the middle of the passband, so a decimator with no anti-alias filter
+# passes golden-resample and fails golden-resample-alias.
+test/golden/resample_decode_wav$(EXE): test/golden/resample_decode_wav.c \
+		$(CORE_OBJS) $(SHELL_OBJS) $(TEMPLATES)
+	$(CC) $(CORE_CPPFLAGS) -I. $(CFLAGS) $(CORE_CFLAGS) \
+		$< $(CORE_OBJS) $(SHELL_OBJS) $(TEMPLATES) $(PLATFORM_LDLIBS) \
+		-lm -o $@
+
+.PHONY: golden-resample golden-resample-alias
+golden-resample: test/golden/resample_decode_wav$(EXE)
+	@for m in 2 4 8; do \
+		echo "decimation m=$$m:"; \
+		( cd test/golden && \
+		  GOLDEN_DECODE_BIN="./resample_decode_wav$(EXE) -m $$m" \
+			./test_golden_core.py ) || exit 1; \
+	done
+
+golden-resample-alias: test/golden/resample_decode_wav$(EXE)
+	cd test/golden && \
+		GOLDEN_DECODE_BIN="./resample_decode_wav$(EXE) -m 4 -alias" \
+		./test_golden_core.py
+
 golden-shell: test/golden/shell_decode_wav$(EXE)
 	cd test/golden && GOLDEN_DECODE_BIN=./shell_decode_wav$(EXE) ./test_golden_core.py
 

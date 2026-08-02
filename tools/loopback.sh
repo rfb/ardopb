@@ -20,7 +20,7 @@
 #   Neither station captures its own transmission (no self-echo).
 #
 # Usage:
-#   tools/loopback.sh up      create the cables + ALSA config; print how to run
+#   tools/loopback.sh up      create the cables; print how to run the stations
 #   tools/loopback.sh down    remove the cables
 #   tools/loopback.sh check   verify the cable carries audio (beacon -> listener)
 #   tools/loopback.sh demo    up, run ardopb<->ardopb (connect + data), down
@@ -38,13 +38,19 @@ ARDOPB="$HERE/ardopb"
 
 sink_exists() { pactl list short sinks 2>/dev/null | grep -qw "$1"; }
 
+# The cable rate. 12000 means the modem's resampler is the identity path, which
+# is what every loopback run has used until now -- so the decimate/interpolate
+# chain had never carried an ARQ session over cables at all. 48000 exercises it
+# at m = 4, the ratio a real sound card almost always gives.
+RATE="${RATE:-12000}"
+
 make_cable() {
 	local name="$1"
 	if sink_exists "$name"; then
 		echo "cable $name already present"
 	else
 		pactl load-module module-null-sink \
-			sink_name="$name" rate=12000 channels=1 format=s16le \
+			sink_name="$name" rate="$RATE" channels=1 format=s16le \
 			sink_properties=device.description="ardop_$name" >/dev/null
 		echo "created cable $name (12 kHz mono)"
 	fi
@@ -60,6 +66,7 @@ drop_cable() {
 cmd_up() {
 	make_cable a2b
 	make_cable b2a
+	echo "cables at ${RATE} Hz (m = $((RATE / 12000)))"
 	cat <<'EOF'
 
 virtual cables ready. Run two stations (A initiates, B answers):
