@@ -25,7 +25,7 @@
 #   make golden-core / golden-shell / golden-tx   conformance vs the frozen corpus
 #   make clean
 
-.PHONY: all core apps app test-core check-pure check-headers check-standalone \
+.PHONY: all core apps app lib test-core check-pure check-headers check-standalone \
 	golden-core golden-shell golden-tx golden-resample clean
 
 # `all` is the default goal explicitly. Without this the first non-pattern rule
@@ -243,6 +243,25 @@ app/ardop-spine$(EXE): $(CORE_OBJS) $(TEMPLATES) $(SHELL_OBJS) $(SPINE_OBJS) \
 	$(CC) $(STATIC) $^ -o $@ $(AUDIO_LDLIBS) $(PTT_LDLIBS) $(PLATFORM_LDLIBS) -lm
 
 app: app/ardop-spine$(EXE)
+
+# --- libardop.a : the whole C program, for the Qt build to link -------------
+#
+# The graphical application is built by CMake (analysis/14 Decision 6), and CMake
+# needs to know which objects to link. Listing them there would be a second
+# definition of a set that already exists here, and analysis/15 predicted exactly
+# what happens next: it drifts.
+#
+# So the Makefile stays the authority and hands CMake one artifact. Adding a file
+# to any group above is picked up by the Qt build with no CMake change at all.
+ARDOP_LIB_OBJS = $(CORE_OBJS) $(TEMPLATES) $(SHELL_OBJS) $(SPINE_OBJS) \
+	$(SPINE_DEVICE_OBJS) shell/host_tcp.o shell/backend_null.o \
+	$(AUDIO_BACKEND_OBJS)
+
+libardop.a: $(ARDOP_LIB_OBJS)
+	$(AR) rcs $@ $^
+
+.PHONY: lib
+lib: libardop.a
 
 all: ardopb$(EXE) apps app
 
@@ -490,7 +509,7 @@ golden-tx: test/golden/shell_tx_wav$(EXE)
 -include core/*/*.d shell/*.d apps/*.d app/*.d test/core/*.d
 
 clean:
-	rm -f -- ardopb$(EXE) $(APPS) app/ardop-spine$(EXE) \
+	rm -f -- ardopb$(EXE) $(APPS) app/ardop-spine$(EXE) libardop.a \
 		$(CORE_OBJS) $(CORE_OBJS:.o=.d) \
 		$(TEMPLATES) $(TEMPLATES:.o=.d) \
 		shell/*.o shell/*.d apps/*.o apps/*.d app/*.o app/*.d \

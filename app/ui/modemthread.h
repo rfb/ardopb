@@ -1,0 +1,94 @@
+#ifndef ARDOP_UI_MODEMTHREAD_H_
+#define ARDOP_UI_MODEMTHREAD_H_
+
+#include <QObject>
+#include <QString>
+#include <QThread>
+#include <atomic>
+
+extern "C" {
+#include "app/devices.h"
+#include "app/spine.h"
+}
+
+/**
+ * @file modemthread.h
+ * @brief The modem, running on a thread of its own.
+ *
+ * [analysis/14](../../analysis/14-station-application.md) Decision 2:
+ *
+ * > One runtime, one thread. Nothing outside the modem thread touches
+ * > `ardop_runtime` or anything reachable from it, for any reason, ever.
+ *
+ * This is the first program in which that is a real constraint rather than a
+ * property demonstrated by a stress test. `app_step` blocks for around 100 ms
+ * inside the capture device, so running it on the interface thread would freeze
+ * the window; and the interface thread must never reach past the seam.
+ *
+ * ## What may be called from where
+ *
+ * The spine's own header labels every function with its thread, and this class
+ * exists so that a Qt programmer does not have to remember which is which:
+ *
+ * - **This object's public methods are all interface-thread safe.** They either
+ *   queue a request on a lock-free ring or read one atomic.
+ * - **Nothing here hands out the `app_spine *`.** The one exception is
+ *   ::spine, which the display and event pumps need to drain their queues, and
+ *   draining is the *consumer* half of the seam -- the half the interface thread
+ *   is supposed to own.
+ *
+ * Note also that the block deliberately adds nothing to `shell/sys.h`.
+ * analysis/14 §6 said a portable thread API should be designed when there was a
+ * caller to design it against; the caller turned out to be Qt, which brings its
+ * own, so the right amount of new platform code is none.
+ */
+class ModemThread : public QThread {
+	Q_OBJECT
+
+public:
+	explicit ModemThread(QObject *parent = nullptr);
+	~ModemThread() override;
+
+	/** @brief Build the spine and the device manager. @return false on failure. */
+	bool open(bool telemetry);
+
+	/** @brief Ask the loop to finish, then wait for it. Safe to call twice. */
+	void shutdown();
+
+	/**
+	 * @brief The spine, for the display and event pumps only.
+	 *
+	 * Draining is the consumer half of the seam and belongs to the interface
+	 * thread. Anything else through this pointer is a bug -- the submission
+	 * calls are wrapped below precisely so that nobody has to reach for it.
+	 */
+	app_spine *spine() const { return m_spine; }
+
+	/* --- interface thread: asking the modem to do something ---------------- */
+
+	bool requestDevices(const app_device_selection &sel);
+	bool requestDeviceClose();
+	bool requestPttTest(unsigned ms);
+	bool submitLine(const QString &line);
+	bool submitConfig(app_cfg_key key, const QString &value);
+	bool submitConfig(app_cfg_key key, long value);
+	bool submitConfig(app_cfg_key key, bool value);
+
+	/** @brief Bytes ::app_tx_submit would take now. */
+	size_t txCredit() const;
+
+	/** @brief A snapshot for display. Never for a decision -- see spine.h. */
+	void status(app_status *out) const;
+	void deviceStatus(app_device_status *out) const;
+	app_dev_state deviceState() const;
+
+protected:
+	void run() override;
+
+private:
+	app_spine *m_spine = nullptr;
+	app_devices *m_devices = nullptr;
+	std::atomic<bool> m_stop { false };
+};
+
+#endif /* ARDOP_UI_MODEMTHREAD_H_ */

@@ -101,3 +101,7 @@ newArdopSampleArrays.c
 /ardopb-windows-*.zip
 /ardop-gui-windows-*.zip
 /ardopb-linux-*.tar.gz
+
+# Qt station app build tree (cmake -S app/ui -B app/ui/build)
+/app/ui/build/
+/libardop.a
