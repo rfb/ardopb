@@ -122,6 +122,18 @@ unsigned ardop_backend_ma_ratio(const ardop_ma_backend *b);
 
 /* --- observation, for tests ------------------------------------------------ */
 
+/**
+ * @brief **For tests only.** Stop the capture device so `read_audio` times out.
+ *
+ * The strongest available stand-in for the cable being pulled: the callback
+ * simply stops, exactly as it does when a USB interface is unplugged. It exists
+ * because analysis/15's exit criterion -- "unplugging the capture device
+ * mid-session raises a fault ... it does not hang the modem thread" -- is
+ * otherwise a claim no automated test can reach, and a claim about a fault path
+ * that has never been executed is not worth much.
+ */
+void ardop_backend_ma_stall_capture(ardop_ma_backend *b);
+
 /** @brief Device-rate samples the playback callback has actually consumed. */
 uint64_t ardop_backend_ma_played(const ardop_ma_backend *b);
 

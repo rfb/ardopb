@@ -180,6 +180,49 @@ static void test_rate_ratio_is_integral(void **state)
 	ardop_backend_ma_close(b);
 }
 
+/*
+ * A capture device that stops delivering must surface as a fault, and must do it
+ * within a bounded time rather than hanging the modem thread forever with no way
+ * to tell the operator.
+ *
+ * This is analysis/15's exit criterion -- "unplugging the capture device
+ * mid-session raises a fault ... it does not hang the modem thread" -- which
+ * until now was a claim about a code path no automated test had ever executed.
+ * Stopping the device stops its callback, which is exactly what an unplug does.
+ *
+ * Timed with a monotonic clock, so a hang fails the test instead of hanging the
+ * suite: that bound *is* the property under test.
+ */
+static void test_capture_loss_faults(void **state)
+{
+	(void)state;
+	ardop_platform_ops ops;
+	ardop_ma_backend *b = open_null(&ops);
+	assert_non_null(b);
+	assert_int_equal(ardop_backend_ma_fault(b), ARDOP_FAULT_NONE);
+
+	ardop_backend_ma_stall_capture(b);
+
+	int16_t buf[ARDOP_LOOP_BLOCK];
+	uint64_t began = ardop_mono_ms();
+	size_t got = ops.read_audio(ops.ctx, buf, ARDOP_LOOP_BLOCK);
+	uint64_t took = ardop_mono_ms() - began;
+
+	assert_int_equal(got, 0);
+	assert_int_equal(ardop_backend_ma_fault(b), ARDOP_FAULT_CAPTURE_LOST);
+
+	/* Roughly one watchdog period, generously bounded for a loaded CI host. */
+	assert_true(took < 4000);
+
+	/* First fault wins: it is the one with the explanation. A later playback
+	 * failure must not overwrite the reason the operator is being shown. */
+	ardop_backend_ma_stall_capture(b);
+	(void)ops.read_audio(ops.ctx, buf, ARDOP_LOOP_BLOCK);
+	assert_int_equal(ardop_backend_ma_fault(b), ARDOP_FAULT_CAPTURE_LOST);
+
+	ardop_backend_ma_close(b);
+}
+
 int main(void)
 {
 	ardop_test_setup();
@@ -188,6 +231,7 @@ int main(void)
 		cmocka_unit_test(test_capture_is_discarded_during_transmit),
 		cmocka_unit_test(test_capture_delivers_at_the_modem_rate),
 		cmocka_unit_test(test_block_size_is_sane),
+		cmocka_unit_test(test_capture_loss_faults),
 		cmocka_unit_test(test_rate_ratio_is_integral),
 	};
 	return cmocka_run_group_tests(tests, NULL, NULL);

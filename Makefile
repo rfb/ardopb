@@ -207,15 +207,25 @@ apps: $(APPS)
 #
 # Not APP_OBJS: that name belongs to apps/ (the host-client programs) forty
 # lines up.
-SPINE_OBJS    = app/spine.o app/ring.o
-SPINE_HARNESS = app/main.o app/script.o app/loopback.o app/tnc_host_tcp.o
+# Three groups, because they have three futures.
+#
+# SPINE_OBJS is the seam: portable C11, no sockets, no feature-test macros, no
+#   devices. app/%.o gets no -D_DEFAULT_SOURCE or -D_GNU_SOURCE, so a violation
+#   fails to compile rather than being noticed in review.
+# SPINE_DEVICE_OBJS owns the sound card and the keying line. Portable C11 too,
+#   but it names the miniaudio backend and the PTT object, so a platform that
+#   gets its audio elsewhere replaces this one file and keeps the seam.
+# SPINE_HARNESS is the phase-1 driver. The shipping application will not link it.
+SPINE_OBJS        = app/spine.o app/ring.o
+SPINE_DEVICE_OBJS = app/devices.o
+SPINE_HARNESS     = app/main.o app/script.o app/loopback.o app/tnc_host_tcp.o
 
 app/%.o: app/%.c
 	$(CC) -I. $(CORE_CPPFLAGS) $(CFLAGS) $(CORE_CFLAGS) -c -o $@ $<
 
 app/ardop-spine$(EXE): $(CORE_OBJS) $(TEMPLATES) $(SHELL_OBJS) $(SPINE_OBJS) \
-		$(SPINE_HARNESS) shell/backend_null.o shell/host_tcp.o \
-		$(AUDIO_BACKEND_OBJS)
+		$(SPINE_DEVICE_OBJS) $(SPINE_HARNESS) shell/backend_null.o \
+		shell/host_tcp.o $(AUDIO_BACKEND_OBJS)
 	$(CC) $(STATIC) $^ -o $@ $(AUDIO_LDLIBS) $(PLATFORM_LDLIBS) -lm
 
 app: app/ardop-spine$(EXE)
@@ -301,6 +311,7 @@ CORE_TESTS = \
 	test/core/test_spine$(EXE) \
 	test/core/test_audio_devices$(EXE) \
 	test/core/test_settings$(EXE) \
+	test/core/test_devices$(EXE) \
 	test/core/test_backend_ma$(EXE)
 
 define newline
@@ -352,6 +363,17 @@ test/core/test_audio_devices$(EXE): test/core/test_audio_devices.c $(CORE_OBJS) 
 	$(CC) $(CORE_CPPFLAGS) -I. -Itest/core $(CFLAGS) \
 		$< $(CORE_OBJS) $(TEMPLATES) $(SHELL_OBJS) $(MA_OBJS) \
 		test/core/setup.o \
+		-lcmocka $(AUDIO_LDLIBS) $(PLATFORM_LDLIBS) -lm -o $@
+
+# test_devices links the manager, so it needs MA_OBJS as well -- the null device
+# gives a real backend with a real device thread, which is what makes the
+# recovery path testable in CI with no hardware.
+test/core/test_devices$(EXE): test/core/test_devices.c $(CORE_OBJS) $(TEMPLATES) \
+		$(SHELL_OBJS) $(SPINE_OBJS) $(SPINE_DEVICE_OBJS) $(MA_OBJS) \
+		test/core/setup.o
+	$(CC) $(CORE_CPPFLAGS) -I. -Itest/core $(CFLAGS) \
+		$< $(CORE_OBJS) $(TEMPLATES) $(SHELL_OBJS) $(SPINE_OBJS) \
+		$(SPINE_DEVICE_OBJS) $(MA_OBJS) test/core/setup.o \
 		-lcmocka $(AUDIO_LDLIBS) $(PLATFORM_LDLIBS) -lm -o $@
 
 # The spine test needs app/ as well. It lives in test/core/ rather than a

@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "app/devices.h"
 #include "app/loopback.h"
 #include "app/script.h"
 #include "app/spine.h"
@@ -14,6 +15,7 @@
 #include "shell/fault.h"
 #include "shell/host_tcp.h"
 #include "shell/ptt.h"
+#include "shell/settings.h"
 #include "shell/sys.h"
 
 /**
@@ -53,28 +55,17 @@ static const char kUsage[] =
 	"  --audio-backend NAME alsa, pulseaudio, wasapi, coreaudio, jack\n"
 	"  --ptt SPEC           none | rts:DEV | dtr:DEV | rigctld:HOST:PORT\n"
 	"  --host PORT          host the TNC interface on PORT and PORT+1\n"
+	"  --config PATH        load the saved device selection from PATH\n"
 	"  --telemetry          compute spectrum and constellation telemetry\n"
 	"  --list-devices       print the sound devices and exit\n";
 
 enum backend_kind { BACKEND_LOOPBACK, BACKEND_NULL, BACKEND_MA };
 
-/* Map a device fault onto the spine's own vocabulary. The spine owns no devices
- * and does not include shell/fault.h; whoever owns the backend translates. */
-static app_fault app_fault_of(ardop_fault f)
-{
-	switch (f) {
-	case ARDOP_FAULT_CAPTURE_LOST:      return APP_FAULT_CAPTURE;
-	case ARDOP_FAULT_PLAYBACK_LOST:
-	case ARDOP_FAULT_PLAYBACK_UNDERRUN: return APP_FAULT_PLAYBACK;
-	case ARDOP_FAULT_PTT_LOST:          return APP_FAULT_PTT;
-	case ARDOP_FAULT_NONE:              break;
-	}
-	return APP_FAULT_OTHER;
-}
 
 int main(int argc, char **argv)
 {
 	const char *script_path = NULL;
+	const char *config_path = NULL;
 	const char *ptt_spec = NULL;
 	const char *audio_backend = NULL;
 	const char *cap = NULL, *play = NULL;
@@ -123,6 +114,8 @@ int main(int argc, char **argv)
 			ptt_spec = argv[++i];
 		} else if (strcmp(a, "--host") == 0 && i + 1 < argc) {
 			host_port = atoi(argv[++i]);
+		} else if (strcmp(a, "--config") == 0 && i + 1 < argc) {
+			config_path = argv[++i];
 		} else if (strcmp(a, "--telemetry") == 0) {
 			telemetry = true;
 		} else {
@@ -145,8 +138,7 @@ int main(int argc, char **argv)
 
 	app_loopback *lb = NULL;
 	app_spine *sp = NULL, *peer = NULL;
-	ardop_ptt *ptt = NULL;
-	ardop_ma_backend *mb = NULL;
+	app_devices *dv = NULL;
 	ardop_null_backend nb;
 	ardop_platform_ops ops;
 	int rc = 0;
@@ -169,49 +161,68 @@ int main(int argc, char **argv)
 			return 1;
 		}
 
-		/* PTT first, and independently of audio: the keying method and
-		 * the sound card are unrelated in reality. */
-		if (ptt_spec && kind == BACKEND_MA) {
-			ardop_ptt_config pc;
-			if (!ardop_ptt_parse(ptt_spec, &pc)) {
-				fprintf(stderr, "ardop-spine: bad --ptt %s\n",
-					ptt_spec);
-				app_close(sp);
-				return 2;
-			}
-			ptt = ardop_ptt_open(&pc);
-			if (!ptt) {
-				fputs("ardop-spine: cannot open PTT\n", stderr);
-				app_close(sp);
-				return 1;
-			}
-			fprintf(stderr, "ptt: %s\n", ardop_ptt_describe(ptt));
-		}
-
 		if (kind == BACKEND_NULL) {
+			/* The device-free backend is bound directly: it has no
+			 * device to select, nothing to enumerate and nothing to
+			 * fault, so routing it through the manager would be
+			 * ceremony. */
 			ardop_backend_null_init(&nb, &ops,
 						(uint64_t)null_seconds * 12000u);
 			nb.realtime = host_port != 0;
+			app_set_platform(sp, &ops, 0);
 		} else {
-			ardop_ma_config mc;
-			memset(&mc, 0, sizeof mc);
-			mc.capture_id = cap;
-			mc.playback_id = play;
-			mc.ptt = ptt;
-			mc.use_null_device = ma_null_device;
-			mc.backend_name = audio_backend;
-			mb = ardop_backend_ma_open(&mc, &ops);
-			if (!mb) {
-				fputs("ardop-spine: cannot open audio\n", stderr);
-				ardop_ptt_close(ptt);
+			/* Everything with a real device goes through the manager,
+			 * which owns the sound card and the keying line together
+			 * and can rebuild both without restarting the program. */
+			dv = app_devices_new();
+			if (!dv) {
+				fputs("ardop-spine: out of memory\n", stderr);
+				app_close(sp);
+				return 1;
+			}
+
+			app_device_selection sel;
+			memset(&sel, 0, sizeof sel);
+
+			/* A saved selection is the starting point; anything named
+			 * on the command line overrides it, so --audio still works
+			 * exactly as before and a configured station needs no
+			 * arguments at all. */
+			if (config_path && strcmp(config_path, "-") != 0) {
+				ardop_settings st;
+				if (ardop_settings_load(&st, config_path)) {
+					app_devices_selection_load(&sel, &st);
+					if (st.skipped)
+						fprintf(stderr,
+							"config: skipped %zu "
+							"unreadable line(s)\n",
+							st.skipped);
+				}
+			}
+
+			if (cap)
+				snprintf(sel.capture_id, sizeof sel.capture_id,
+					 "%s", cap);
+			if (play)
+				snprintf(sel.playback_id, sizeof sel.playback_id,
+					 "%s", play);
+			if (audio_backend)
+				snprintf(sel.backend, sizeof sel.backend, "%s",
+					 audio_backend);
+			if (ptt_spec)
+				snprintf(sel.ptt_spec, sizeof sel.ptt_spec, "%s",
+					 ptt_spec);
+			if (ma_null_device)
+				sel.null_device = true;
+
+			if (!app_devices_request(dv, &sel)) {
+				fputs("ardop-spine: cannot queue the device "
+				      "request\n", stderr);
+				app_devices_free(dv);
 				app_close(sp);
 				return 1;
 			}
 		}
-		/* The backend knows the block it wants; ardopb has always read it
-		 * (shell/main.c:332) and the spine did not. It arrives with the
-		 * backend so the two cannot disagree. */
-		app_set_platform(sp, &ops, mb ? ardop_backend_ma_block(mb) : 0);
 	}
 
 	/* The TNC interface. Bound after the spine exists and before the script
@@ -242,10 +253,13 @@ int main(int argc, char **argv)
 		if (!app_script_pump(sc))
 			break;
 
-		if (lb)
+		if (lb) {
 			app_loopback_step(lb);
-		else
+		} else {
+			if (dv)
+				app_devices_service(dv, sp);
 			app_step(sp);
+		}
 
 		/* Drain both queues on both sides every step. The event queue is
 		 * lossless and nothing else empties it; the display queue is
@@ -271,18 +285,14 @@ int main(int argc, char **argv)
 		/* Device faults are detected here, where the backend's type is
 		 * known, and reacted to in the spine, where a user interface can
 		 * see the reaction. */
-		/* Both, with a fallthrough. A ternary here was a real defect: PTT
-		 * is only ever opened alongside the miniaudio backend, so
-		 * `mb ? ma_fault : ptt_fault` meant the PTT latch was unreachable
-		 * in the one configuration where a PTT exists. */
-		ardop_fault f = ardop_backend_ma_fault(mb);
-		if (f == ARDOP_FAULT_NONE)
-			f = ardop_ptt_fault(ptt);
-		if (f != ARDOP_FAULT_NONE) {
-			app_report_fault(sp, app_fault_of(f), ardop_fault_str(f));
+		/* Device faults are detected and reported by the manager, which
+		 * owns both the backend and the keying line -- and polls both,
+		 * with a fallthrough. A ternary here was a real defect: PTT is
+		 * only ever opened alongside a real audio backend, so
+		 * `mb ? ma_fault : ptt_fault` left the PTT latch unreachable in
+		 * the one configuration where a PTT exists. */
+		if (app_run_state_of(sp) == APP_RUN_FAULTED && rc == 0)
 			rc = 1;
-			break;
-		}
 
 		if (!lb && ops.should_stop && ops.should_stop(ops.ctx))
 			break;
@@ -297,12 +307,19 @@ out:
 	 * then the spine (which unkeys), then the audio device, then PTT last --
 	 * unkeying must outlive the device that keyed. */
 	ardop_host_tcp_close(host);
-	if (lb)
+	if (lb) {
 		app_loopback_close(lb);
-	else
+	} else {
+		/* The manager closes in the one order that cannot leave a
+		 * transmitter keyed: detach the spine, then the backend, then
+		 * PTT. app_close unkeys through the bound platform, so it runs
+		 * while the backend is still alive. */
 		app_close(sp);
-	ardop_backend_ma_close(mb);
-	ardop_ptt_close(ptt);
+		if (dv) {
+			app_devices_close(dv, NULL);
+			app_devices_free(dv);
+		}
+	}
 
 	fprintf(stderr, "ardop-spine: %s\n", rc ? "failed" : "done");
 	return rc;

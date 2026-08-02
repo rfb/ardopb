@@ -569,6 +569,15 @@ ardop_fault ardop_backend_ma_fault(const ardop_ma_backend *b)
 		memory_order_relaxed);
 }
 
+void ardop_backend_ma_stall_capture(ardop_ma_backend *b)
+{
+	if (!b || !b->capture_started)
+		return;
+	/* Stopping the device stops the callback, which is precisely what an
+	 * unplug does. The handle stays valid so close() still works. */
+	ma_device_stop(&b->capture);
+}
+
 ardop_audio_match ardop_backend_ma_capture_match(const ardop_ma_backend *b)
 {
 	return b ? b->cap_match : ARDOP_AUDIO_MATCH_NONE;
