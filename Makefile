@@ -87,7 +87,8 @@ endif
 # The miniaudio backend and everything it needs. ptt.o is here rather than in
 # SHELL_OBJS because it talks to serial ports and rigctld -- it is device code.
 MA_OBJS = shell/backend_ma.o shell/ma_impl.o shell/audio_devices.o \
-	shell/ptt.o shell/ptt_cat.o shell/ptt_cm108.o
+	shell/ptt.o shell/ptt_cat.o shell/ptt_cm108.o shell/usbtopo.o \
+	shell/radios.o
 
 # core/ is held to a strict standard: -Werror and no mutable global state
 # (enforced by check-pure).  The shell/ and apps/ layers compose it under the
@@ -153,6 +154,9 @@ shell/ptt.o: shell/ptt.c
 # ptt_cm108.c reads sysfs (dirent) on Linux and SetupAPI on Windows; ptt_cat.c is
 # pure and needs nothing, but shares the rule for symmetry.
 shell/ptt_cm108.o: shell/ptt_cm108.c
+	$(CC) -I. -D_DEFAULT_SOURCE $(CORE_CPPFLAGS) $(CFLAGS) $(CORE_CFLAGS) -c -o $@ $<
+# usbtopo.c walks sysfs: dirent and readlink.
+shell/usbtopo.o: shell/usbtopo.c
 	$(CC) -I. -D_DEFAULT_SOURCE $(CORE_CPPFLAGS) $(CFLAGS) $(CORE_CFLAGS) -c -o $@ $<
 
 # shell/ma_impl.c is the ONE translation unit in the tree not held to
@@ -323,6 +327,7 @@ CORE_TESTS = \
 	test/core/test_settings$(EXE) \
 	test/core/test_devices$(EXE) \
 	test/core/test_ptt$(EXE) \
+	test/core/test_usbtopo$(EXE) \
 	test/core/test_backend_ma$(EXE)
 
 define newline
@@ -370,6 +375,14 @@ test-app-tsan: test/core/stress_spine.c $(TSAN_SRCS)
 # is pure, but the test also enumerates against miniaudio's synthetic backend so
 # it exercises the real path on both hosts with no sound card.
 test/core/test_audio_devices$(EXE): test/core/test_audio_devices.c $(CORE_OBJS) \
+		$(TEMPLATES) $(SHELL_OBJS) $(MA_OBJS) test/core/setup.o
+	$(CC) $(CORE_CPPFLAGS) -I. -Itest/core $(CFLAGS) \
+		$< $(CORE_OBJS) $(TEMPLATES) $(SHELL_OBJS) $(MA_OBJS) \
+		test/core/setup.o \
+		-lcmocka $(AUDIO_LDLIBS) $(PTT_LDLIBS) $(PLATFORM_LDLIBS) -lm -o $@
+
+# test_usbtopo needs the topology walk and the radio table, both in MA_OBJS.
+test/core/test_usbtopo$(EXE): test/core/test_usbtopo.c $(CORE_OBJS) \
 		$(TEMPLATES) $(SHELL_OBJS) $(MA_OBJS) test/core/setup.o
 	$(CC) $(CORE_CPPFLAGS) -I. -Itest/core $(CFLAGS) \
 		$< $(CORE_OBJS) $(TEMPLATES) $(SHELL_OBJS) $(MA_OBJS) \

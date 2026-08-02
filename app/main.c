@@ -17,6 +17,7 @@
 #include "shell/ptt.h"
 #include "shell/settings.h"
 #include "shell/sys.h"
+#include "shell/usbtopo.h"
 
 /**
  * @file main.c
@@ -57,7 +58,57 @@ static const char kUsage[] =
 	"  --host PORT          host the TNC interface on PORT and PORT+1\n"
 	"  --config PATH        load the saved device selection from PATH\n"
 	"  --telemetry          compute spectrum and constellation telemetry\n"
-	"  --list-devices       print the sound devices and exit\n";
+	"  --list-devices       print the sound devices and exit\n"
+	"  --detect             print the radios found on the USB bus and exit\n";
+
+/*
+ * What the pairing found, for an operator to read.
+ *
+ * Prints and stops. Nothing is applied: a detected pairing is a suggestion, and
+ * a wrong guess that keys a transmitter is worse than no guess, so the operator
+ * confirms it with a PTT test before it becomes a configuration.
+ */
+static int print_detected(const char *backend_name)
+{
+	static ardop_radio_candidate c[16];
+	size_t n = ardop_radio_detect(c, sizeof c / sizeof c[0], backend_name);
+
+	if (n == 0) {
+		printf("\nNo radios detected.\n\n"
+		       "This finds a keying interface on the same USB hardware as\n"
+		       "a sound card, which covers a radio with a built-in codec\n"
+		       "and an interface like a DigiRig. A PCI or built-in sound\n"
+		       "card has no USB hardware to search, so nothing is found\n"
+		       "and the device pickers are the whole story.\n");
+		return 1;
+	}
+
+	printf("\nDetected radios:\n");
+	for (size_t i = 0; i < n; i++) {
+		printf("\n  %s\n", c[i].model[0] ? c[i].model
+						  : (c[i].audio_name[0]
+							     ? c[i].audio_name
+							     : "(unknown device)"));
+		printf("      audio: %s\n",
+		       c[i].audio_id[0] ? c[i].audio_id : "(not resolved)");
+		if (c[i].ptt_spec[0])
+			printf("      ptt:   %s%s\n", c[i].ptt_spec,
+			       c[i].ptt_is_guess ? "   (from the hardware table)"
+						 : "   (a starting point)");
+		else
+			printf("      ptt:   none found on this hardware\n");
+		printf("      pair:  %s\n",
+		       c[i].link == ARDOP_USB_SAME_DEVICE
+			       ? "same USB device -- certain"
+			       : c[i].link == ARDOP_USB_SAME_HUB
+					 ? "same USB hub -- likely"
+					 : "no keying interface found");
+	}
+
+	printf("\nNothing has been applied. Try one with --audio and --ptt, and\n"
+	       "confirm it keys before trusting it.\n");
+	return 0;
+}
 
 enum backend_kind { BACKEND_LOOPBACK, BACKEND_NULL, BACKEND_MA };
 
@@ -82,6 +133,8 @@ int main(int argc, char **argv)
 			audio_backend = argv[i + 1];
 		if (strcmp(argv[i], "--list-devices") == 0)
 			return ardop_audio_print_devices(audio_backend) ? 0 : 1;
+		if (strcmp(argv[i], "--detect") == 0)
+			return print_detected(audio_backend);
 	}
 
 	for (int i = 1; i < argc; i++) {
