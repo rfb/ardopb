@@ -51,6 +51,10 @@ add_executable(ardop-station
     stationpage.cpp
     consolepage.cpp
     guestspage.cpp
+    transcript.cpp
+    aspsession.cpp
+    chatpage.cpp
+    filespage.cpp
     levelmeter.cpp
     sessionhistory.cpp
     historygrid.cpp
@@ -110,6 +114,8 @@ add_executable(test_widgets EXCLUDE_FROM_ALL
     test_widgets.cpp
     levelmeter.cpp
     sessionhistory.cpp
+    transcript.cpp
+    aspsession.cpp
     ${ARDOP_ROOT}/gui/waterfallwidget.cpp
     ${ARDOP_ROOT}/gui/telemetryclient.cpp
     ${ARDOP_ROOT}/gui/panelsource.h)

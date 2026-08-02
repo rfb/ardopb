@@ -47,6 +47,8 @@ void SpineSource::pump()
 			       : QString::fromUtf8(ds.detail[0] ? ds.detail
 								: "no audio device"));
 	}
+
+	emit pumped();
 }
 
 void SpineSource::drainDisplay()

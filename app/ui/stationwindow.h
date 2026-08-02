@@ -7,9 +7,12 @@
 #include <QTabWidget>
 #include <QTimer>
 
+#include "aspsession.h"
+#include "chatpage.h"
 #include "constellationwidget.h"
 #include "consolepage.h"
 #include "devicespage.h"
+#include "filespage.h"
 #include "guestspage.h"
 #include "historypage.h"
 #include "levelmeter.h"
@@ -99,6 +102,10 @@ private slots:
 	/** @brief Write `station.*` out. Debounced -- see the implementation. */
 	void saveStation();
 
+protected:
+	/** @brief Flush a debounced save, so quitting cannot discard one. */
+	void closeEvent(QCloseEvent *event) override;
+
 private:
 	QWidget *buildPanel();
 	void connectPanel();
@@ -114,9 +121,16 @@ private:
 	TelemetryClient *m_client = nullptr;
 	PanelSource *m_source = nullptr;
 
+	/* The chat and file protocol. One session, two screens: they travel over
+	 * the same connection and share one transmit credit, so a second owner
+	 * would be a second answer to "are we connected". */
+	AspSession *m_asp = nullptr;
+
 	QTabWidget *m_tabs = nullptr;
 	DevicesPage *m_devices = nullptr;
 	StationPage *m_station = nullptr;
+	ChatPage *m_chat = nullptr;
+	FilesPage *m_files = nullptr;
 	ConsolePage *m_console = nullptr;
 	GuestsPage *m_guests = nullptr;
 	SessionHistory *m_history = nullptr;

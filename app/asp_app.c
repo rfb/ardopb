@@ -275,17 +275,26 @@ bool asp_app_send_file(asp_app *a, const char *path)
 
 	/* The whole file, once, for the CRC. There is no way to fill in OFFER
 	 * without it, and doing it now means the receiver's answer is
-	 * meaningful the moment it arrives. */
-	uint32_t crc = ASP_CRC32_INIT, size = 0;
+	 * meaningful the moment it arrives.
+	 *
+	 * Counted in 64 bits even though the wire field is 32, so that a file
+	 * too large to offer is *detected* rather than wrapped. */
+	uint32_t crc = ASP_CRC32_INIT;
+	uint64_t size = 0;
 	uint8_t buf[IO_CHUNK];
 	size_t n;
 	while ((n = fread(buf, 1, sizeof buf, f)) > 0) {
 		crc = asp_crc32(crc, buf, n);
-		size += (uint32_t)n;
+		size += n;
 	}
 	if (size == 0) {
 		fclose(f);
 		note(a, "that file is empty");
+		return false;
+	}
+	if (size > ASP_APP_MAX_FILE) {
+		fclose(f);
+		note(a, "that file is too large to offer; see ASP_APP_MAX_FILE");
 		return false;
 	}
 
@@ -301,7 +310,7 @@ bool asp_app_send_file(asp_app *a, const char *path)
 	a->send_fp = f;
 	snprintf(a->send_name, sizeof a->send_name, "%s", safe);
 
-	if (!asp_offer_file(&a->session, safe, NULL, size, crc)) {
+	if (!asp_offer_file(&a->session, safe, NULL, (uint32_t)size, crc)) {
 		fclose(a->send_fp);
 		a->send_fp = NULL;
 		return false;

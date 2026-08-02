@@ -264,8 +264,18 @@ void StationPage::applyExternalChange(const QString &reply)
 
 	if (key == QLatin1String("MYCALL")) {
 		m_mycall->setText(value);
+		/*
+		 * Still suppressed, unlike the first version of this, which
+		 * cleared the flag before re-running the handler and so echoed
+		 * the guest's callsign straight back at the modem *and* saved it
+		 * to the operator's file -- the two things the comment three
+		 * lines up says this must not do. What the handler is wanted for
+		 * is the validation, the gate, and telling the protocol layer
+		 * which callsign is now on the air; ::callsignChanged carries
+		 * that and is emitted regardless of this flag.
+		 */
+		onMycallEdited();
 		m_loading = false;
-		onMycallEdited();   /* re-runs validation and the gate */
 		return;
 	}
 	if (key == QLatin1String("GRIDSQUARE"))
@@ -327,6 +337,15 @@ void StationPage::onMycallEdited()
 		emit settingsChanged();
 	}
 	updateGate();
+
+	/*
+	 * Emitted even while loading, and even for a guest's change, because
+	 * this one is not about the settings file: it says what callsign this
+	 * station is currently operating under, and anything that identifies
+	 * with it -- the chat and file protocol's HELLO -- has to agree with the
+	 * modem rather than with the file.
+	 */
+	emit callsignChanged(callsign());
 }
 
 void StationPage::onGridEdited()
@@ -519,6 +538,11 @@ void StationPage::applySaved(const ardop_settings *s)
 	m_modem->submitConfig(APP_CFG_FECREPEATS, (long)m_fecrepeats->value());
 	m_modem->submitConfig(APP_CFG_BUSYDET, (long)m_busydet->value());
 	onFlagToggled();
+}
+
+QString StationPage::callsign() const
+{
+	return m_callsignOk ? m_mycall->text().trimmed().toUpper() : QString();
 }
 
 void StationPage::store(ardop_settings *s) const

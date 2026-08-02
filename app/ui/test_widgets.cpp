@@ -30,8 +30,10 @@
 #include <cmath>
 #include <cstring>
 
+#include "aspsession.h"
 #include "levelmeter.h"
 #include "sessionhistory.h"
+#include "transcript.h"
 #include "waterfallwidget.h"
 
 namespace {
@@ -280,6 +282,81 @@ void history_wraps_without_losing_order(void)
 	check(ordered, "every record in between is in order across the wrap");
 }
 
+/*
+ * The transcript renders text as text.
+ *
+ * This is not a hypothetical. The Console once showed every received line as a
+ * bare timestamp with its content missing, because the direction marker `<<` is
+ * also the start of an HTML tag and appendHtml believed the second reading.
+ *
+ * On the Console that was cosmetic and about our own modem's output. On the Chat
+ * screen the same code path renders **text a stranger sent over the radio**, so
+ * the failure is a peer deciding what this station's operator sees. Hence a test
+ * rather than a comment, and hence one implementation rather than three.
+ */
+void transcript_renders_text_as_text(void)
+{
+	Transcript t;
+
+	t.append(QStringLiteral("<<"), QStringLiteral("plain"));
+	check(t.plainText().contains(QStringLiteral("<< plain")),
+	      "a marker that looks like a tag survives as a marker");
+
+	t.append(QStringLiteral(">>"),
+		 QStringLiteral("<b>bold</b> & <img src=x> 5 < 6"));
+	const QString out = t.plainText();
+	check(out.contains(QStringLiteral("<b>bold</b>")),
+	      "markup from a peer is shown, not obeyed");
+	check(out.contains(QStringLiteral("<img src=x>")),
+	      "and so is anything that would fetch something");
+	check(out.contains(QStringLiteral("5 < 6")),
+	      "a bare < is text, not the start of a tag");
+	check(out.contains(QStringLiteral("&")) &&
+		      !out.contains(QStringLiteral("&amp;")),
+	      "an ampersand is escaped once and not twice");
+
+	/* A peer can send newlines. Rendered as line breaks rather than as
+	 * spaces, which is what an unescaped appendHtml does with them. */
+	const int before = t.plainText().count(QLatin1Char('\n'));
+	t.append(QStringLiteral("<<"), QStringLiteral("two\nlines"));
+	check(t.plainText().count(QLatin1Char('\n')) == before + 2,
+	      "a newline inside a message stays a line break");
+}
+
+/*
+ * Which link states carry a chat and file session.
+ *
+ * Two of the ten would be wrong in opposite directions and neither would be
+ * loud about it: opening in ISS_CON_REQ queues a HELLO for a connection that
+ * may never be answered -- it would then go out at the start of whatever
+ * session happens next, to whoever that turns out to be -- and opening in
+ * FEC_SEND puts a session protocol into a broadcast that has no peer to have a
+ * session with.
+ */
+void session_follows_the_link(void)
+{
+	check(!AspSession::carriesSession(ARDOP_LINK_DISC),
+	      "no session while disconnected");
+	check(!AspSession::carriesSession(ARDOP_LINK_ISS_CON_REQ),
+	      "no session while a connect request is unanswered");
+	check(!AspSession::carriesSession(ARDOP_LINK_FEC_SEND),
+	      "no session during an FEC broadcast");
+
+	check(AspSession::carriesSession(ARDOP_LINK_ISS),
+	      "a session while sending");
+	check(AspSession::carriesSession(ARDOP_LINK_IRS_DATA),
+	      "a session while receiving");
+	check(AspSession::carriesSession(ARDOP_LINK_IDLE),
+	      "a session while connected with nothing to send");
+
+	/* The turnover states in particular: the link changes role several
+	 * times during one transfer, and a session that ended at each of them
+	 * would restart the protocol in the middle of a file. */
+	check(AspSession::carriesSession(ARDOP_LINK_IRS_TO_ISS) &&
+		      AspSession::carriesSession(ARDOP_LINK_IRS_FROM_ISS),
+	      "a turnover does not end the session");
+}
+
 }   // namespace
 
 int main(int argc, char **argv)
@@ -327,5 +404,7 @@ int main(int argc, char **argv)
 	meter_band_colours_both_faults();
 	history_turn_time();
 	history_wraps_without_losing_order();
+	transcript_renders_text_as_text();
+	session_follows_the_link();
 	return failures ? 1 : 0;
 }

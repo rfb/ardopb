@@ -1027,3 +1027,57 @@ and the code as it was built disagreed.
    learns what a frame record is -- the display queue carries the wire format and
    passes it through untouched. The whole feature is one record kind, three
    emissions beside observations that already fire, and four files in `app/ui/`.
+
+8. **§3's last two screens are built, and one widget now serves three of them.**
+
+   Chat and Files are the screens a session is *for*, so they sit beside Station
+   rather than at the end of the tab bar. Neither owns the protocol:
+   `app/ui/aspsession.cpp` does, for the reason recorded in
+   [17](17-application-protocol.md) amendment 9.
+
+   **§3's "send queue" turned out not to exist.** The table above asks Files for
+   a send queue, a receive list and per-transfer progress. [17](17-application-protocol.md)
+   §4 had already answered the first of those before this screen was drawn:
+   there is **one transfer per direction**, because concurrency at 300 B/s makes
+   both transfers slower and neither more likely to finish. So there is nothing
+   to queue and nothing to draw — there is a transfer, or there is not. A screen
+   built to the table would have had a list widget that can hold one row.
+
+   What the design did not ask for and the screen needs is a **rate and an
+   estimate**. At a few hundred bytes a second a transfer is measured in minutes
+   to hours, and a bar with no rate on it is not enough information to answer the
+   only question an operator has, which is whether to wait. It is averaged over
+   the whole transfer rather than sampled, because the instantaneous rate on a
+   half-duplex link is either the full mode rate or zero depending on whose turn
+   it is, and neither of those is the number being asked for.
+
+   **The transcript is one widget now, and it is tested.** Three screens wanted
+   the same thing, and the first two had it written twice. `app/ui/transcript.cpp`
+   is the single implementation — and consolidating it is what made the escaping
+   worth a test rather than a comment.
+
+   Amendment 4's general form applies again, in a different medium. The Console
+   once rendered every received line as a bare timestamp with its content
+   missing, because the direction marker `<<` is both an arrow and the start of
+   an HTML tag and `appendHtml` believed the second reading. On the Console that
+   was cosmetic and concerned our own modem's output. **The Chat screen runs the
+   same code path over text a stranger sent by radio**, where the identical
+   mistake is a peer choosing what this station's operator sees. So the widget
+   takes plain text and marked-up text cannot be passed in, and `test_widgets.cpp`
+   asserts that `<b>`, `<img src=x>`, a bare `<` and an embedded newline all
+   survive as themselves.
+
+   **Two layout defects, both found by rendering it** — which is now three
+   amendments in a row where that was the only way. The transfer log was given a
+   stretch factor and got a two-line slot, because the four fixed-height groups
+   above it take the space first; it has a floor of its own now. And a progress
+   bar can be handed a transfer this screen never saw begin — an offer
+   auto-accepted before the tab was opened — which labelled it with an empty
+   string and read as a bug.
+
+   **Where received files go is a Qt answer, not a portable-C one.** Everything
+   else in the tree resolves paths through `shell/sys.c`, but `ardop_config_dir`
+   is a dotted directory on Linux: a good place for settings and a bad one for a
+   file somebody just waited twenty minutes for. `QStandardPaths` knows where
+   each platform actually puts arriving files, and this is the one place where
+   the toolkit knows something the C layer does not.

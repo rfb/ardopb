@@ -102,6 +102,18 @@ signals:
 	/** @brief An attached TNC client did something. @p code is ::app_guest_code. */
 	void guestEvent(int code, const QString &text);
 
+	/**
+	 * @brief Both queues have been drained; anything waiting may now move.
+	 *
+	 * Emitted last, which is the whole of its meaning: received payload has
+	 * already been delivered by ::received, so a protocol above can answer
+	 * within the same tick rather than on the next one. It is also the right
+	 * cadence for anything watching transmit credit -- credit changes as
+	 * frames drain and has no event of its own by design (`spine.h`), so
+	 * whoever needs it polls, and this is when.
+	 */
+	void pumped();
+
 private slots:
 	void pump();
 

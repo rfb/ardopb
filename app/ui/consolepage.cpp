@@ -1,11 +1,9 @@
 #include "consolepage.h"
 
-#include <QDateTime>
 #include <QFontDatabase>
 #include <QHBoxLayout>
 #include <QKeyEvent>
 #include <QLabel>
-#include <QScrollBar>
 #include <QVBoxLayout>
 
 /**
@@ -18,14 +16,7 @@ ConsolePage::ConsolePage(ModemThread *modem, QWidget *parent)
 {
 	auto *root = new QVBoxLayout(this);
 
-	m_transcript = new QPlainTextEdit(this);
-	m_transcript->setReadOnly(true);
-	m_transcript->setFont(
-		QFontDatabase::systemFont(QFontDatabase::FixedFont));
-	/* Bounded like everything else here. Deep enough to hold a whole Winlink
-	 * session's command traffic, which is what someone will be asked to
-	 * paste into a bug report. */
-	m_transcript->setMaximumBlockCount(5000);
+	m_transcript = new Transcript(true, this);
 	root->addWidget(m_transcript, 1);
 
 	auto *row = new QHBoxLayout;
@@ -38,21 +29,14 @@ ConsolePage::ConsolePage(ModemThread *modem, QWidget *parent)
 	m_entry->installEventFilter(this);   /* for Up and Down */
 	row->addWidget(m_entry, 1);
 
-	m_autoscroll = new QCheckBox(tr("Follow"), this);
-	m_autoscroll->setChecked(true);
-	m_autoscroll->setToolTip(
-		tr("Scroll to the newest line. Turn this off to read back "
-		   "while traffic is still arriving."));
-	row->addWidget(m_autoscroll);
-
 	root->addLayout(row);
 
 	connect(m_entry, &QLineEdit::returnPressed, this, &ConsolePage::onSubmit);
 
-	append(QStringLiteral("--"),
-	       tr("Commands go to the same parser a TNC client reaches. "
-		  "Anything a client can do, this can do."),
-	       "#7f8c8d");
+	m_transcript->append(QStringLiteral("--"),
+			     tr("Commands go to the same parser a TNC client "
+				"reaches. Anything a client can do, this can do."),
+			     "#7f8c8d");
 }
 
 /*
@@ -94,11 +78,12 @@ void ConsolePage::onSubmit()
 	/* Echoed before it is sent, and echoed even if the queue refuses it, so
 	 * the transcript is a record of what the operator asked for and not only
 	 * of what got through. */
-	append(QStringLiteral(">>"), line, "#4fa3e8");
+	m_transcript->append(QStringLiteral(">>"), line, "#4fa3e8");
 
 	if (!m_modem->submitLine(line))
-		append(QStringLiteral("!!"),
-		       tr("not sent: the command queue is full"), "#c0392b");
+		m_transcript->append(QStringLiteral("!!"),
+				     tr("not sent: the command queue is full"),
+				     "#c0392b");
 
 	if (m_history.isEmpty() || m_history.last() != line)
 		m_history << line;
@@ -111,47 +96,11 @@ void ConsolePage::appendReply(const QString &text)
 	/* A FAULT is a reply like any other and belongs in sequence; it is
 	 * coloured because it is the line someone is looking for. */
 	const bool fault = text.startsWith(QLatin1String("FAULT"));
-	append(QStringLiteral("<<"), text, fault ? "#c0392b" : "#2ecc71");
+	m_transcript->append(QStringLiteral("<<"), text,
+			     fault ? "#c0392b" : "#2ecc71");
 }
 
 void ConsolePage::appendMessage(const QString &text)
 {
-	append(QStringLiteral(" *"), text, "#d89b2e");
-}
-
-void ConsolePage::append(const QString &prefix, const QString &text,
-			 const char *colour)
-{
-	/*
-	 * Preserving the scroll position when Follow is off is the whole reason
-	 * this is not three calls to appendPlainText: a transcript that yanks
-	 * itself to the bottom while someone is reading back through it is one
-	 * they cannot read back through.
-	 */
-	QScrollBar *bar = m_transcript->verticalScrollBar();
-	const int wasAt = bar->value();
-	const bool follow = m_autoscroll->isChecked();
-
-	/*
-	 * The prefix is escaped as carefully as the text.
-	 *
-	 * "<<" is a perfectly good direction marker and a perfectly good start
-	 * of an HTML tag, and appendHtml believes the second reading: every
-	 * received line rendered as a bare timestamp with its content swallowed.
-	 * Leading spaces collapse too, so the marker is padded with &nbsp;.
-	 */
-	QString mark = prefix.toHtmlEscaped();
-	mark.replace(QLatin1Char(' '), QLatin1String("&nbsp;"));
-
-	m_transcript->appendHtml(
-		QStringLiteral("<span style='color:#7f8c8d'>%1</span> "
-			       "<span style='color:%2'>%3 %4</span>")
-			.arg(QDateTime::currentDateTime().toString("HH:mm:ss"),
-			     QString::fromUtf8(colour), mark,
-			     text.toHtmlEscaped()));
-
-	if (follow)
-		bar->setValue(bar->maximum());
-	else
-		bar->setValue(wasAt);
+	m_transcript->append(QStringLiteral(" *"), text, "#d89b2e");
 }

@@ -1,13 +1,12 @@
 #ifndef ARDOP_UI_CONSOLEPAGE_H_
 #define ARDOP_UI_CONSOLEPAGE_H_
 
-#include <QCheckBox>
 #include <QLineEdit>
-#include <QPlainTextEdit>
 #include <QStringList>
 #include <QWidget>
 
 #include "modemthread.h"
+#include "transcript.h"
 
 /**
  * @file consolepage.h
@@ -55,12 +54,9 @@ private slots:
 	void onSubmit();
 
 private:
-	void append(const QString &prefix, const QString &text, const char *colour);
-
 	ModemThread *m_modem = nullptr;
-	QPlainTextEdit *m_transcript = nullptr;
+	Transcript *m_transcript = nullptr;
 	QLineEdit *m_entry = nullptr;
-	QCheckBox *m_autoscroll = nullptr;
 
 	/* Up and Down walk this, like every other command line an operator has
 	 * used. Kept here rather than in a QCompleter because the useful

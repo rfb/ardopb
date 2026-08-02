@@ -63,6 +63,16 @@ public:
 	/** @brief Write the current values into @p s under `station.*`. */
 	void store(ardop_settings *s) const;
 
+	/**
+	 * @brief This station's callsign, or empty if it is not a valid one.
+	 *
+	 * The chat and file protocol introduces itself with it, and an empty
+	 * answer is the right one for a field that has not been filled in yet --
+	 * a HELLO carrying half a callsign somebody was in the middle of typing
+	 * would identify this station as somebody else.
+	 */
+	QString callsign() const;
+
 public slots:
 	/**
 	 * @brief Follow the link state, so the session controls match reality.
@@ -109,6 +119,17 @@ signals:
 
 	/** @brief Something the operator should see in the log. */
 	void message(const QString &text);
+
+	/**
+	 * @brief The station's callsign changed, from wherever.
+	 *
+	 * Separate from ::settingsChanged because the two questions have
+	 * different answers for a guest's `MYCALL`: the running station has a
+	 * new callsign and everything that identifies with it must be told, but
+	 * the operator's settings file keeps theirs. Empty when what is in the
+	 * field is not a valid callsign.
+	 */
+	void callsignChanged(const QString &call);
 
 private slots:
 	void onMycallEdited();

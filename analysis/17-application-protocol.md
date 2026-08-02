@@ -533,4 +533,54 @@ framing by hand with nothing checking the two agree. ASP should not repeat that.
 8. **Still to build:** the Chat and Files screens. Everything under them works:
    the protocol, its own tests, the application-side `asp_io`, and a file that
    arrives byte-identical over a real ARQ link with turnovers and collisions in
-   it. Nothing is blocked.
+   it. Nothing is blocked. *(Built; see amendment 9.)*
+
+9. **The screens are built, and the session belongs to neither of them.**
+
+   `app/ui/aspsession.cpp` owns the one `asp_app` and both screens are views of
+   it. That is not tidiness: chat and files travel over the same connection,
+   share one transmit credit and end together when the link drops, so two owners
+   would be two answers to "are we connected".
+
+   Three things the design above did not settle, each decided against something
+   already written down elsewhere:
+
+   **A session exists only when an ARQ connection does.** `asp_open` documents
+   "call on every new ARQ connection", so the session is opened when the link
+   comes up and closed when it goes down, and nothing survives a disconnect
+   except the `.part` file — which is the whole of §5's resume story. Two link
+   states that are *not* `DISC` still do not carry a session: `ISS_CON_REQ`,
+   where a ConReq is out and nothing has answered it, and `FEC_SEND`, which §1
+   gives its own profile and no file transfer at all.
+
+   **A TNC guest ends our session.** [14](14-station-application.md) Decision 4
+   gives the link a single session owner, and §2 above says that when Pat holds
+   the link ASP is not running — *"nothing in this document needs to accommodate
+   it"*. True of the wire format, and not true of the program: the spine would
+   have refused our submissions silently, leaving a chat window that swallows
+   everything typed into it. So a guest attaching closes the session and both
+   screens say why.
+
+   **Raw mode is a state to display, not a failure to report.** §2 makes the
+   HELLO decision once and never revisits it; the screen says "the other station
+   is not running this program, so this is plain text in both directions — chat
+   works, file transfer does not". That is one sentence covering what the mode
+   is, what still works and what does not, in place of a greyed-out button an
+   operator would go looking for a reason for.
+
+   **A defect found by building the caller.** `asp_app_send_file` accumulated the
+   file's size into a `uint32_t`, so a file above 4 GB wrapped to a plausible
+   small number and produced an offer nobody could satisfy and a CRC failure
+   hours later. It now counts in 64 bits and refuses anything above
+   `ASP_APP_MAX_FILE` — 2 GB − 1, which is the lower of the two real ceilings:
+   `OFFER` carries a `u32` size, and `asp_io::read_file` seeks with `fseek`,
+   whose offset is a `long` and therefore 32 bits on Windows. Not a constraint
+   worth mourning on a mode that moves a few hundred bytes a second; the limit is
+   over two months of continuous transmission.
+
+   Still not built: **the FEC profile**. `TEXT_B` is framed, tested and decoded,
+   but nothing sends one and `asp_app_rx` accepts only `ARQ`-tagged payload, so
+   no `FEC` bytes reach the parser that would handle it. What is missing is the
+   profile around the message rather than the message: no session, no peer, the
+   `FECREPEATS` duplicates to deduplicate on `(callsign, msg_id)`, and a screen
+   where a broadcast is addressed to nobody.

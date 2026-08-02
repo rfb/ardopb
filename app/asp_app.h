@@ -137,6 +137,21 @@ bool asp_app_send_text(asp_app *a, const char *text);
  */
 bool asp_app_send_file(asp_app *a, const char *path);
 
+/**
+ * @brief The largest file that can be offered.
+ *
+ * Two independent ceilings meet here and this is the lower of them. `OFFER`
+ * carries the size as a `u32`, and ::asp_io::read_file seeks with `fseek`, whose
+ * offset is a `long` -- 32 bits on Windows. So 2 GB - 1 is what both can express,
+ * and a file above it is refused rather than silently wrapped: `size += (uint32_t)n`
+ * over a 5 GB file produces a plausible small number, an offer nobody can satisfy,
+ * and a CRC failure hours later.
+ *
+ * Not a real constraint on a mode that moves a few hundred bytes a second: this
+ * ceiling is over two months of continuous transmission.
+ */
+#define ASP_APP_MAX_FILE 0x7fffffffu
+
 /** @brief Answer a deferred offer. */
 bool asp_app_answer(asp_app *a, bool accept);
 

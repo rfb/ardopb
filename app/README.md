@@ -176,28 +176,43 @@ transmit credit, and the only one that takes part in the release/acquire pairing
 
 ## Status
 
-Phases 1 and 2 of five (workstreams A and B). What works: the seam, the three
-queues, transmit backpressure, the TNC takeover rule against a real client, a
-complete ARQ session over the loopback, the sanitised two-thread proof — and
-device selection, which is what made this an application rather than a daemon.
+Workstreams A through E. What works: the seam, the three queues, transmit
+backpressure, the TNC takeover rule against a real client, a complete ARQ session
+over the loopback, the sanitised two-thread proof, device selection, the window,
+this station hosting other people's TNC clients, and chat and file transfer over
+a real link.
 
-An operator can now choose a sound card and a keying method, have the choice
-survive a restart, and recover from a device that disappears by selecting another
-rather than restarting the program. `--detect` finds a radio by pairing a sound
-card with the keying interface on the same USB hardware. See
+An operator can choose a sound card and a keying method, have the choice survive
+a restart, and recover from a device that disappears by selecting another rather
+than restarting the program. `--detect` finds a radio by pairing a sound card
+with the keying interface on the same USB hardware. See
 [`shell/README.md`](../shell/README.md) for what has and has not been run against
 real hardware.
 
+The application protocol is three files that stack, and the split is the point:
+
+| | Knows about |
+|---|---|
+| `asp_wire.c` | bytes. Pure — no state, no I/O, no allocation |
+| `asp.c` | a session. No transport and no storage; driven through `asp_io` |
+| `asp_app.c` | this spine and this filesystem. The only file naming both |
+
+`app/ui/aspsession.cpp` is a fourth and thinner layer that puts the result on the
+interface thread. `test/app/asp.script` moves a file between two spines through
+the real modulator and demodulator and compares it byte for byte.
+
 Not here yet:
 
-- **The user interface** (workstream C, [`analysis/16`](../analysis/16-user-interface.md)).
-  `gui/` remains the standalone panel for a *remote* station and is untouched.
-- **Chat and file transfer** (workstream E, [`analysis/17`](../analysis/17-application-protocol.md)).
 - **macOS and Android.** Windows and Linux first. Nothing here precludes them —
   that is what rule 2 is for.
-- **CMake.** It arrives with the interface, which is what needs it. The root
-  `Makefile` stays the authority for the mechanical guarantees
-  (`analysis/14` Decision 6).
+- **The FEC profile.** `TEXT_B` is specified, framed, tested and *decoded* — but
+  nothing sends one, and `asp_app_rx` only accepts `ARQ`-tagged payload, so no
+  `FEC`-tagged bytes reach the parser that would handle it. What is missing is
+  the whole profile around the message: no session, no peer, `FECREPEATS`
+  duplicates to deduplicate on `(callsign, msg_id)`, and a screen where a
+  broadcast is not addressed to anyone.
+- **`ARQTIMEOUT`.** Deliberately refused rather than faked; see
+  [`analysis/14`](../analysis/14-station-application.md) amendment 4.
 
 The tests live in `test/core/` rather than a `test/app/` of their own because
 that directory is really "the in-process suite", and a second one would need a
