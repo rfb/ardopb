@@ -17,6 +17,7 @@ Makefile text=auto
 
 # The golden corpus. A CRLF translation here would surface as ~130 mystery
 # conformance failures on Windows rather than as anything legible.
+*.svg text eol=lf
 *.gz binary
 *.wav binary
 manifest.json text eol=lf

@@ -192,7 +192,69 @@ typedef struct {
 	 * bytes x 16). PSK/QAM quality uses phases[]/mags[] directly. */
 	int32_t frame_tone_mags[16 * 759];
 	int tone_mags_len;           /**< Valid entries in frame_tone_mags. */
+
+	/* --- Memory ARQ ---------------------------------------------------
+	 *
+	 * A frame that no single reception can decode may decode from several
+	 * averaged together. ARDOP retransmits a failed frame unchanged, so
+	 * repeated copies differ only in their noise; averaging them raises the
+	 * effective S/N, and carriers that decoded in *different* copies can be
+	 * combined into one good frame even when no single copy was complete.
+	 *
+	 * State lives here, in the caller's context, because core/ has no
+	 * mutable globals (`make check-pure`). It makes the decoder stateful
+	 * across frames, which any harness driving it has to account for.
+	 *
+	 * The accumulate-versus-reset decision is taken locally, with no hint
+	 * from the link: ARDOP's even/odd frame-type alternation *is* the
+	 * retransmission signal, so "same type as the frame I just failed to
+	 * decode" means "retransmission" (analysis/10 Decision 2).
+	 *
+	 * @note The first copy is stored, never averaged, so a single reception
+	 *       decodes by exactly the path it did before Memory ARQ existed.
+	 *       `make golden-core` pins that.
+	 */
+	short marq_phase[ARDOP_DEMOD_MAX_CARRIERS][ARDOP_DEMOD_MAX_PSK_SYMBOLS];
+	                             /**< Running mean phase, milliradians. */
+	short marq_mag[ARDOP_DEMOD_MAX_CARRIERS][ARDOP_DEMOD_MAX_PSK_SYMBOLS];
+	                             /**< Running mean magnitude (QAM only). */
+	short marq_tone[16 * 759];   /**< Running mean 4FSK tone magnitudes,
+	                              *   normalised per symbol to 0..1000. */
+	int marq_tone_len;           /**< Valid entries in marq_tone. */
+	uint16_t marq_count[ARDOP_DEMOD_MAX_CARRIERS];
+	                             /**< Copies accumulated, per carrier. */
+	int marq_type;               /**< Frame type being accumulated, -1 none. */
+	int marq_len;                /**< phases_len the accumulator was built at. */
+	uint64_t marq_since;         /**< Sample count when accumulation began. */
 } ardop_demod;
+
+/**
+ * @brief How long an unused Memory-ARQ accumulator survives, in samples.
+ *
+ * Sample-counted, not wall-clock: the sample count is the only clock the core
+ * has, and tying this to it means a slow sound card slows the timeout by the
+ * same fraction it slows everything else (analysis/06 Rule 2). The inherited
+ * implementation used `1000 * ARQTimeout` against a millisecond clock, and a
+ * separate 36-second cap in FEC; 60 s at 12 kHz is comfortably longer than the
+ * longest frame plus a turnaround, and short enough that an unrelated frame of
+ * the same type minutes later cannot be averaged into a stale accumulator.
+ */
+#define ARDOP_MEMARQ_MAX_AGE_SAMPLES (60ull * 12000ull)
+
+/**
+ * @brief Discard any accumulated Memory-ARQ state.
+ *
+ * Called on a mode change, a new session, or when the link decides the
+ * accumulator is stale. The demodulator also does this itself when the frame
+ * type changes or the accumulator ages out.
+ */
+void ardop_demod_memarq_reset(ardop_demod *d);
+
+/**
+ * @brief Copies currently accumulated for @p carrier (0 if none). For tests
+ *        and telemetry; the decode path does not need it.
+ */
+unsigned ardop_demod_memarq_count(const ardop_demod *d, int carrier);
 
 /**
  * @brief Initialise a receiver with the two DSP-relevant host settings.

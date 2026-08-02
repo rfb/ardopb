@@ -271,6 +271,7 @@ CORE_TESTS = \
 	test/core/test_telemetry$(EXE) \
 	test/core/test_ring$(EXE) \
 	test/core/test_resample$(EXE) \
+	test/core/test_memarq$(EXE) \
 	test/core/test_backend_ma$(EXE)
 
 define newline
@@ -310,6 +311,17 @@ test/core/test_backend_ma$(EXE): test/core/test_backend_ma.c $(CORE_OBJS) \
 		test/core/setup.o \
 		-lcmocka $(AUDIO_LDLIBS) $(PLATFORM_LDLIBS) -lm -o $@
 
+# --- measurement (not part of the test sweep) ------------------------------
+#
+# memarq_bench drives the Memory-ARQ measurements in analysis/18. It is slow and
+# reports numbers rather than pass/fail, so it is built on request, not by
+# `make` or `make test-core`.
+.PHONY: memarq-bench
+memarq-bench: tools/memarq_bench$(EXE)
+tools/memarq_bench$(EXE): tools/memarq_bench.c $(CORE_OBJS) $(TEMPLATES)
+	$(CC) $(CORE_CPPFLAGS) $(CFLAGS) $(CORE_CFLAGS) \
+		$< $(CORE_OBJS) $(TEMPLATES) $(PLATFORM_LDLIBS) -lm -o $@
+
 # --- golden-corpus conformance (see test/golden/README.md) -----------------
 #
 # The frozen corpus of ardopcf-generated TX audio and recordings is the
@@ -347,4 +359,5 @@ clean:
 		test/core/*.o test/core/*.d $(CORE_TESTS) \
 		test/core/stress_ring$(EXE) \
 		test/golden/core_decode_wav$(EXE) test/golden/shell_decode_wav$(EXE) \
-		test/golden/shell_tx_wav$(EXE) test/golden/*.d
+		test/golden/shell_tx_wav$(EXE) test/golden/*.d \
+		tools/memarq_bench$(EXE) tools/*.d

@@ -40,6 +40,9 @@ void ardop_demod_init(ardop_demod *d, int tuning_range, int squelch)
 	d->tuning_range = tuning_range;
 	d->squelch = squelch;
 	d->prior_fine_offset = 1000.0f;
+	/* 0x00 is a real frame type (DataNAK), so "nothing accumulated" cannot
+	 * be the zero value. */
+	d->marq_type = -1;
 
 	/*
 	 * Resonator coefficients for the 2 kHz filter (bins 4..26). The
@@ -1272,6 +1275,208 @@ static void deliver_content_control(ardop_demod *d, ardop_event *events,
 	emit(events, nev, max_events, &ev);
 }
 
+/* --- Memory ARQ ------------------------------------------------------------
+ *
+ * See the state block in demodulate.h for what this is and why it lives in the
+ * caller's context. The mechanics:
+ *
+ *   - The first copy of a frame is *stored*, not averaged, so a single
+ *     reception decodes exactly as it did before any of this existed.
+ *   - From the second copy on, each still-failing carrier is averaged with
+ *     everything seen before it and re-decoded from the average.
+ *   - A carrier that has already decoded is left alone, and its bytes are
+ *     kept, so carriers recovered from *different* copies combine into one
+ *     good frame.
+ */
+
+void ardop_demod_memarq_reset(ardop_demod *d)
+{
+	memset(d->marq_count, 0, sizeof(d->marq_count));
+	d->marq_type = -1;
+	d->marq_len = 0;
+	d->marq_tone_len = 0;
+	d->marq_since = 0;
+	/* The accumulators themselves are not cleared: marq_count == 0 already
+	 * means "nothing here", and zeroing 40 kB on every frame boundary would
+	 * cost more than it saves. */
+}
+
+unsigned ardop_demod_memarq_count(const ardop_demod *d, int carrier)
+{
+	if (carrier < 0 || carrier >= ARDOP_DEMOD_MAX_CARRIERS)
+		return 0;
+	return d->marq_count[carrier];
+}
+
+/*
+ * Does the frame now being acquired continue the accumulation, or start over?
+ *
+ * Same frame type means retransmission: ARDOP alternates the even/odd type bit
+ * between *different* frames, so a repeat of the same type is by construction a
+ * repeat of the same content. No hint from the link is needed, which is what
+ * keeps this decidable inside the demodulator (analysis/10 Decision 2).
+ */
+static bool memarq_continues(const ardop_demod *d, uint64_t now_samples)
+{
+	if (d->marq_type < 0 || (int)d->frame_type != d->marq_type)
+		return false;
+	/* Only data frames repeat in a way worth averaging. */
+	if (!ardop_frame_is_data(d->frame_type))
+		return false;
+	if (now_samples < d->marq_since)
+		return false;   /* clock went backwards: treat as new. */
+	return (now_samples - d->marq_since) <= ARDOP_MEMARQ_MAX_AGE_SAMPLES;
+}
+
+/*
+ * Count-weighted circular mean of two angles in milliradians.
+ *
+ * Angles cannot be averaged arithmetically -- the mean of +3.1 and -3.1 radians
+ * is 0, which is the opposite of the right answer -- so each is taken to the
+ * unit circle, summed as vectors, and brought back with atan2.
+ *
+ * `n` is how many copies `acc` already represents, so the new sample gets
+ * weight 1/(n+1). The inherited implementation weighted both terms equally
+ * regardless of n, which let the newest copy carry half the total no matter how
+ * many preceded it. That is a deliberate divergence: Memory ARQ is receive-
+ * local and changes nothing on the air, so there is no interop reason to
+ * reproduce it, and averaging four copies evenly is the point of averaging
+ * four copies.
+ */
+static short circ_mean_mrad(short acc, short sample, unsigned n)
+{
+	float a = (float)acc / 1000.0f;
+	float b = (float)sample / 1000.0f;
+	float w = (float)n;
+	float x = w * cosf(a) + cosf(b);
+	float y = w * sinf(a) + sinf(b);
+	if (x == 0.0f && y == 0.0f)
+		return acc;   /* exactly opposed: no defined mean, keep what we had. */
+	return (short)lrintf(1000.0f * atan2f(y, x));
+}
+
+/* Fold one carrier's freshly demodulated symbols into its running mean, then
+ * write the mean back over the working arrays so the decode below uses it. */
+static void memarq_accumulate_psk(ardop_demod *d, int c, bool with_mags)
+{
+	unsigned n = d->marq_count[c];
+	int len = d->phases_len;
+	if (len > ARDOP_DEMOD_MAX_PSK_SYMBOLS)
+		len = ARDOP_DEMOD_MAX_PSK_SYMBOLS;
+
+	if (n == 0) {
+		for (int m = 0; m < len; m++) {
+			d->marq_phase[c][m] = d->phases[c][m];
+			d->marq_mag[c][m] = d->mags[c][m];
+		}
+	} else {
+		for (int m = 0; m < len; m++) {
+			d->marq_phase[c][m] = circ_mean_mrad(d->marq_phase[c][m],
+							     d->phases[c][m], n);
+			d->phases[c][m] = d->marq_phase[c][m];
+			if (with_mags) {
+				int acc = (int)d->marq_mag[c][m] * (int)n
+					  + (int)d->mags[c][m];
+				d->marq_mag[c][m] = (short)(acc / (int)(n + 1));
+				d->mags[c][m] = d->marq_mag[c][m];
+			}
+		}
+	}
+	d->marq_count[c] = (uint16_t)(n + 1);
+}
+
+/*
+ * 4FSK: average the tone magnitudes, normalised per symbol.
+ *
+ * Each symbol is four tone magnitudes and only their *ratio* carries the
+ * decision, so each group of four is scaled to sum to ARDOP_MEMARQ_TONE_SCALE
+ * before averaging. Without that, a copy arriving during a static crash would
+ * swamp every clean copy averaged with it -- the inherited code has a comment
+ * saying exactly this, and it is right.
+ */
+#define ARDOP_MEMARQ_TONE_SCALE 1000
+
+static void memarq_accumulate_fsk(ardop_demod *d, int c)
+{
+	unsigned n = d->marq_count[c];
+	int len = d->tone_mags_len;
+	if (len > (int)(sizeof(d->marq_tone) / sizeof(d->marq_tone[0])))
+		len = (int)(sizeof(d->marq_tone) / sizeof(d->marq_tone[0]));
+	len -= len % 4;
+
+	for (int m = 0; m < len; m += 4) {
+		double sum = 0.0;
+		for (int i = 0; i < 4; i++)
+			sum += (double)d->frame_tone_mags[m + i];
+		if (sum <= 0.0)
+			sum = 1.0;
+		for (int i = 0; i < 4; i++) {
+			double scaled = (double)d->frame_tone_mags[m + i] / sum
+					* ARDOP_MEMARQ_TONE_SCALE;
+			short s = (short)lrint(scaled);
+			if (n == 0) {
+				d->marq_tone[m + i] = s;
+			} else {
+				int acc = (int)d->marq_tone[m + i] * (int)n
+					  + (int)s;
+				d->marq_tone[m + i] =
+					(short)(acc / (int)(n + 1));
+				d->frame_tone_mags[m + i] =
+					d->marq_tone[m + i];
+			}
+		}
+	}
+	d->marq_tone_len = len;
+	d->marq_count[c] = (uint16_t)(n + 1);
+}
+
+/*
+ * Re-derive the frame's bytes from the averaged tone magnitudes.
+ *
+ * Unlike PSK and QAM, 4FSK bytes are decided during streaming -- by the time
+ * the frame is delivered, frame_data[] already holds one copy's answer, and
+ * averaging the magnitudes afterwards would change only the reported quality
+ * score. So the symbol decision is repeated here against the running mean.
+ *
+ * The decision must match ardop_demod_4fsk_char exactly, tie-break included:
+ * strictly-greater comparisons in order, falling through to symbol 3. Four
+ * symbols per byte, most significant pair first.
+ */
+static void memarq_redecode_fsk(ardop_demod *d)
+{
+	int nbytes = d->marq_tone_len / ARDOP_4FSK_CHAR_TONE_MAGS;
+	int per_part = d->frame_data_len + d->frame_rs_len + 3;
+
+	for (int b = 0; b < nbytes; b++) {
+		int part = 0, off = b;
+		if (d->frame_600 && per_part > 0) {
+			part = b / per_part;
+			off = b % per_part;
+		}
+		if (part >= ARDOP_DEMOD_MAX_CARRIERS
+		    || off >= ARDOP_DEMOD_MAX_CARRIER_BYTES)
+			continue;
+		if (d->carrier_ok[part])
+			continue;   /* already recovered from an earlier copy. */
+
+		uint8_t byte = 0;
+		for (int j = 0; j < 4; j++) {
+			const short *m = &d->marq_tone[(b * 4 + j) * 4];
+			uint8_t sym;
+			if (m[0] > m[1] && m[0] > m[2] && m[0] > m[3])
+				sym = 0;
+			else if (m[1] > m[0] && m[1] > m[2] && m[1] > m[3])
+				sym = 1;
+			else if (m[2] > m[0] && m[2] > m[1] && m[2] > m[3])
+				sym = 2;
+			else
+				sym = 3;
+			byte = (uint8_t)((byte << 2) + sym);
+		}
+		d->frame_data[part][off] = byte;
+	}
+}
+
 static void deliver_frame(ardop_demod *d, ardop_event *events, size_t *nev,
 			  size_t max_events)
 {
@@ -1290,6 +1495,33 @@ static void deliver_frame(ardop_demod *d, ardop_event *events, size_t *nev,
 	for (int c = 0; c < d->frame_num_car; c++) {
 		bool ok = false;
 		int net;
+
+		/*
+		 * Memory ARQ: fold this copy into the running mean before
+		 * decoding, and decode from the mean.
+		 *
+		 * Only for carriers that have not already decoded -- a carrier
+		 * recovered from an earlier copy keeps its bytes and is skipped
+		 * entirely. On the first copy the accumulators are merely
+		 * seeded, and phases[]/mags[] are left exactly as demodulated,
+		 * so a single reception takes the identical path it always did.
+		 */
+		if (!d->carrier_ok[c]) {
+			if (d->frame_mod == ARDOP_MOD_16QAM)
+				memarq_accumulate_psk(d, c, true);
+			else if (d->frame_mod == ARDOP_MOD_4PSK
+				 || d->frame_mod == ARDOP_MOD_8PSK)
+				memarq_accumulate_psk(d, c, false);
+			else if (d->frame_mod == ARDOP_MOD_4FSK && c == 0) {
+				/* 4FSK holds one tone stream for the whole
+				 * frame, not one per carrier, so it is folded
+				 * in once and the bytes re-derived from the
+				 * mean before any part is RS-decoded. */
+				memarq_accumulate_fsk(d, 0);
+				if (d->marq_count[0] > 1)
+					memarq_redecode_fsk(d);
+			}
+		}
 
 		if (d->frame_mod == ARDOP_MOD_4PSK
 		    || d->frame_mod == ARDOP_MOD_8PSK)
@@ -1346,6 +1578,19 @@ static void deliver_frame(ardop_demod *d, ardop_event *events, size_t *nev,
 		ev.kind = ARDOP_EV_FRAME_DECODED;
 		ev.data = d->payload;
 		ev.data_len = frame_len;
+		/*
+		 * Memory ARQ: the frame is delivered, so the accumulator has
+		 * done its job and must go.
+		 *
+		 * Without this, the *next* frame of the same type would be
+		 * treated as a retransmission of this one: its already-ok
+		 * carriers would be skipped and the previous frame's bytes
+		 * delivered again. Frame-type alternation identifies a repeat
+		 * only among frames that failed -- in FEC and RXO a repeated
+		 * data frame type is routinely a different frame. The
+		 * inherited implementation resets here for the same reason.
+		 */
+		ardop_demod_memarq_reset(d);
 	} else {
 		ev.kind = ARDOP_EV_FRAME_BAD;
 	}
@@ -1508,8 +1753,26 @@ size_t ardop_demod_push(ardop_demod *d, const int16_t *samples, size_t n,
 		d->tone_mags_len = 0;
 		d->phases_len = 0;
 		d->psk_init_done = false;
-		for (int c = 0; c < ARDOP_DEMOD_MAX_CARRIERS; c++)
-			d->carrier_ok[c] = false;
+
+		/*
+		 * Memory ARQ: is this a retransmission of the frame we last
+		 * failed to decode, or a new one?
+		 *
+		 * On a continuation, carrier_ok[] and frame_data[] are kept, so
+		 * a carrier that decoded from an earlier copy is not decoded
+		 * again and its bytes survive to be combined with carriers
+		 * recovered from this one. On anything else the accumulator is
+		 * dropped and the frame starts clean.
+		 */
+		if (memarq_continues(d, now_samples)) {
+			/* Keep carrier_ok / frame_data from the earlier copy. */
+		} else {
+			ardop_demod_memarq_reset(d);
+			d->marq_type = (int)d->frame_type;
+			d->marq_since = now_samples;
+			for (int c = 0; c < ARDOP_DEMOD_MAX_CARRIERS; c++)
+				d->carrier_ok[c] = false;
+		}
 
 		if (d->frame_mod == ARDOP_MOD_4PSK)
 			ardop_demod_psk_init(d, d->frame_num_car, 4);

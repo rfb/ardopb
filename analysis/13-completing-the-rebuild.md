@@ -75,7 +75,48 @@ frame-type path is already ported (`--decodewav` uses it, and it is how
 `FRAME_DECODED` to the host (with the session-id grouping `RXO.c` does), never
 transmit. Small.
 
-### W1.5 — Memory ARQ
+### W1.5 — Memory ARQ — **done**
+
+Implemented in `core/modem/demodulate.c`; state in `ardop_demod`, so `check-pure`
+still holds. Measured gain, wideband S/N (noise across the full 6 kHz Nyquist
+against a signal occupying ~200 Hz, so roughly 15 dB below the in-band figure an
+operator would quote), 8 seeds per point, 6 copies:
+
+| mode | 1 copy | 6 accumulated | 6 not accumulated |
+|---|---|---|---|
+| 4PSK.200.100.E @ -9 dB | 0/8 | **8/8** | 0/8 |
+| 4FSK.200.50S.E @ -10 dB | 0/8 | **8/8** | 4/8 |
+
+Three things the original design did not anticipate:
+
+1. **Reset on success is mandatory, not an optimisation.** Frame-type
+   alternation identifies a retransmission only among frames that *failed*; in
+   FEC and RXO a repeated data frame type is routinely a different frame. The
+   in-process FEC test caught this immediately — three FEC frames of one type
+   had the second and third delivering the first one's bytes.
+2. **4FSK needed a re-decode, not just an average.** PSK and QAM decide symbols
+   at delivery, so averaging phases is enough. 4FSK decides each byte while
+   streaming, so averaging tone magnitudes afterwards changes only the reported
+   quality. `memarq_redecode_fsk` repeats the symbol decision against the mean.
+   Without it the feature would look wired up and do nothing.
+3. **Aging is sample-counted**, not wall-clock: the core has no clock but the
+   sample count (analysis/06 Rule 2). The inherited code used `1000 * ARQTimeout`
+   against a millisecond clock plus a 36 s FEC cap.
+
+The phase average is **deliberately not** the inherited one. `WeightedAngleAvg`
+blends the running mean and the new sample equally regardless of how many copies
+preceded it, so the newest copy always carries half the total; magnitudes were
+already properly count-weighted. Memory ARQ is receive-local and changes nothing
+on the air, so there is no interop reason to reproduce the asymmetry, and
+averaging four copies evenly is the entire point of averaging four copies.
+
+Below about -11 dB nothing decodes even accumulated. That is not a limit of the
+averaging: leader detection and frame-type sync fail first, so no frame is
+acquired to accumulate into. Memory ARQ extends the range over which a frame
+that *was* heard can be recovered; it cannot recover one that was never
+detected.
+
+#### Original note
 `SaveFSKSamples`/`SavePSKSamples` averaging + re-decode of failed carriers across
 retransmissions (`SoundInput.c:295-340`, the `intCarPhaseAvg`/`intCarMagAvg`
 accumulators), aged out by `CheckMemarqTime`, reset by `ResetMemoryARQ`. This is

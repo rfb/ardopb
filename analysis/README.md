@@ -51,6 +51,7 @@ Local technical review of `ardopcf`, written to answer two questions:
 | 15 | [Platform audio and PTT](15-platform-audio-and-ptt.md) | Backends beyond ALSA, device enumeration, the push/pull bridge, resampling as a *timing* question, PTT methods, Android |
 | 16 | [The user interface](16-user-interface.md) | The toolkit evaluation and its recommendation; what survives from `gui/` and what does not; the screens and the responsive layout |
 | 17 | [The application protocol](17-application-protocol.md) | Chat and file transfer as a byte-level wire spec: framing, resume, and degrading to raw text against a station that does not speak it |
+| 18 | [Memory ARQ under HF channels](18-memory-arq-under-hf-channels.md) | Measured, not assumed: what averaging repeated copies actually buys under Watterson fading and static crashes, and why PSK gains four times what 4FSK does |
 
 **Documents 14–17 are a different kind of thing from 00–13.** Those described
 `ardopcf` and planned its rebuild; the rebuild is done and `core/` is the running
