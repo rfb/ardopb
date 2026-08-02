@@ -74,6 +74,7 @@ signals:
 	void selectionApplied(const app_device_selection &sel);
 
 private slots:
+	void onPttMethodChanged(int index);
 	void onDetectedChosen();
 	void onApply();
 	void onClose();
@@ -82,6 +83,7 @@ private slots:
 private:
 	void fillDevices();
 	void fillDetected();
+	void fillPttTargets();
 
 	ModemThread *m_modem = nullptr;
 
@@ -91,7 +93,7 @@ private:
 	QComboBox *m_capture = nullptr;
 	QComboBox *m_playback = nullptr;
 	QComboBox *m_pttMethod = nullptr;
-	QLineEdit *m_pttTarget = nullptr;
+	QComboBox *m_pttTarget = nullptr;   /**< Editable: a list, not a cage. */
 	QLabel *m_pttHint = nullptr;
 
 	QPushButton *m_apply = nullptr;

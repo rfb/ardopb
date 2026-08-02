@@ -88,6 +88,7 @@ endif
 # SHELL_OBJS because it talks to serial ports and rigctld -- it is device code.
 MA_OBJS = shell/backend_ma.o shell/ma_impl.o shell/audio_devices.o \
 	shell/ptt.o shell/ptt_cat.o shell/ptt_cm108.o shell/usbtopo.o \
+	shell/serialports.o \
 	shell/radios.o
 
 # core/ is held to a strict standard: -Werror and no mutable global state
@@ -154,6 +155,9 @@ shell/ptt.o: shell/ptt.c
 # ptt_cm108.c reads sysfs (dirent) on Linux and SetupAPI on Windows; ptt_cat.c is
 # pure and needs nothing, but shares the rule for symmetry.
 shell/ptt_cm108.o: shell/ptt_cm108.c
+	$(CC) -I. -D_DEFAULT_SOURCE $(CORE_CPPFLAGS) $(CFLAGS) $(CORE_CFLAGS) -c -o $@ $<
+# serialports.c walks sysfs on Linux and SetupAPI on Windows.
+shell/serialports.o: shell/serialports.c
 	$(CC) -I. -D_DEFAULT_SOURCE $(CORE_CPPFLAGS) $(CFLAGS) $(CORE_CFLAGS) -c -o $@ $<
 # usbtopo.c walks sysfs: dirent and readlink.
 shell/usbtopo.o: shell/usbtopo.c

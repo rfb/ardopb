@@ -6,6 +6,11 @@
 #include <QVBoxLayout>
 
 extern "C" {
+#include "shell/ptt_cm108.h"
+#include "shell/serialports.h"
+}
+
+extern "C" {
 #include "shell/audio_devices.h"
 #include "shell/usbtopo.h"
 }
@@ -91,8 +96,14 @@ DevicesPage::DevicesPage(ModemThread *modem, QWidget *parent)
 	m_pttMethod = new QComboBox(pickBox);
 	for (const auto &m : kMethods)
 		m_pttMethod->addItem(QString::fromUtf8(m.label));
-	m_pttTarget = new QLineEdit(pickBox);
-	m_pttTarget->setPlaceholderText(tr("serial port, or leave empty"));
+	/* Editable, deliberately. The list is what an operator wants nine times
+	 * out of ten; the tenth is a port the enumeration did not find, or a
+	 * spec with a CI-V address or a GPIO pin appended, and a dropdown that
+	 * refused those would be worse than the text field it replaced. */
+	m_pttTarget = new QComboBox(pickBox);
+	m_pttTarget->setEditable(true);
+	m_pttTarget->lineEdit()->setPlaceholderText(
+		tr("choose above, or type a port"));
 
 	form->addRow(tr("Keying"), m_pttMethod);
 	form->addRow(tr("Port"), m_pttTarget);
@@ -102,12 +113,10 @@ DevicesPage::DevicesPage(ModemThread *modem, QWidget *parent)
 	m_pttHint->setStyleSheet("color: palette(mid);");
 	form->addRow(QString(), m_pttHint);
 
-	connect(m_pttMethod, &QComboBox::currentIndexChanged, this, [this](int i) {
-		if (i >= 0 && i < int(sizeof kMethods / sizeof kMethods[0]))
-			m_pttHint->setText(QString::fromUtf8(kMethods[i].hint));
-	});
+	connect(m_pttMethod, &QComboBox::currentIndexChanged,
+		this, &DevicesPage::onPttMethodChanged);
 	m_pttMethod->setCurrentIndex(0);
-	m_pttHint->setText(QString::fromUtf8(kMethods[0].hint));
+	onPttMethodChanged(0);
 
 	root->addWidget(pickBox);
 
@@ -148,6 +157,77 @@ void DevicesPage::refresh()
 {
 	fillDevices();
 	fillDetected();
+	fillPttTargets();
+}
+
+/*
+ * What goes in the port list depends entirely on the method, and offering the
+ * wrong kind is worse than offering none: a serial port in a CM108 list is a
+ * thing an operator will try, and it will not key.
+ */
+void DevicesPage::fillPttTargets()
+{
+	const int mi = m_pttMethod->currentIndex();
+	const QString keep = m_pttTarget->currentText();
+
+	m_pttTarget->clear();
+	if (mi <= 0) {
+		m_pttTarget->setEnabled(false);
+		return;
+	}
+	m_pttTarget->setEnabled(true);
+
+	const QString prefix = QString::fromUtf8(kMethods[mi].prefix);
+
+	if (prefix == "cm108:") {
+		/* Auto first: with one dongle plugged in it is the right answer,
+		 * and with two it refuses and names both rather than guessing. */
+		m_pttTarget->addItem(tr("auto — find the one C-Media device"),
+				     QString());
+
+		static ardop_cm108_candidate hid[16];
+		const size_t n = ardop_cm108_scan(hid, sizeof hid / sizeof hid[0]);
+		for (size_t i = 0; i < n; i++) {
+			const char *chip = ardop_cm108_chip_name(hid[i].vid,
+								 hid[i].pid);
+			if (!chip)
+				continue;   /* a mouse is not a keying line */
+			m_pttTarget->addItem(
+				tr("%1  (%2)").arg(QString::fromUtf8(chip),
+						   QString::fromUtf8(hid[i].path)),
+				QString::fromUtf8(hid[i].path));
+		}
+	} else if (prefix == "rigctld:") {
+		m_pttTarget->addItem(tr("127.0.0.1:4532  (a rigctld on this "
+					"machine)"),
+				     QString("127.0.0.1:4532"));
+	} else {
+		static ardop_serial_port ports[32];
+		const size_t n = ardop_serial_ports(ports,
+						    sizeof ports / sizeof ports[0]);
+		if (n == 0)
+			m_pttTarget->addItem(tr("no serial ports found"),
+					     QString());
+		for (size_t i = 0; i < n; i++)
+			m_pttTarget->addItem(QString::fromUtf8(ports[i].name),
+					     QString::fromUtf8(ports[i].path));
+	}
+
+	/* Keep what the operator had typed or chosen, if it is still there. */
+	const int at = m_pttTarget->findData(keep);
+	if (at >= 0)
+		m_pttTarget->setCurrentIndex(at);
+	else if (!keep.isEmpty())
+		m_pttTarget->setCurrentText(keep);
+	else if (m_pttTarget->count() > 0)
+		m_pttTarget->setCurrentIndex(0);
+}
+
+void DevicesPage::onPttMethodChanged(int index)
+{
+	if (index >= 0 && index < int(sizeof kMethods / sizeof kMethods[0]))
+		m_pttHint->setText(QString::fromUtf8(kMethods[index].hint));
+	fillPttTargets();
 }
 
 void DevicesPage::fillDevices()
@@ -277,7 +357,7 @@ void DevicesPage::onDetectedChosen()
 		if (prefix == "none" || !ptt.startsWith(prefix))
 			continue;
 		m_pttMethod->setCurrentIndex(int(i));
-		m_pttTarget->setText(ptt.mid(prefix.length()));
+		m_pttTarget->setCurrentText(ptt.mid(prefix.length()));
 		break;
 	}
 }
@@ -306,8 +386,15 @@ app_device_selection DevicesPage::selection() const
 
 	const int mi = m_pttMethod->currentIndex();
 	if (mi > 0 && mi < int(sizeof kMethods / sizeof kMethods[0])) {
-		const QString spec = QString::fromUtf8(kMethods[mi].prefix) +
-				     m_pttTarget->text().trimmed();
+		/* A chosen entry carries the port as data; anything typed is
+		 * taken as written, so an address or a GPIO suffix survives. */
+		QString target = m_pttTarget->currentData().toString();
+		if (target.isEmpty() ||
+		    m_pttTarget->currentText() !=
+			    m_pttTarget->itemText(m_pttTarget->currentIndex()))
+			target = m_pttTarget->currentText().trimmed();
+
+		const QString spec = QString::fromUtf8(kMethods[mi].prefix) + target;
 		qstrncpy(sel.ptt_spec, spec.toUtf8().constData(),
 			 sizeof sel.ptt_spec);
 	} else {
@@ -336,11 +423,11 @@ void DevicesPage::setSelection(const app_device_selection &sel)
 		if (!spec.startsWith(prefix))
 			continue;
 		m_pttMethod->setCurrentIndex(int(i));
-		m_pttTarget->setText(spec.mid(prefix.length()));
+		m_pttTarget->setCurrentText(spec.mid(prefix.length()));
 		return;
 	}
 	m_pttMethod->setCurrentIndex(0);
-	m_pttTarget->clear();
+	m_pttTarget->setCurrentText(QString());
 }
 
 void DevicesPage::onApply()
