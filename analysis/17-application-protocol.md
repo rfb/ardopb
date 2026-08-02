@@ -484,6 +484,41 @@ framing by hand with nothing checking the two agree. ASP should not repeat that.
 
    **Reproduction:** `test/app/asp.script`, deliberately not in CI.
 
+   ### Update: one of the two causes is fixed
+
+   Hunting this down found **two** independent defects, not one.
+
+   **Fixed.** `iss_yield_on_break()` discarded the ISS's transmit queue when the
+   IRS took the link -- see [12](12-normative-accidents.md). That is a block of
+   host data lost per turnover, silently, and every ARQ file transfer turns over
+   because the receiver has to acknowledge at its own level. It is now reproduced
+   in isolation by `test_loopback_turnover_loses_nothing` (which fails without
+   the fix) and corrected.
+
+   **Not fixed.** The duplicate suppression above survives that fix: the same
+   three frames are still discarded, still carrying new data. What is now known
+   about it:
+
+   - It is **not** the transmit queue, the enqueue limit, the spine's queues,
+     payload truncation, or ASP's framing -- each ruled out by measurement.
+   - It does **not** reproduce at the link level on a clean channel, even with
+     repeated turnovers driven deliberately
+     (`test_loopback_turnover_loses_nothing` passes).
+   - It is **not** the loopback's air buffer overflowing: zero dropped samples.
+   - Modelling the loopback as half duplex -- a transmitting station is deaf,
+     which is true of every real radio and is *not* true of this harness -- does
+     not fix it either. That change was reverted rather than kept: with a
+     *queued* air buffer, discarding audio while PTT is up invents loss a live
+     channel would not have, and shipping a plausible-but-unproven change to the
+     channel model would make the next investigation harder, not easier.
+
+   So the remaining difference between the harness that fails and the harness
+   that passes is that `app/loopback.c` steps both stations concurrently, and
+   `hop()` delivers one frame at a time to completion. That is where to look
+   next, and the question to answer first is whether the failure is in the link
+   or in the harness -- because the evidence no longer points clearly at the
+   link.
+
 8. **Still to build:** the Chat and Files screens. The protocol is complete, its
    own tests pass, and the application-side `asp_io` is written. **Chat is not
    blocked** -- a lost chat line is a lost chat line, and the raw-mode path does

@@ -236,3 +236,33 @@ When a port turns up another one, add a numbered entry with: where it lives
 benign), how `core/` currently reproduces it, and what `improved` mode might do
 instead. Keep the TX-normative vs RX-local distinction sharp — it decides
 whether a fix needs the far end's cooperation or not.
+
+---
+
+## A port decision that lost data: `SaveQueueOnBreak`
+
+`iss_yield_on_break()` used to clear `tx_len` when the IRS took the link, with
+the note that ardopcf's `SaveQueueOnBreak` -- the option that let the application
+restore the data -- had been dropped in the port.
+
+Dropping the *option* is fine. Dropping the *data* was not, and it contradicted
+this machine's own rule 3.4 a thousand lines further down, where the IRS
+deliberately sends its BREAK on a **still-unacked** frame *"so the ISS keeps that
+frame for after the turnover"*. The ISS cannot keep a frame it has just thrown
+away.
+
+The cost was silent: bytes the host had been told were accepted vanished with no
+NAK, no fault and no counter, and the sender saw the frame acknowledged. A file
+transfer over a link that turns over -- which is every ARQ file transfer, because
+the receiver has to acknowledge at its own level -- lost a block per turnover.
+
+**This is not a normative accident.** Nothing about it is observable on the air:
+the discarded bytes had not been transmitted, or had been transmitted and
+deliberately left unacknowledged so that they would be sent again. It is recorded
+here because it is the same *shape* as one -- a port decision, written down as
+deliberate, that turned out to change behaviour nobody intended -- and because
+"we dropped that option" is exactly the kind of note that reads as harmless twice
+and costs a day the third time.
+
+Fixed, with `test_loopback_turnover_loses_nothing` as the regression: it fails
+without the fix and passes with it.

@@ -1,5 +1,6 @@
 #include <stdarg.h>
 #include <stddef.h>
+#include <stdio.h>
 #include <stdint.h>
 #include <setjmp.h>
 #include <string.h>
@@ -227,6 +228,99 @@ static void test_loopback_turnover(void **state)
 }
 
 /*
+ * Nothing is lost across a turnover, and nothing arrives twice.
+ *
+ * This is the property analysis/17 amendment 7 found broken by driving the
+ * application protocol over the real link. It is asserted here instead, at the
+ * link, with no protocol on top: A sends a block big enough to need many data
+ * frames, B has a reply queued so AutoBreak turns the link over in the middle,
+ * and afterwards the concatenation of everything B delivered to its host must
+ * equal exactly what A queued.
+ *
+ * The failure mode it exists to catch is silent in every other test: the IRS
+ * de-duplicates on the parity of the data frame type, and if the two ends'
+ * toggles fall out of step it drops a genuinely new frame with no NAK, no fault
+ * and no counter, while the sender sees it ACKed.
+ */
+static void test_loopback_turnover_loses_nothing(void **state)
+{
+	(void)state;
+
+	static struct station a, b;
+	station_init(&a, "N0AAA", false);
+	station_init(&b, "N0BBB", true);
+
+	ardop_action acts[16];
+	const ardop_action *send = establish(&a, &b, acts, 16);
+
+	a.link.auto_break = true;
+	b.link.auto_break = true;
+
+	/* Big enough to need many frames as the gear-shift walks up the data
+	 * rates, and patterned so a mis-ordered or repeated frame is visible
+	 * rather than merely a length mismatch. Sized to the station's queue:
+	 * the link truncates a longer one on enqueue, which would make this a
+	 * test of the harness. */
+	static uint8_t payload[sizeof a.tx];
+	for (size_t i = 0; i < sizeof payload; i++)
+		payload[i] = (uint8_t)(i * 31u + (i >> 8) * 7u);
+
+	ardop_link_input q = host_send_data(payload, sizeof payload);
+	(void)ardop_link_step(&a.link, &q, g_now, acts, 16);
+
+	/* B has something to say, which is what makes AutoBreak fire -- and it
+	 * keeps having something to say, so the link turns over repeatedly
+	 * *during* A's transfer. One turnover is the easy case; the application
+	 * protocol produces several, because the receiver acknowledges at its
+	 * own level while the sender is still sending. */
+	static const uint8_t reply[] = "roger, sending now";
+	q = host_send_data(reply, sizeof reply - 1);
+	(void)ardop_link_step(&b.link, &q, g_now, acts, 16);
+	int replies_left = 4;
+
+	/* Follow the single frame in flight, whichever way it is going, and
+	 * collect everything either station hands to its host. */
+	static uint8_t got_at_b[sizeof payload * 2];
+	size_t got_len = 0;
+	struct station *rx = &b;
+
+	for (int hops = 0; hops < 2000 && send; hops++) {
+		size_t n = hop(rx, send, acts, 16);
+
+		for (size_t i = 0; i < n; i++) {
+			if (acts[i].kind != ARDOP_ACT_DELIVER_DATA)
+				continue;
+			if (rx != &b)
+				continue;   /* B's reply to A; not under test */
+			assert_true(got_len + acts[i].data_len <=
+				    sizeof got_at_b);
+			memcpy(got_at_b + got_len, acts[i].data,
+			       acts[i].data_len);
+			got_len += acts[i].data_len;
+		}
+
+		send = find_send(acts, n);
+		rx = (rx == &a) ? &b : &a;
+
+		/* Keep B wanting the link until we have had several turnovers. */
+		if (b.link.tx_len == 0 && replies_left > 0 &&
+		    got_len > 0 && got_len < sizeof payload) {
+			replies_left--;
+			ardop_link_input again =
+				host_send_data(reply, sizeof reply - 1);
+			(void)ardop_link_step(&b.link, &again, g_now, acts, 16);
+		}
+
+		if (a.link.tx_len == 0 && b.link.tx_len == 0 &&
+		    got_len >= sizeof payload)
+			break;
+	}
+
+	assert_int_equal(got_len, sizeof payload);
+	assert_memory_equal(got_at_b, payload, sizeof payload);
+}
+
+/*
  * A full ARQ session over the loopback: A connects to B, B answers, they
  * complete the four-message handshake, A sends a block of data that B delivers
  * to its host, and A disconnects. Every frame really goes through modulate +
@@ -333,6 +427,7 @@ int main(void)
 	const struct CMUnitTest tests[] = {
 		cmocka_unit_test(test_loopback_connect_data_disconnect),
 		cmocka_unit_test(test_loopback_turnover),
+		cmocka_unit_test(test_loopback_turnover_loses_nothing),
 	};
 	return cmocka_run_group_tests(tests, NULL, NULL);
 }
