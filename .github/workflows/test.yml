@@ -94,10 +94,14 @@ jobs:
       # hang, and --detect walks a device tree.
       - name: Operator entry points
         run: |
-          timeout 30 ./app/ardop-spine --list-devices > devices.txt; rc=$?
-          test $rc -le 1 || { echo "--list-devices exited $rc"; exit 1; }
-          timeout 30 ./app/ardop-spine --detect > detect.txt; rc=$?
-          test $rc -le 1 || { echo "--detect exited $rc"; exit 1; }
+          # Both of these exit 1 when they find nothing, which is correct on a
+          # runner with no audio hardware. The status has to be captured by a
+          # *tested* command: this shell runs with -e, so a bare `cmd; rc=$?`
+          # aborts on the failure before the assignment is ever reached.
+          rc=0; timeout 30 ./app/ardop-spine --list-devices > devices.txt || rc=$?
+          test "$rc" -le 1 || { echo "--list-devices exited $rc"; exit 1; }
+          rc=0; timeout 30 ./app/ardop-spine --detect > detect.txt || rc=$?
+          test "$rc" -le 1 || { echo "--detect exited $rc"; exit 1; }
           test -s devices.txt || { echo "--list-devices printed nothing"; exit 1; }
           test -s detect.txt || { echo "--detect printed nothing"; exit 1; }
           cat devices.txt detect.txt
