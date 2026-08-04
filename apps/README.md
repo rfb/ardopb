@@ -13,14 +13,13 @@ the build identifier and exits:
 
 ```
 $ ardop-cat --version
-ardop-cat 4e85005-dirty (2026-08-04), protocol ardopb_1.0.4.1.3-b
+ardop-cat 56a7de4-dirty (2026-08-04)
 ```
 
-The first value is the build of this software — the commit, since this project
-has issued no release tag yet. The second is the `ardopcf` release whose host
-protocol it speaks; a host program such as Pat reads that one. Put the whole
-line in any fault report. See the main [README](../README.md#which-build-am-i-running)
-for what each part means.
+The value is the commit, since this project has issued no release tag yet. The
+modem reports the same value to host programs, as `VERSION ardopb_56a7de4-dirty`.
+Put the whole line in any fault report. See the main
+[README](../README.md#which-build-am-i-running) for what each part means.
 
 ## ardop-cat — a pipe over the radio
 

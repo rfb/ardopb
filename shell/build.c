@@ -1,7 +1,5 @@
 #include "shell/build.h"
 
-#include "shell/host.h"
-
 #include <stdio.h>
 
 /**
@@ -38,8 +36,7 @@ const char *ardop_build_date(void)
 
 const char *ardop_build_line(const char *program, char *out, unsigned long cap)
 {
-	snprintf(out, (size_t)cap, "%s %s (%s), protocol %s_%s",
-		 program ? program : "ardop", ardop_build_id(),
-		 ardop_build_date(), ARDOP_HOST_PRODUCT, ARDOP_HOST_VERSION);
+	snprintf(out, (size_t)cap, "%s %s (%s)", program ? program : "ardop",
+		 ardop_build_id(), ardop_build_date());
 	return out;
 }

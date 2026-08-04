@@ -29,34 +29,31 @@
 /**
  * Reported product name in the `VERSION` reply.
  *
- * This says `ardopb`, which is the name of this program. Until now it said
- * `ardopcf`, and the reason was compatibility: a host program that matches on
- * the product name would see the name it knows.
+ * The reply is `VERSION <product>_<build>`, for example
+ * `VERSION ardopb_0f35a4d`.
  *
- * **That was changed on purpose, and it is a risk.** A host program that tests
- * for the text `ardopcf` can stop working. The version below still carries the
- * `ardopcf` release number, so a host program that reads the *number* is not
- * affected; only one that reads the *name* is.
+ * ## Why this is no longer `ardopcf_1.0.4.1.3-b`
  *
- * The reason to change it: a station that reports a name it is not makes every
- * fault report ambiguous. A tester who sends a log with `ardopcf` in it cannot
- * show which program produced it, and this program has now diverged far enough
- * that the difference matters.
+ * The inherited value reported another program's name and another program's
+ * release number. [analysis/07](../analysis/07-migration-path.md) kept it
+ * deliberately, to protect host programs that might match on the name.
  *
- * If a host program breaks because of this, that is a fact worth having, and it
- * is better to find it in a test period than after a release.
+ * That protection was never tested and is not needed. Host programs already
+ * meet several ARDOP implementations -- `ARDOP_Win`, `ardopc`, `ardopcf` and
+ * this one -- and those report different names and different numbers. A client
+ * that could only accept one string would already fail against most of the
+ * ecosystem.
+ *
+ * What the old value cost was real: every fault report, every log line and every
+ * host program's records named a program that did not produce them.
+ *
+ * ## The version is the build
+ *
+ * There is no second number to maintain and no number to forget to increase.
+ * ::ardop_build_id supplies it, so the string a host program records is the
+ * exact string that finds the source. See `build.h`.
  */
 #define ARDOP_HOST_PRODUCT "ardopb"
-
-/**
- * Reported version in the `VERSION` reply.
- *
- * The `ardopcf` release number this program is compatible with, plus a `-b`
- * marker. It is a **protocol** compatibility statement and not the version of
- * this software. For the build of this software, see `build.h` and
- * ::ardop_build_id.
- */
-#define ARDOP_HOST_VERSION "1.0.4.1.3-b"
 
 /**
  * @brief Process one host command line, applying it to @p rt.

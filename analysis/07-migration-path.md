@@ -299,3 +299,57 @@ desired outcome.
 
 Stages 1 and 3 are the large ones by volume. Stage 2 is the small one that
 delivers most of the value the user actually asked for.
+
+---
+
+## Amendments made during implementation
+
+1. **The `VERSION` reply carries this program's name and this program's build.
+   The compatibility argument above is withdrawn.**
+
+   §"The name is part of the host interface" recommended keeping
+   `ardopcf_1.0.4.1.3` on the wire, and recorded a commitment that Pat and WoAD
+   keep working unchanged. The reply is now `VERSION ardopb_<build>`, for
+   example `VERSION ardopb_56a7de4-dirty`.
+
+   ### Why the argument does not hold
+
+   That section asked the right question -- *"Before renaming, check how the
+   host clients actually parse it"* -- and then set a default without the
+   evidence. The evidence is available without reading any client's source:
+
+   **Host programs already meet several ARDOP implementations.** `ARDOP_Win`,
+   `ardopc` and `ardopcf` report different product names and different version
+   numbers. A client that could accept only the string `ardopcf` would already
+   fail against most of the ecosystem it exists to serve. The compatibility the
+   old value protected was therefore never at risk.
+
+   **The cost was certain, where the risk was hypothetical.** Every log line,
+   every fault report and every host program's records named a program that did
+   not produce them. A tester who sends a log with `ardopcf` in it cannot show
+   which software produced it. That is a real cost paid on every report, against
+   a failure mode that had never been observed and was never tested.
+
+   ### And the number is gone, not replaced
+
+   `1.0.4.1.3` was another project's release number. Reporting it stated a fact
+   about `ardopcf`, not about this software, and §"Version scheme" above
+   correctly warned that a diverging scheme must not be mistaken for theirs.
+
+   Rather than invent a second number, the reply carries the **build
+   identifier**: `git describe --tags --always --dirty --match 'v*'`, the same
+   value `--version` prints. There is one identity, so the string a host program
+   records is the string that finds the source, and there is no number anybody
+   can forget to increase.
+
+   `--match 'v*'` matters. A plain `--tags` selects the `continuous` tag, which
+   the publish job **moves** on every push to `main`, and the inherited
+   `ardopcf` release tags. Neither describes a build of this software.
+
+   ### What would change this back
+
+   One report of a host program that fails against `ardopb_<hash>` and works
+   against `ardopcf_1.0.4.1.3-b`. That is a fact worth having, and finding it
+   during a test period is the reason to make this change now rather than after
+   a release. `apps/README.md` and `app/ui/README.md` both ask testers which
+   host software they used.

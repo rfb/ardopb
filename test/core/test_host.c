@@ -124,19 +124,15 @@ static void test_host_state_and_version(void **state)
 	reset();
 
 	assert_string_equal(cmd("STATE"), "STATE DISC");
-	assert_string_equal(cmd("VERSION"),
-			    "VERSION " ARDOP_HOST_PRODUCT "_" ARDOP_HOST_VERSION);
-
 	/*
-	 * And the literal, because this string leaves the program.
-	 *
-	 * A host program such as Pat reads this reply. The line above is built
-	 * from the same macros as the code, so it passes whatever the macros
-	 * say; only a literal makes a change visible. The name was changed from
-	 * `ardopcf` to `ardopb` on purpose -- see host.h -- and the next change
-	 * must be as deliberate as that one was.
+	 * `VERSION ardopb_<build>`. The build part changes with every commit, so
+	 * the assertion is on the shape and on the product name -- the two parts
+	 * that a host program sees and that must not change by accident.
 	 */
-	assert_string_equal(cmd("VERSION"), "VERSION ardopb_1.0.4.1.3-b");
+	char expect[128];
+	snprintf(expect, sizeof expect, "VERSION ardopb_%s", ardop_build_id());
+	assert_string_equal(cmd("VERSION"), expect);
+	assert_string_equal(ARDOP_HOST_PRODUCT, "ardopb");
 	assert_string_equal(cmd("STATE EXTRA"), "FAULT Syntax Err: STATE EXTRA");
 	assert_string_equal(cmd("FLIBBLE"), "FAULT CMD FLIBBLE not recoginized");
 	assert_string_equal(cmd("RDY"), "");
@@ -163,10 +159,6 @@ static void test_build_identity(void **state)
 	assert_ptr_equal(ardop_build_line("ardopb", line, sizeof line), line);
 	assert_non_null(strstr(line, "ardopb"));
 	assert_non_null(strstr(line, ardop_build_id()));
-	/* The protocol version travels with it, so one line answers both
-	 * "which build" and "which protocol". */
-	assert_non_null(strstr(line, ARDOP_HOST_VERSION));
-
 	/* A short buffer truncates and does not overrun. */
 	char small[8];
 	ardop_build_line("ardopb", small, sizeof small);

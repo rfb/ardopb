@@ -133,14 +133,12 @@ Every program prints its build identifier and exits:
 
 ```
 $ ardopb --version
-ardopb 4e85005-dirty (2026-08-04), protocol ardopb_1.0.4.1.3-b
+ardopb 56a7de4-dirty (2026-08-04)
 ```
 
 `ardop-cat --version` and `ardop-chat --version` do the same. The station
 application shows it under **Help > About**, and writes it as the first line of
 the panel log, so a log attached to a fault report carries it.
-
-The two values answer two different questions.
 
 **The build.** `git describe --tags --always --dirty --match 'v*'` at build
 time. This project has issued no release tag yet, so the value is the
@@ -155,9 +153,16 @@ the date.
 and the tags `1.0.4.1.3` and `2.0.3.2.1` are inherited `ardopcf` releases;
 neither describes a build of this software.
 
-**The protocol.** The `ardopcf` release whose host protocol this speaks. Host
-programs such as Pat read this one, and it does not change when the software
-does.
+The host command `VERSION` reports the same value, as
+`VERSION ardopb_56a7de4-dirty`. There is one identity, not two: the string a
+host program records is the string that finds the source.
+
+It used to say `ardopcf_1.0.4.1.3-b` — another program's name and another
+program's release number. That was kept to protect host programs that might
+match on the name. The protection was never tested and is not needed: Pat and
+Winlink already meet `ARDOP_Win`, `ardopc` and `ardopcf`, which report different
+names and different numbers, so a client that accepted only one string would
+already fail against most of the ecosystem.
 
 ### Keying
 

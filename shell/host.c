@@ -1,3 +1,4 @@
+#include "shell/build.h"
 #include "shell/host.h"
 
 #include <ctype.h>
@@ -443,7 +444,7 @@ void ardop_host_command(ardop_runtime *rt, const char *line, uint64_t now,
 	}
 	if (strcmp(kw, "VERSION") == 0) {
 		replyf(reply, cap, "VERSION %s_%s", ARDOP_HOST_PRODUCT,
-		       ARDOP_HOST_VERSION);
+		       ardop_build_id());
 		return;
 	}
 	if (strcmp(kw, "RDY") == 0)

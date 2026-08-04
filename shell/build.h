@@ -10,19 +10,15 @@
  * in the release package. A person who built the program, or who moved the
  * executable, had no answer at all.
  *
- * ## This is not the host protocol version
+ * ## One identity, not two
  *
- * `ARDOP_HOST_VERSION` in `host.h` is `1.0.4.1.3-b`, and the host command
- * `VERSION` reports it as `ardopcf_1.0.4.1.3-b`. That value tells a host program
- * such as Pat which `ardopcf` this modem is compatible with. **Do not change
- * it.** It describes the protocol, not this software.
+ * The host command `VERSION` reports this same value, as
+ * `VERSION ardopb_0f35a4d`. There used to be a second number there -- an
+ * inherited `ardopcf` release -- and it named software this is not. See
+ * `host.h` for why it was dropped.
  *
- * The two values answer two different questions:
- *
- * | Question | Answer |
- * |---|---|
- * | Which protocol do you speak? | ::ARDOP_HOST_VERSION |
- * | Which build are you? | ::ardop_build_id |
+ * So the string a host program records, the string in a fault report, and the
+ * string that finds the source are all one string.
  */
 
 /**
@@ -53,7 +49,7 @@ const char *ardop_build_date(void);
 /**
  * @brief One line for a log, a title bar or a fault report.
  *
- * Format: `ardopb 4e85005-dirty (2026-08-03), protocol ardopcf_1.0.4.1.3-b`.
+ * Format: `ardopb 0f35a4d-dirty (2026-08-04)`.
  *
  * @param program The program name, for example `ardopb`.
  * @param out     The caller's buffer.
