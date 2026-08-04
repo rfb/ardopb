@@ -456,9 +456,13 @@ test-ring-tsan: test/core/stress_ring.c shell/ring.c
 # property analysis/14 asserts of this set -- which is what lets the full warning
 # bar stay on. net.c, sys.c, ring.c and resample.c are absent because none is
 # reachable from a loopback-backed, socket-free spine.
+# shell/build.c is here because shell/host.c answers the VERSION command with
+# ardop_build_id(). It compiles from source like the rest of this list, so it
+# gets no -DARDOP_BUILD_ID and reports "unknown" -- which is correct: the
+# sanitiser binary is a test harness, not a build anybody runs a station on.
 TSAN_SRCS = $(CORE_OBJS:.o=.c) $(TEMPLATES:.o=.c) \
 	shell/runtime.c shell/loop.c shell/host.c shell/telemetry.c \
-	app/spine.c app/ring.c app/loopback.c
+	shell/build.c app/spine.c app/ring.c app/loopback.c
 
 .PHONY: test-app-tsan
 test-app-tsan: test/core/stress_spine.c $(TSAN_SRCS)
