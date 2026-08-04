@@ -163,10 +163,17 @@ shell/%.o: shell/%.c
 BUILD_ID   := $(shell git describe --tags --always --dirty --match 'v*' 2>/dev/null || echo unknown)
 BUILD_DATE := $(shell date -u +%Y-%m-%d 2>/dev/null || echo unknown)
 
-.PHONY: shell/build_id.stamp
-shell/build_id.stamp:
+# FORCE rather than marking the stamp itself .PHONY. A .PHONY target is always
+# out of date, so shell/build.o would rebuild -- and everything would relink --
+# on every single make. With FORCE the recipe still runs every time, but it only
+# touches the stamp when the value differs, so the timestamp is what carries the
+# information and one object rebuilds only on a new commit.
+shell/build_id.stamp: FORCE
 	@printf '%s' '$(BUILD_ID)' > $@.new
 	@if cmp -s $@.new $@; then rm -f $@.new; else mv $@.new $@; fi
+
+FORCE:
+.PHONY: FORCE
 
 shell/build.o: shell/build.c shell/build_id.stamp
 	$(CC) -I. $(CORE_CPPFLAGS) $(CFLAGS) $(CORE_CFLAGS) \
