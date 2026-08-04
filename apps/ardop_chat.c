@@ -7,6 +7,7 @@
 /* Keyboard poll interval while waiting on the sockets. */
 #define CHAT_POLL_MS 50
 
+#include "shell/build.h"
 #include "shell/net.h"
 #include "shell/sys.h"
 
@@ -240,6 +241,12 @@ int main(int argc, char **argv)
 	const char *fecmode = "4PSK.200.100";
 	bool listen = false, fec = false;
 	for (int i = 1; i < argc; i++) {
+		if (!strcmp(argv[i], "--version")) {
+			char line[160];
+			printf("%s\n",
+			       ardop_build_line("ardop-chat", line, sizeof line));
+			return 0;
+		}
 		if (!strcmp(argv[i], "--host") && i + 1 < argc)
 			hostarg = argv[++i];
 		else if (!strcmp(argv[i], "--call") && i + 1 < argc)
@@ -252,8 +259,9 @@ int main(int argc, char **argv)
 			fec = true;
 		else {
 			fprintf(stderr, "usage: %s [--host HOST:PORT] "
-				"[--call TARGET | --listen | --fec [--fecmode MODE]]\n",
-				argv[0]);
+				"[--call TARGET | --listen | --fec [--fecmode MODE]]\n"
+				"       %s --version\n",
+				argv[0], argv[0]);
 			return 2;
 		}
 	}

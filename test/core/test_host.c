@@ -8,6 +8,7 @@
 
 #include "setup.h"
 
+#include "shell/build.h"
 #include "shell/host.h"
 #include "shell/runtime.h"
 #include "codec/stationid.h"
@@ -125,9 +126,51 @@ static void test_host_state_and_version(void **state)
 	assert_string_equal(cmd("STATE"), "STATE DISC");
 	assert_string_equal(cmd("VERSION"),
 			    "VERSION " ARDOP_HOST_PRODUCT "_" ARDOP_HOST_VERSION);
+
+	/*
+	 * And the literal, because this string leaves the program.
+	 *
+	 * A host program such as Pat reads this reply. The line above is built
+	 * from the same macros as the code, so it passes whatever the macros
+	 * say; only a literal makes a change visible. The name was changed from
+	 * `ardopcf` to `ardopb` on purpose -- see host.h -- and the next change
+	 * must be as deliberate as that one was.
+	 */
+	assert_string_equal(cmd("VERSION"), "VERSION ardopb_1.0.4.1.3-b");
 	assert_string_equal(cmd("STATE EXTRA"), "FAULT Syntax Err: STATE EXTRA");
 	assert_string_equal(cmd("FLIBBLE"), "FAULT CMD FLIBBLE not recoginized");
 	assert_string_equal(cmd("RDY"), "");
+}
+
+/*
+ * The build identifier.
+ *
+ * Not a protocol value and not tested for its content -- it changes with every
+ * commit. What matters is that it is never empty and never NULL, because a
+ * fault report with a blank build field cannot be told from one where nobody
+ * filled the field in.
+ */
+static void test_build_identity(void **state)
+{
+	(void)state;
+
+	assert_non_null(ardop_build_id());
+	assert_true(ardop_build_id()[0] != '\0');
+	assert_non_null(ardop_build_date());
+	assert_true(ardop_build_date()[0] != '\0');
+
+	char line[160];
+	assert_ptr_equal(ardop_build_line("ardopb", line, sizeof line), line);
+	assert_non_null(strstr(line, "ardopb"));
+	assert_non_null(strstr(line, ardop_build_id()));
+	/* The protocol version travels with it, so one line answers both
+	 * "which build" and "which protocol". */
+	assert_non_null(strstr(line, ARDOP_HOST_VERSION));
+
+	/* A short buffer truncates and does not overrun. */
+	char small[8];
+	ardop_build_line("ardopb", small, sizeof small);
+	assert_true(strlen(small) < sizeof small);
 }
 
 static void test_host_actions_guarded_by_mycall(void **state)
@@ -280,6 +323,7 @@ int main(void)
 	const struct CMUnitTest tests[] = {
 		cmocka_unit_test(test_host_config_queries_and_sets),
 		cmocka_unit_test(test_host_state_and_version),
+		cmocka_unit_test(test_build_identity),
 		cmocka_unit_test(test_host_actions_guarded_by_mycall),
 		cmocka_unit_test(test_host_arqcall_connects),
 		cmocka_unit_test(test_host_fecsend_uses_default_fecmode),

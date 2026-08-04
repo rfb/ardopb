@@ -8,7 +8,19 @@ Because the modem is shared, you can run several at once against one radio.
 Build with `make apps` → `apps/ardop-cat`, `apps/ardop-chat`.
 
 All take `--host HOST:PORT` (default `127.0.0.1:8515`), where `PORT` is the
-command port and `PORT+1` is the data port.
+command port and `PORT+1` is the data port. All take `--version`, which prints
+the build identifier and exits:
+
+```
+$ ardop-cat --version
+ardop-cat 4e85005-dirty (2026-08-04), protocol ardopb_1.0.4.1.3-b
+```
+
+The first value is the build of this software — the commit, since this project
+has issued no release tag yet. The second is the `ardopcf` release whose host
+protocol it speaks; a host program such as Pat reads that one. Put the whole
+line in any fault report. See the main [README](../README.md#which-build-am-i-running)
+for what each part means.
 
 ## ardop-cat — a pipe over the radio
 

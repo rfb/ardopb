@@ -26,13 +26,36 @@
  * split is what makes the whole command surface testable without a socket.
  */
 
-/** Reported product name in the VERSION reply. Kept as the interop identity the
- *  ecosystem recognises, independent of this build's own name. */
-#define ARDOP_HOST_PRODUCT "ardopcf"
+/**
+ * Reported product name in the `VERSION` reply.
+ *
+ * This says `ardopb`, which is the name of this program. Until now it said
+ * `ardopcf`, and the reason was compatibility: a host program that matches on
+ * the product name would see the name it knows.
+ *
+ * **That was changed on purpose, and it is a risk.** A host program that tests
+ * for the text `ardopcf` can stop working. The version below still carries the
+ * `ardopcf` release number, so a host program that reads the *number* is not
+ * affected; only one that reads the *name* is.
+ *
+ * The reason to change it: a station that reports a name it is not makes every
+ * fault report ambiguous. A tester who sends a log with `ardopcf` in it cannot
+ * show which program produced it, and this program has now diverged far enough
+ * that the difference matters.
+ *
+ * If a host program breaks because of this, that is a fact worth having, and it
+ * is better to find it in a test period than after a release.
+ */
+#define ARDOP_HOST_PRODUCT "ardopb"
 
-/** Reported version in the VERSION reply. The trailing marker flags the rebuilt
- *  core so an operator can tell the two apart without changing the product name
- *  a host app matches on. */
+/**
+ * Reported version in the `VERSION` reply.
+ *
+ * The `ardopcf` release number this program is compatible with, plus a `-b`
+ * marker. It is a **protocol** compatibility statement and not the version of
+ * this software. For the build of this software, see `build.h` and
+ * ::ardop_build_id.
+ */
 #define ARDOP_HOST_VERSION "1.0.4.1.3-b"
 
 /**

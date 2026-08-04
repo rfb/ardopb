@@ -226,7 +226,7 @@ lines from a real radio beats a blank form.
 A good report has the boring parts in it:
 
 ```
-Program version:   (Help/About, or `ardopb --version`)
+Build:             (Help > About, or the first line of the panel log)
 OS and version:
 Radio and interface:
 Keying method:
@@ -241,7 +241,8 @@ Attach if you can:
 
 - **The Console tab's transcript.** This is the single most useful thing you can
   send. It shows what was actually exchanged, not a summary.
-- **The panel log** at the bottom of the Panel tab.
+- **The panel log** at the bottom of the Panel tab. Its first line carries the
+  build identifier, so this one attachment answers "which build" as well.
 - **A screenshot**, especially of the History screen if it is a throughput or
   timing question.
 - **Your `station.conf`** with anything you consider private removed.

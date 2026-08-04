@@ -130,10 +130,48 @@ core/%.o: core/%.c
 # --- shell/ : the I/O-free runtime + the platform backends -----------------
 SHELL_OBJS = shell/runtime.o shell/loop.o shell/host.o shell/telemetry.o \
 	shell/ring.o shell/resample.o shell/net.o shell/sys.o shell/fault.o \
-	shell/settings.o
+	shell/settings.o shell/build.o
 
 shell/%.o: shell/%.c
 	$(CC) -I. $(CORE_CPPFLAGS) $(CFLAGS) $(CORE_CFLAGS) -c -o $@ $<
+
+#
+# The build identifier, for a fault report.
+#
+# Two problems, and the stamp file solves both. The identifier changes on every
+# commit, so a -D on the global flags would rebuild the whole tree each time;
+# and make cannot see that the value changed, so without a file it would rebuild
+# nothing. The recipe therefore writes the value to a stamp only when it
+# differs, and one object depends on the stamp.
+#
+# A release tarball has no git repository. `git describe` fails there and the
+# identifier becomes "unknown", which is the honest answer.
+#
+# --match 'v*' is load-bearing, and a plain --tags is wrong here for two
+# reasons:
+#
+#   1. `continuous` is a *moving* tag. The publish job runs `git tag -f
+#      continuous` on every push to main, so a count of commits after it means
+#      something different tomorrow, and two machines with different fetch
+#      states print different strings for the same commit.
+#   2. The tags 1.0.4.1.3 and 2.0.3.2.1 are inherited ardopcf release tags. A
+#      build of this software must not report one of them as its own version.
+#
+# So only a `v*` tag counts. Until this project makes one, --always supplies the
+# abbreviated commit, which is the whole of what is known.
+#
+BUILD_ID   := $(shell git describe --tags --always --dirty --match 'v*' 2>/dev/null || echo unknown)
+BUILD_DATE := $(shell date -u +%Y-%m-%d 2>/dev/null || echo unknown)
+
+.PHONY: shell/build_id.stamp
+shell/build_id.stamp:
+	@printf '%s' '$(BUILD_ID)' > $@.new
+	@if cmp -s $@.new $@; then rm -f $@.new; else mv $@.new $@; fi
+
+shell/build.o: shell/build.c shell/build_id.stamp
+	$(CC) -I. $(CORE_CPPFLAGS) $(CFLAGS) $(CORE_CFLAGS) \
+		-DARDOP_BUILD_ID='"$(BUILD_ID)"' \
+		-DARDOP_BUILD_DATE='"$(BUILD_DATE)"' -c -o $@ $<
 
 # The impure device files need POSIX/GNU feature macros the strict -std=c11
 # withholds: sockets, usleep, struct timespec, CLOCK_MONOTONIC. These are the
@@ -206,7 +244,7 @@ APPS = apps/ardop-cat$(EXE) apps/ardop-chat$(EXE)
 apps/%.o: apps/%.c
 	$(CC) -Iapps -I. -Icore $(CFLAGS) $(CORE_CFLAGS) -c -o $@ $<
 
-APP_OBJS = apps/hostclient.o shell/net.o shell/sys.o
+APP_OBJS = apps/hostclient.o shell/net.o shell/sys.o shell/build.o
 APP_LINK = $(CC) $(STATIC) $^ -o $@ $(PLATFORM_LDLIBS)
 # The one app that links a piece of the protocol: app/asp_wire.o, purely so
 # that asp_looks_like_hello and the HELLO it looks for cannot drift apart.

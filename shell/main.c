@@ -13,6 +13,7 @@
 #include "shell/runtime.h"
 #include "shell/sys.h"
 #include "shell/ptt.h"
+#include "shell/build.h"
 #include "shell/telemetry_tcp.h"
 
 #include "codec/stationid.h"
@@ -130,7 +131,8 @@ static void usage(const char *me)
 		"                   otherwise; use alsa to bypass PulseAudio.\n"
 		"  --ptt SPEC       none | rts:DEV | dtr:DEV | rigctld:HOST:PORT\n"
 		"                   (a bare device path means rts:).\n"
-		"  --list-devices   print the audio devices and exit.\n",
+		"  --list-devices   print the audio devices and exit.\n"
+		"  --version        print the build identifier and exit.\n",
 		me);
 }
 
@@ -140,6 +142,12 @@ enum backend_kind { BACKEND_NULL, BACKEND_MA };
 int main(int argc, char **argv)
 {
 	for (int i = 1; i < argc; i++) {
+		if (!strcmp(argv[i], "--version")) {
+			char line[160];
+			printf("%s\n",
+			       ardop_build_line("ardopb", line, sizeof line));
+			return 0;
+		}
 		if (!strcmp(argv[i], "--list-devices")) {
 			const char *be = NULL;
 			for (int j = 1; j < argc - 1; j++)

@@ -127,6 +127,38 @@ ardopb MYCALL [--listen] [--host PORT] [--telemetry [PORT]]
        [--audio-backend NAME] [--ptt SPEC] [--list-devices]
 ```
 
+### Which build am I running?
+
+Every program prints its build identifier and exits:
+
+```
+$ ardopb --version
+ardopb 4e85005-dirty (2026-08-04), protocol ardopb_1.0.4.1.3-b
+```
+
+`ardop-cat --version` and `ardop-chat --version` do the same. The station
+application shows it under **Help > About**, and writes it as the first line of
+the panel log, so a log attached to a fault report carries it.
+
+The two values answer two different questions.
+
+**The build.** `git describe --tags --always --dirty --match 'v*'` at build
+time. This project has issued no release tag yet, so the value is the
+abbreviated commit — that is the whole of what is known, and it is enough to
+find the source. When a `v*` tag exists the value becomes `v0.4-12-g4e85005`:
+twelve commits after `v0.4`. A `-dirty` suffix means the source had local
+changes, so the build cannot be reproduced from any commit. A build with no git
+repository, such as one from a release tarball, reports `unknown` and relies on
+the date.
+
+`--match 'v*'` is deliberate. The `continuous` tag moves on every push to main,
+and the tags `1.0.4.1.3` and `2.0.3.2.1` are inherited `ardopcf` releases;
+neither describes a build of this software.
+
+**The protocol.** The `ardopcf` release whose host protocol this speaks. Host
+programs such as Pat read this one, and it does not change when the software
+does.
+
 ### Keying
 
 | Spec | Method |
