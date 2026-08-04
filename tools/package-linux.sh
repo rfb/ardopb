@@ -67,7 +67,7 @@ cp test/app/*.script "$OUT/$NAME/scripts/" 2>/dev/null || true
 cp analysis/19-field-testing.md "$OUT/$NAME/FIELD-TESTING.md" 2>/dev/null || true
 
 # A build with no identity is a bug report nobody can act on.
-git describe --tags --always --dirty 2>/dev/null > "$OUT/$NAME/VERSION" \
+git describe --tags --always --dirty --match 'v*' 2>/dev/null > "$OUT/$NAME/VERSION" \
 	|| echo "unknown" > "$OUT/$NAME/VERSION"
 
 cp README.md LICENSE "$OUT/$NAME/" 2>/dev/null || true

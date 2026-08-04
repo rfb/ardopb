@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "shell/build.h"
 #include "shell/net.h"
 #include "shell/sys.h"
 
@@ -345,11 +346,12 @@ static void usage(const char *me)
 	fprintf(stderr,
 		"usage: %s [--host HOST:PORT] TARGET   send stdin to TARGET\n"
 		"       %s [--host HOST:PORT] --listen  receive to stdout\n"
+		"       %s --version\n"
 		"\n"
 		"a raw byte pipe over an ARQ link: no filename, no length, no\n"
 		"checksum. for a checked transfer with a name on it, use\n"
 		"ardop-station, which speaks the ASP protocol at both ends.\n",
-		me, me);
+		me, me, me);
 }
 
 int main(int argc, char **argv)
@@ -362,6 +364,12 @@ int main(int argc, char **argv)
 	bool listen = false;
 
 	for (int i = 1; i < argc; i++) {
+		if (!strcmp(argv[i], "--version")) {
+			char line[160];
+			printf("%s\n",
+			       ardop_build_line("ardop-cat", line, sizeof line));
+			return 0;
+		}
 		if (!strcmp(argv[i], "--host") && i + 1 < argc)
 			hostarg = argv[++i];
 		else if (!strcmp(argv[i], "--listen") || !strcmp(argv[i], "-l"))

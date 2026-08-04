@@ -102,6 +102,16 @@ private slots:
 	/** @brief Write `station.*` out. Debounced -- see the implementation. */
 	void saveStation();
 
+	/**
+	 * @brief Show the build identifier and how to copy it.
+	 *
+	 * The first question about any fault report is which build produced it.
+	 * The text is selectable and there is a button that copies it, because a
+	 * person who must read a commit hash off a screen and type it into an
+	 * issue will make an error in it.
+	 */
+	void showAbout();
+
 protected:
 	/** @brief Flush a debounced save, so quitting cannot discard one. */
 	void closeEvent(QCloseEvent *event) override;

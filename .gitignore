@@ -104,3 +104,4 @@ newArdopSampleArrays.c
 # Qt station app build tree (cmake -S app/ui -B app/ui/build)
 /app/ui/build/
 /libardop.a
+shell/build_id.stamp

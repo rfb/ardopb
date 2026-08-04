@@ -1,7 +1,13 @@
 #include "stationwindow.h"
 
+#include <QApplication>
+#include <QClipboard>
 #include <QCloseEvent>
 #include <QDateTime>
+#include <QDialog>
+#include <QDialogButtonBox>
+#include <QMenuBar>
+#include <QPushButton>
 #include <QHBoxLayout>
 #include <QStatusBar>
 #include <QVBoxLayout>
@@ -10,6 +16,7 @@
 #include <cmath>
 
 extern "C" {
+#include "shell/build.h"
 #include "shell/host.h"
 #include "shell/settings.h"
 }
@@ -87,6 +94,12 @@ StationWindow::StationWindow(ModemThread *modem, QWidget *parent)
 
 	setCentralWidget(m_tabs);
 
+	/* One menu, one item. A window with no menu bar has nowhere to put the
+	 * build identifier, and a tester needs it in the first line of every
+	 * report. */
+	menuBar()->addMenu(tr("&Help"))
+		->addAction(tr("&About"), this, &StationWindow::showAbout);
+
 	/* The device state changes on the modem thread and has no event of its
 	 * own for every transition, so the screen re-reads it a few times a
 	 * second. Slower than the panel: this is a status line, not an
@@ -121,6 +134,20 @@ StationWindow::StationWindow(ModemThread *modem, QWidget *parent)
 
 	setWindowTitle(tr("ardop station"));
 	resize(980, 640);
+
+	/*
+	 * The build identifier, in the log, at start-up.
+	 *
+	 * The Help menu shows it too, and a person can copy it from there. This
+	 * line exists because a tester is asked to attach the panel log, and a
+	 * log that carries its own build identifier answers the first question
+	 * of every fault report without anybody having to remember to ask it.
+	 */
+	{
+		char line[160];
+		log(QString::fromUtf8(
+			ardop_build_line("ardop-station", line, sizeof line)));
+	}
 
 	connectPanel();
 
@@ -236,6 +263,9 @@ StationWindow::StationWindow(const QString &host, quint16 port, QWidget *parent)
 	 * doubt.
 	 */
 	setCentralWidget(buildPanel());
+
+	menuBar()->addMenu(tr("&Help"))
+		->addAction(tr("&About"), this, &StationWindow::showAbout);
 
 	m_conn = new QLabel(tr("connecting to %1:%2").arg(host).arg(port), this);
 	statusBar()->addWidget(m_conn);
@@ -518,6 +548,49 @@ void StationWindow::closeEvent(QCloseEvent *event)
 		saveStation();
 	}
 	QMainWindow::closeEvent(event);
+}
+
+void StationWindow::showAbout()
+{
+	char line[160];
+	const QString build = QString::fromUtf8(
+		ardop_build_line("ardop-station", line, sizeof line));
+
+	QDialog dlg(this);
+	dlg.setWindowTitle(tr("About ardop-station"));
+	auto *box = new QVBoxLayout(&dlg);
+
+	auto *title = new QLabel(tr("<b>ardop-station</b>"), &dlg);
+	box->addWidget(title);
+
+	auto *what = new QLabel(
+		tr("An HF data station: the modem, the radio, the link, and "
+		   "what you wanted to send."),
+		&dlg);
+	what->setWordWrap(true);
+	box->addWidget(what);
+
+	/* Selectable, because the next thing a person does with this text is
+	 * paste it into a fault report. */
+	auto *info = new QLabel(build, &dlg);
+	info->setTextInteractionFlags(Qt::TextSelectableByMouse);
+	info->setWordWrap(true);
+	box->addWidget(info);
+
+	auto *qt = new QLabel(tr("Qt %1").arg(QLatin1String(qVersion())), &dlg);
+	qt->setTextInteractionFlags(Qt::TextSelectableByMouse);
+	box->addWidget(qt);
+
+	auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close, &dlg);
+	auto *copy = buttons->addButton(tr("Copy build details"),
+					QDialogButtonBox::ActionRole);
+	connect(copy, &QPushButton::clicked, this, [build] {
+		QApplication::clipboard()->setText(build);
+	});
+	connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+	box->addWidget(buttons);
+
+	dlg.exec();
 }
 
 void StationWindow::saveStation()

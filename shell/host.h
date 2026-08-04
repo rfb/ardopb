@@ -26,14 +26,34 @@
  * split is what makes the whole command surface testable without a socket.
  */
 
-/** Reported product name in the VERSION reply. Kept as the interop identity the
- *  ecosystem recognises, independent of this build's own name. */
-#define ARDOP_HOST_PRODUCT "ardopcf"
-
-/** Reported version in the VERSION reply. The trailing marker flags the rebuilt
- *  core so an operator can tell the two apart without changing the product name
- *  a host app matches on. */
-#define ARDOP_HOST_VERSION "1.0.4.1.3-b"
+/**
+ * Reported product name in the `VERSION` reply.
+ *
+ * The reply is `VERSION <product>_<build>`, for example
+ * `VERSION ardopb_0f35a4d`.
+ *
+ * ## Why this is no longer `ardopcf_1.0.4.1.3-b`
+ *
+ * The inherited value reported another program's name and another program's
+ * release number. [analysis/07](../analysis/07-migration-path.md) kept it
+ * deliberately, to protect host programs that might match on the name.
+ *
+ * That protection was never tested and is not needed. Host programs already
+ * meet several ARDOP implementations -- `ARDOP_Win`, `ardopc`, `ardopcf` and
+ * this one -- and those report different names and different numbers. A client
+ * that could only accept one string would already fail against most of the
+ * ecosystem.
+ *
+ * What the old value cost was real: every fault report, every log line and every
+ * host program's records named a program that did not produce them.
+ *
+ * ## The version is the build
+ *
+ * There is no second number to maintain and no number to forget to increase.
+ * ::ardop_build_id supplies it, so the string a host program records is the
+ * exact string that finds the source. See `build.h`.
+ */
+#define ARDOP_HOST_PRODUCT "ardopb"
 
 /**
  * @brief Process one host command line, applying it to @p rt.

@@ -53,7 +53,7 @@ mkdir -p "$OUT/$MODEM_NAME"
 
 # A build with no identity is a bug report nobody can act on. Computed once and
 # copied into both zips, so a mixed pair is obvious from the two VERSION files.
-VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo unknown)
+VERSION=$(git describe --tags --always --dirty --match 'v*' 2>/dev/null || echo unknown)
 
 # Both zips carry the project's own README and licence.
 stamp() {
