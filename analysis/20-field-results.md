@@ -302,6 +302,35 @@ ptt.spec=rts:/dev/serial/by-id/usb-Silicon_Labs_CP2102N_..._-if00-port0
 it -- but the picker offers only `/dev/ttyUSBn`, so an operator has no way to
 choose the stable name from the interface.
 
+### 10. The status bar announced a connection that had not happened (fixed)
+
+> when attempting a connection the status bar reads 'connected to CALLSIGN' -
+> it should display a message saying it's attempting to connect
+
+`onLinkState` decided what to say from **whether a remote callsign was known**,
+not from the link state. A callsign is known from the moment the operator asks
+to call one, and `ARDOP_LINK_ISS_CON_REQ` -- ConReq sent, ConAck awaited -- runs
+for the whole calling sequence, retries included. So the bar claimed a link
+during precisely the interval an operator is watching it to find out whether
+there is one.
+
+The cause underneath is that two independent facts shared one `QLabel`: audio
+status writes it (`onConnectionChanged`), and the link wrote it too. The link
+half could only avoid clobbering the audio text by leaving whatever was already
+there when it had no callsign -- which is also why "connected to X" **outlived
+the connection**, since a disconnect carries no callsign and so changed nothing.
+One reported symptom, two wrong readings, one cause.
+
+Now the link has its own status-bar label and reads the state: nothing when
+`DISC`, "calling X..." during `ISS_CON_REQ`, "connected to X" otherwise.
+
+Worth noting where this could *not* be fixed. `ardop_host_state_name` collapses
+`ISS_CON_REQ` into `"ISS"` because that is the host protocol's vocabulary, which
+Winlink Express and Pat parse; the station page shows that name and should keep
+showing it. The distinction the operator wanted exists in the link state and
+only ever needed reading, so the fix belongs in the interface and nowhere near
+`shell/host.c`.
+
 ---
 
 ## What is still unverified
