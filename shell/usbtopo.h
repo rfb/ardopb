@@ -49,7 +49,15 @@ typedef enum {
 	ARDOP_USB_NONE,            /**< Nothing found on the same hardware. */
 } ardop_usb_link;
 
-/** @brief A radio the application can offer as one entry. */
+/**
+ * @brief One way to use a radio: a sound card and one keying interface.
+ *
+ * A sound card with two keying interfaces on the same hardware produces two of
+ * these, not one. Picking a winner for the operator requires knowing which line
+ * is *wired*, which the USB tree cannot say -- a C-Media chip presents its HID
+ * interface whether or not the GPIO pin goes anywhere, and on a DigiRig Mobile
+ * it does not.
+ */
 typedef struct {
 	char audio_id[ARDOP_DEV_ID_MAX];    /**< The sound card this belongs to. */
 	char audio_name[ARDOP_DEV_NAME_MAX];
@@ -70,11 +78,23 @@ typedef struct {
 typedef struct {
 	char syspath[256];   /**< The USB device node, e.g. "3-2.4". */
 	char devnode[128];   /**< "/dev/ttyUSB0", "/dev/hidraw3", or "". */
+	char usbkey[192];    /**< udev's name: "Plantronics_Poly_BT700_6074C1". */
 	uint16_t vid, pid;
 	bool is_audio;
 	bool is_serial;
 	bool is_hid;
 } ardop_usb_node;
+
+/**
+ * @brief Whether an audio node and a backend device id name the same card.
+ *
+ * The two halves of this module see a sound card differently and neither name
+ * converts into the other: the kernel has an index, and a PulseAudio-style
+ * backend renders a string with no index in it. Matched by index where the
+ * backend uses one ("hw:1,0"), and otherwise by ::ardop_usb_node::usbkey, which
+ * such an id embeds. Pure.
+ */
+bool ardop_usb_audio_id_matches(const ardop_usb_node *nd, const char *id);
 
 /**
  * @brief The nearest common ancestor of two USB device paths.
@@ -88,7 +108,11 @@ ardop_usb_link ardop_usb_relate(const char *a, const char *b);
 /**
  * @brief Pair audio nodes with keying nodes. Pure; the whole policy.
  *
- * @return Candidates written (0..@p max), best-ranked first.
+ * Every keying interface on a sound card's own hardware is offered, ranked
+ * ::ARDOP_USB_SAME_DEVICE before ::ARDOP_USB_SAME_HUB. A sound card with none
+ * is still listed, with ::ARDOP_USB_NONE and no spec.
+ *
+ * @return Candidates written (0..@p max), grouped by sound card.
  */
 size_t ardop_usb_pair(const ardop_usb_node *nodes, size_t n,
 		      ardop_radio_candidate *out, size_t max);

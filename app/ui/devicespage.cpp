@@ -41,7 +41,9 @@ const PttMethod kMethods[] = {
 	{"CAT: Kenwood", "kenwood:", "TX; and RX; down the radio's serial port."},
 	{"CAT: Yaesu", "yaesu:", "TX1; and TX0; down the radio's serial port."},
 	{"Serial RTS", "rts:",
-	 "Assert RTS. What a DigiRig Mobile and most simple interfaces use."},
+	 "Assert RTS. What a DigiRig Mobile and most simple interfaces use. On a "
+	 "DigiRig the PTT line is in the audio cable, not the serial one, so this "
+	 "works alongside a CAT cable in the radio's CI-V or REMOTE jack."},
 	{"Serial DTR", "dtr:", "Assert DTR instead. Some interfaces wire this one."},
 	{"C-Media GPIO (CM108)", "cm108:",
 	 "A DigiRig Lite or a cheap USB dongle. Leave the port empty for auto, or "
@@ -309,7 +311,11 @@ void DevicesPage::fillDetected()
 	m_detectNote->setText(
 		tr("Choosing one fills in the fields below. Nothing is opened "
 		   "until you press Apply, and nothing transmits until you press "
-		   "Test PTT."));
+		   "Test PTT.\n"
+		   "One sound card can appear more than once, with a different "
+		   "keying method each time: which line is actually wired cannot "
+		   "be told from the USB hardware, so try one and confirm it "
+		   "keys."));
 
 	for (size_t i = 0; i < n; i++) {
 		const ardop_radio_candidate &c = cands[i];

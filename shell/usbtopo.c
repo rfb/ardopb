@@ -8,6 +8,8 @@
 
 #ifndef _WIN32
 #  include <dirent.h>
+#  include <limits.h>
+#  include <stdlib.h>
 #  include <unistd.h>
 #endif
 
@@ -59,69 +61,118 @@ ardop_usb_link ardop_usb_relate(const char *a, const char *b)
 	return ARDOP_USB_NONE;
 }
 
+/* --- naming the same sound card twice --------------------------------------- */
+
+/*
+ * The walk knows a sound card as the kernel does, by index; the application
+ * selects one by whatever string the audio backend renders. Neither name can be
+ * turned into the other, so this matches them by the two things they can be
+ * made to share -- the index, where the backend uses one, and udev's name for
+ * the USB device, which every Pulse-style id embeds.
+ */
+bool ardop_usb_audio_id_matches(const ardop_usb_node *nd, const char *id)
+{
+	if (!nd || !id || !*id)
+		return false;
+
+	const char *card = strstr(nd->devnode, "card");
+
+	/* ALSA names a card by index and nothing else: "hw:1,0". */
+	if (card && strncmp(id, "hw:", 3) == 0)
+		return strtol(card + 4, NULL, 10) == strtol(id + 3, NULL, 10);
+
+	return nd->usbkey[0] && strstr(id, nd->usbkey) != NULL;
+}
+
 /* --- pairing --------------------------------------------------------------- */
+
+/* One audio node paired with one keying node, as the application sees it. */
+static void describe_pair(ardop_radio_candidate *c, const ardop_usb_node *audio,
+			  const ardop_usb_node *key, ardop_usb_link link)
+{
+	memset(c, 0, sizeof *c);
+	snprintf(c->audio_id, sizeof c->audio_id, "%s", audio->devnode);
+	c->link = link;
+
+	if (!key)
+		return;   /* a sound card with no keying sibling */
+
+	c->vid = key->vid;
+	c->pid = key->pid;
+
+	const ardop_radio_entry *e = ardop_radio_lookup(c->vid, c->pid);
+	if (e) {
+		snprintf(c->model, sizeof c->model, "%s", e->model);
+		c->ptt_is_guess = ardop_radio_ptt_spec(e, key->devnode,
+						       c->ptt_spec,
+						       sizeof c->ptt_spec);
+	}
+
+	if (!c->ptt_spec[0]) {
+		/* Nothing in the table. A serial port is most likely RTS and a
+		 * HID device is most likely CM108 -- offered as a starting
+		 * point, and clearly not a guess the table stands behind. */
+		snprintf(c->ptt_spec, sizeof c->ptt_spec, "%s%s",
+			 key->is_hid ? "cm108:" : "rts:", key->devnode);
+		c->ptt_is_guess = false;
+	}
+}
 
 size_t ardop_usb_pair(const ardop_usb_node *nodes, size_t n,
 		      ardop_radio_candidate *out, size_t max)
 {
+	/* Certain pairings before inferred ones. Both are offered: see below. */
+	static const ardop_usb_link kRanks[] = {ARDOP_USB_SAME_DEVICE,
+						ARDOP_USB_SAME_HUB};
 	size_t got = 0;
 
 	for (size_t a = 0; a < n && got < max; a++) {
 		if (!nodes[a].is_audio)
 			continue;
 
-		/* Best keying interface on the same hardware. */
-		size_t best = n;
-		ardop_usb_link best_link = ARDOP_USB_NONE;
+		size_t before = got;
 
-		for (size_t k = 0; k < n; k++) {
-			if (k == a)
-				continue;
-			if (!nodes[k].is_serial && !nodes[k].is_hid)
-				continue;
-			if (!nodes[k].devnode[0])
-				continue;
+		/*
+		 * *Every* keying interface on the same hardware, not only the
+		 * best-ranked one.
+		 *
+		 * Offering just the winner hid a DigiRig Mobile's serial bridge
+		 * behind its own codec's HID interface, whose GPIO pin is not
+		 * bonded to anything -- so the only method offered was the one
+		 * that cannot key, and it failed silently
+		 * ([20](../analysis/20-field-results.md) finding 3).
+		 *
+		 * The ranking answers "which device is this", which it does
+		 * well. It was being read as "which line keys", and that
+		 * question is not answerable from the USB tree at all: the same
+		 * chip appears whether or not the pin goes anywhere. Only the
+		 * operator's radio can settle it, so list what exists, in
+		 * confidence order, and let the PTT test choose.
+		 */
+		for (size_t r = 0; r < sizeof kRanks / sizeof kRanks[0]
+				   && got < max; r++) {
+			for (size_t k = 0; k < n && got < max; k++) {
+				if (k == a)
+					continue;
+				if (!nodes[k].is_serial && !nodes[k].is_hid)
+					continue;
+				if (!nodes[k].devnode[0])
+					continue;
+				if (ardop_usb_relate(nodes[a].syspath,
+						     nodes[k].syspath) != kRanks[r])
+					continue;
 
-			ardop_usb_link rel = ardop_usb_relate(nodes[a].syspath,
-							      nodes[k].syspath);
-			if (rel == ARDOP_USB_NONE)
-				continue;
-			/* SAME_DEVICE beats SAME_HUB: the first is certain. */
-			if (best_link != ARDOP_USB_NONE && rel >= best_link)
-				continue;
-			best = k;
-			best_link = rel;
+				describe_pair(&out[got++], &nodes[a], &nodes[k],
+					      kRanks[r]);
+			}
 		}
 
-		ardop_radio_candidate *c = &out[got++];
-		memset(c, 0, sizeof *c);
-		snprintf(c->audio_id, sizeof c->audio_id, "%s", nodes[a].devnode);
-		c->link = best_link;
-
-		if (best == n)
-			continue;   /* a sound card with no keying sibling */
-
-		c->vid = nodes[best].vid;
-		c->pid = nodes[best].pid;
-
-		const ardop_radio_entry *e = ardop_radio_lookup(c->vid, c->pid);
-		if (e) {
-			snprintf(c->model, sizeof c->model, "%s", e->model);
-			c->ptt_is_guess = ardop_radio_ptt_spec(
-				e, nodes[best].devnode, c->ptt_spec,
-				sizeof c->ptt_spec);
-		}
-
-		if (!c->ptt_spec[0]) {
-			/* Nothing in the table. A serial port is most likely RTS
-			 * and a HID device is most likely CM108 -- offered as a
-			 * starting point, and clearly not a guess the table
-			 * stands behind. */
-			snprintf(c->ptt_spec, sizeof c->ptt_spec, "%s%s",
-				 nodes[best].is_hid ? "cm108:" : "rts:",
-				 nodes[best].devnode);
-			c->ptt_is_guess = false;
-		}
+		/* A sound card with nothing on its hardware is still named, so
+		 * that an operator can see it was considered and reach for the
+		 * manual pickers rather than wonder. */
+		if (got == before)
+			describe_pair(&out[got++], &nodes[a], NULL,
+				      ARDOP_USB_NONE);
 	}
 	return got;
 }
@@ -184,6 +235,43 @@ static bool usb_device_of(const char *link, char *out, size_t cap)
 	return false;
 }
 
+/*
+ * The name udev builds for a USB device: manufacturer, product and serial,
+ * joined by underscores, with every space turned into one too --
+ * "C-Media_Electronics_Inc._USB_Audio_Device". It is worth reading because
+ * every id a PulseAudio-style backend renders contains it, and it is the only
+ * thing the kernel's view of a sound card and the backend's view have in
+ * common: a card *index* does not appear in a Pulse id at all.
+ */
+static void read_key(const char *root, const char *usbdev, char *out, size_t cap)
+{
+	static const char *const kAttrs[] = {"manufacturer", "product", "serial"};
+	size_t used = 0;
+
+	if (cap)
+		out[0] = '\0';
+
+	for (size_t i = 0; i < sizeof kAttrs / sizeof kAttrs[0]; i++) {
+		char path[512], val[192];
+		snprintf(path, sizeof path, "%s/sys/bus/usb/devices/%s/%s", root,
+			 usbdev, kAttrs[i]);
+		if (!slurp(path, val, sizeof val) || !val[0])
+			continue;
+
+		for (char *p = val; *p; p++)
+			if (*p == ' ')
+				*p = '_';
+
+		int n = snprintf(out + used, cap - used, "%s%s",
+				 used ? "_" : "", val);
+		if (n < 0 || (size_t)n >= cap - used) {
+			out[used] = '\0';   /* keep what fits, whole */
+			return;
+		}
+		used += (size_t)n;
+	}
+}
+
 static void read_ids(const char *root, const char *usbdev, uint16_t *vid,
 		     uint16_t *pid)
 {
@@ -227,18 +315,22 @@ static size_t scan_class(const char *root, const char *cls, const char *prefix,
 		char link[1024], usbdev[128];
 		snprintf(link, sizeof link, "%s/%.255s/device", dir, e->d_name);
 
-		char resolved[512];
 		bool have = false;
 		char hint[1024];
 		snprintf(hint, sizeof hint, "%s/%.255s/usbpath", dir, e->d_name);
 		if (slurp(hint, usbdev, sizeof usbdev)) {
 			have = true;
 		} else {
-			ssize_t n = readlink(link, resolved, sizeof resolved - 1);
-			if (n > 0) {
-				resolved[n] = '\0';
-				have = usb_device_of(resolved, usbdev,
-						     sizeof usbdev);
+			/* Resolved, not read. The kernel stores these links
+			 * relative and short -- /sys/class/sound/card0/device is
+			 * "../../../1-2.2:1.0" -- so reading the link gives an
+			 * interface name with no device path above it, and the
+			 * walk below has nothing to find. realpath() puts the
+			 * ancestry back. */
+			char *abs = realpath(link, NULL);
+			if (abs) {
+				have = usb_device_of(abs, usbdev, sizeof usbdev);
+				free(abs);
 			}
 		}
 		if (!have)
@@ -253,6 +345,7 @@ static size_t scan_class(const char *root, const char *cls, const char *prefix,
 		nd->is_serial = is_serial;
 		nd->is_hid = is_hid;
 		read_ids(root, usbdev, &nd->vid, &nd->pid);
+		read_key(root, usbdev, nd->usbkey, sizeof nd->usbkey);
 	}
 	closedir(d);
 	return got;
@@ -315,20 +408,38 @@ size_t ardop_radio_detect(ardop_radio_candidate *out, size_t max,
 
 	/*
 	 * The walk knows sound cards by their kernel name ("/dev/card1"), and the
-	 * application selects them by the id miniaudio renders. Match the two up
-	 * by card index where we can, and leave the name blank rather than
-	 * guessing when we cannot -- a candidate whose audio device cannot be
-	 * identified is worse than no candidate.
+	 * application selects them by the id the audio backend renders. Match the
+	 * two up, and blank the id rather than guessing when they cannot be
+	 * matched -- a candidate carrying a name the pickers do not recognise
+	 * points an operator at the wrong sound card, which is worse than a
+	 * candidate that admits it does not know.
 	 */
 	size_t ndev = ardop_audio_enumerate(ARDOP_AUDIO_CAPTURE, devs,
 					    sizeof devs / sizeof devs[0],
 					    backend_name);
 	for (size_t i = 0; i < got; i++) {
-		const char *card = strstr(out[i].audio_id, "card");
-		if (!card)
+		const ardop_usb_node *nd = NULL;
+		for (size_t k = 0; k < n; k++)
+			if (nodes[k].is_audio &&
+			    strcmp(nodes[k].devnode, out[i].audio_id) == 0) {
+				nd = &nodes[k];
+				break;
+			}
+
+		out[i].audio_id[0] = '\0';
+		out[i].audio_name[0] = '\0';
+		if (!nd)
 			continue;
+
 		for (size_t j = 0; j < ndev; j++) {
-			if (!strstr(devs[j].id, card + 4))
+			if (!ardop_usb_audio_id_matches(nd, devs[j].id))
+				continue;
+			/* A monitor carries the same identity as the card it
+			 * echoes, and is the playback stream fed back rather
+			 * than anything the radio sent. Never the capture
+			 * device an operator means. */
+			size_t len = strlen(devs[j].id);
+			if (len >= 8 && strcmp(devs[j].id + len - 8, ".monitor") == 0)
 				continue;
 			snprintf(out[i].audio_id, sizeof out[i].audio_id, "%s",
 				 devs[j].id);

@@ -126,6 +126,11 @@ static int print_detected(const char *backend_name)
 					 : "no keying interface found");
 	}
 
+	printf("\nA sound card with more than one keying interface on its own\n"
+	       "hardware is listed once for each, because which line is wired\n"
+	       "is not knowable from here -- a DigiRig Mobile offers both its\n"
+	       "codec's GPIO and its serial bridge, and only the second keys.\n");
+
 	printf("\nNothing has been applied. Try one with --audio and --ptt, and\n"
 	       "confirm it keys before trusting it.\n");
 	return 0;
