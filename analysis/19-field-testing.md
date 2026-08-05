@@ -15,6 +15,12 @@ implemented and have never met real hardware:
 | **The rigctld byte exchange** | Testing it needs a server answering while `open()` blocks, and a thread `test-core` does not have |
 | **USB device detection** | Verified against fabricated `sysfs` trees; this development machine has no USB audio at all |
 
+**Three of those four have since met hardware.**
+[20](20-field-results.md) is the running answer to this document -- what the
+first radio said, and what it broke. Detection, the row that looked safest, did
+not work on Linux at all. The table above stays as the standing request; 20
+records each session against it.
+
 There is also one thing no amount of local testing can establish, and it is the
 most important of all: **on-air interoperability with a real `ardopcf` peer**
 ([13](13-completing-the-rebuild.md) W3). The golden corpus proves the waveform
