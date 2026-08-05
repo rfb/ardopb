@@ -206,6 +206,66 @@ not share a bus with rig control.
 Most of the 32 ms is USB buffering and the radio's turnaround rather than wire
 time, so raising the CI-V rate would barely dent it.
 
+### 7. A killed `rigctld` left the transmitter keyed
+
+The one failure 19 puts ahead of everything else, and it happened. Recorded in
+full because the cause is not where it looks.
+
+```sh
+rigctld -m 3046 -r /dev/ttyUSB0 -s 9600 -c 0x56
+```
+
+The radio **keyed on startup, before any command was sent**, and **stayed keyed
+after `rigctld` was killed**. It was cleared by unplugging the interface.
+
+The rig model was irrelevant -- `-m 3023` (IC-746) would have done the same.
+**Hamlib raises RTS and DTR when it opens a serial port**, because many homebrew
+CI-V level converters are powered from those lines. On a DigiRig, RTS *is* PTT
+(finding 4), so opening the port keys the radio.
+
+Why it survived the kill is the part that reaches our code. **The modem lines
+fall on close only if `HUPCL` is set**, and a program that installs its own
+termios can leave it clear. Then the process dies, nothing lowers the line, and
+the transmitter stays on the air with no software left to stop it.
+
+`ardop_ptt`'s `serial_open` did not configure termios at all for `rts:`/`dtr:` --
+the comment reasoned that keying never touches the data lines, which is true and
+beside the point. It therefore **inherited whatever the previous program left on
+the port**, including a cleared `HUPCL`, and `ptt.h`'s promise that "a serial
+line falls when the handle closes" was enforced by nothing. It now sets `HUPCL`
+explicitly, and clears `CRTSCTS` while it is there: with hardware flow control
+on, the cp210x driver owns RTS and silently ignores `TIOCMSET`, which is keying
+that reports success and never happens.
+
+Verified on the port, which was deliberately left in the dangerous state:
+
+```
+before:                -hupcl
+after our open+close:   hupcl
+```
+
+To drive this station from `rigctld` at all, its line states have to be turned
+off, and the radio should be off or disconnected the first time:
+
+```sh
+rigctld -m 3023 -r /dev/ttyUSB2 -s 9600 -c 0x56 \
+        --set-conf=rts_state=OFF,dtr_state=OFF
+```
+
+### 8. A replug renumbered the port and invalidated the saved configuration
+
+The interface came back as `/dev/ttyUSB2`, and `station.conf` still said
+`/dev/ttyUSB0` -- which by then did not exist. `/dev/serial/by-id/` carries the
+CP2102N's serial number and does not move:
+
+```
+ptt.spec=rts:/dev/serial/by-id/usb-Silicon_Labs_CP2102N_..._-if00-port0
+```
+
+`ardop_ptt_parse` takes that path as-is, so nothing needed to change to support
+it -- but the picker offers only `/dev/ttyUSBn`, so an operator has no way to
+choose the stable name from the interface.
+
 ---
 
 ## What is still unverified
@@ -216,7 +276,7 @@ time, so raising the CI-V rate would barely dent it.
 |---|---|
 | **CM108 GPIO keying** | A real dongle was written to; the pin was not wired, so nothing is proven. **Still open** |
 | **Native CAT keying** | CI-V confirmed against an IC-746PRO. Kenwood and Yaesu still open |
-| **The rigctld byte exchange** | **Still open** |
+| **The rigctld byte exchange** | **Still open.** The first attempt keyed the radio on startup and never got as far as our code -- finding 7 |
 | **USB device detection** | Run on real hardware; was broken; fixed and re-run. Windows reader still not written |
 
 And, unchanged and more important than any of the above: the unkey ordering in
@@ -234,6 +294,7 @@ with `ardopcf`. **A keying test proves the line, not the timing.**
 | ~~"On a DigiRig the PTT line is in the audio cable" in the hint text~~ | **Done**, session 1: `app/ui/devicespage.cpp`, `kMethods` |
 | A read-only CI-V probe during detection, reporting address and rate | `shell/`, new; finding 5. It answers what the USB tree cannot |
 | Rate and address as their own fields for the CAT methods | `app/ui/devicespage.cpp`; a spec typed into "Port" is not discoverable |
+| Offer `/dev/serial/by-id/` paths in the serial picker, preferring them | `shell/serialports.c`; finding 8. A `ttyUSBn` saved today is a different device tomorrow |
 | Keep the diagnostics | Four throwaway programs were written this session -- line toggle, CAT probe, address scan, latency. A `--probe` in the application would have found the whole configuration in one command |
 
 ---

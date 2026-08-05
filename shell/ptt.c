@@ -273,6 +273,36 @@ static bool serial_open(ardop_ptt *p)
 		perror("ptt: open");
 		return false;
 	}
+
+	/*
+	 * A tty keeps whatever the last program left on it, and two of those
+	 * settings decide whether keying works at all.
+	 *
+	 * HUPCL is the safety one. Without it the modem lines survive close(),
+	 * so a process killed while keyed leaves the transmitter on the air
+	 * with nothing alive to unkey it -- and ardop_ptt_close, which exists
+	 * to prevent exactly that, never runs. This file's header promises that
+	 * "a serial line falls when the handle closes"; this is what makes the
+	 * promise true rather than inherited. Windows has no equivalent to set:
+	 * its driver drops the lines when the handle closes.
+	 *
+	 * CRTSCTS is the other. With hardware flow control on, the driver owns
+	 * RTS and quietly ignores TIOCMSET -- keying that reports success and
+	 * never happens. Nothing here uses the data lines, so it is never
+	 * wanted.
+	 *
+	 * Observed in the field: hamlib raises RTS and DTR on open (many CI-V
+	 * interfaces are powered from them), which on a DigiRig *is* PTT, and a
+	 * killed rigctld left an IC-746PRO transmitting
+	 * ([20](../analysis/20-field-results.md) finding 7).
+	 */
+	struct termios t;
+	if (tcgetattr(p->serial_fd, &t) == 0) {
+		t.c_cflag &= ~CRTSCTS;
+		t.c_cflag |= CLOCAL | CREAD | HUPCL;
+		(void)tcsetattr(p->serial_fd, TCSANOW, &t);
+	}
+
 	int bits = 0;
 	if (ioctl(p->serial_fd, TIOCMGET, &bits) == 0) {
 		bits &= ~(TIOCM_RTS | TIOCM_DTR);
