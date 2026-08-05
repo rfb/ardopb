@@ -252,6 +252,42 @@ rigctld -m 3023 -r /dev/ttyUSB2 -s 9600 -c 0x56 \
         --set-conf=rts_state=OFF,dtr_state=OFF
 ```
 
+With that, **the rigctld path is confirmed end to end**: the command keys and
+unkeys the radio on startup as hamlib probes it, and `ardop-station` configured
+with `rigctld:127.0.0.1:4532` keys and unkeys correctly. That is the last of
+19's four "never met hardware" rows, and the only one whose byte exchange could
+not be tested in process at all -- it needs a server answering while `open()`
+blocks.
+
+### 9. Two things the devices page does not do for an operator trying methods
+
+Both reported while switching between keying methods in sequence, which is the
+whole activity of setting up a radio and is therefore the case the page should
+be best at.
+
+> the user needs to press apply before test. that's confusing -- I would expect
+> test to test the currently displayed values.
+
+*Test PTT* keys through the device the modem thread has **open**, so an
+unapplied change is silently not what gets tested. What the operator sees is
+"PTT test: no device is open", which neither says "press Apply first" nor hints
+that the two fields directly above the button are being ignored.
+
+> when I change the keying method it should probably switch the port to whatever
+> is the most obvious first. when I switched to rigctld, the port stayed as the
+> usb until I changed the dropdown.
+
+`fillPttTargets` preserves the previous text across a method change, so choosing
+rigctld leaves a `/dev/ttyUSB2` in a field that now wants `host:port`. Keeping
+what was typed is right when the same method's list is refreshed and wrong when
+the method changed underneath it; the two intents share one code path.
+
+Written up as user stories in [16](16-user-interface.md) §11 -- FU-1 and FU-4
+for these two, FU-2 and FU-3 for the CAT-syntax and stable-port-name findings
+above. FU-1 carries the constraint that makes it cheap to build: keying and
+audio are independent, so testing a displayed spec need not open a sound card at
+all.
+
 ### 8. A replug renumbered the port and invalidated the saved configuration
 
 The interface came back as `/dev/ttyUSB2`, and `station.conf` still said
@@ -276,7 +312,7 @@ choose the stable name from the interface.
 |---|---|
 | **CM108 GPIO keying** | A real dongle was written to; the pin was not wired, so nothing is proven. **Still open** |
 | **Native CAT keying** | CI-V confirmed against an IC-746PRO. Kenwood and Yaesu still open |
-| **The rigctld byte exchange** | **Still open.** The first attempt keyed the radio on startup and never got as far as our code -- finding 7 |
+| **The rigctld byte exchange** | **Confirmed.** `rigctld:127.0.0.1:4532` keys and unkeys this station from `ardop-station`; the first attempt keyed the radio on startup and never got as far as our code, which is finding 7 |
 | **USB device detection** | Run on real hardware; was broken; fixed and re-run. Windows reader still not written |
 
 And, unchanged and more important than any of the above: the unkey ordering in

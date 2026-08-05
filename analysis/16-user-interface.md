@@ -828,6 +828,85 @@ through untouched, which is what §6 bought.
 
 ---
 
+## 11. Requirements from field use
+
+Stories written after an operator used the interface against a real radio, kept
+here rather than in an issue tracker because each one is a disagreement between
+what this document designed and what somebody at a transmitter expected. The
+session that produced them is
+[20](20-field-results.md).
+
+### FU-1. *Test PTT* tests what is on the screen
+
+> **As an operator setting up a new radio, I want *Test PTT* to key using the
+> keying method currently shown in the fields, so that I can try one method and
+> then another without applying each of them first.**
+
+Today the button keys through the *opened* device, so a change to the pickers is
+silently not what gets tested, and an operator who has changed the method and
+not pressed Apply is told "PTT test: no device is open" -- which does not say
+"press Apply first" and does not hint that the two fields above it are being
+ignored. Setting up a radio means trying two or three keying methods in a row;
+that is the whole activity, and Apply-then-Test doubles it while making the
+failure mode confusing rather than obvious.
+
+Constraints for whoever builds it, none of them obstacles:
+
+- **A keying test need not open a sound card at all.** PTT and audio are
+  independent by design ([15](15-platform-audio-and-ptt.md) §6), which is
+  exactly what makes this cheap: parse the displayed spec, open it, key, unkey,
+  close.
+- **When the displayed spec matches the running one, test through the running
+  device.** Only that path exercises the backend's drain-then-unkey ordering,
+  which is the part worth testing on a station that is already up.
+- **Keep both existing guards** (`app/devices.c`): refuse while a transmission
+  is in progress, and refuse while a session is connected. Neither depends on
+  where the spec came from.
+- **Name the spec in the result message.** Once the tested method can differ
+  from the applied one, "PTT test: keyed and unkeyed" is no longer enough to say
+  *what* was keyed.
+
+### FU-2. Rate and address are fields, not syntax
+
+> **As an operator with a CAT-keyed radio, I want the serial rate and the CI-V
+> address as their own controls, so that I do not have to know a spec grammar to
+> configure a radio that is not on its defaults.**
+
+The working configuration for the session-1 station was
+`civ:/dev/ttyUSB0:9600@56`, typed into a combo box labelled **Port**. The hint
+text mentions `@a4` and `@94` and never mentions a rate at all. A radio at the
+wrong rate is silent, which is indistinguishable from a dead cable.
+
+### FU-3. Offer port names that survive a replug
+
+> **As an operator, I want the port I chose yesterday to still mean the same
+> device today, so that unplugging the interface does not silently invalidate my
+> configuration.**
+
+`/dev/ttyUSBn` is assigned in enumeration order. Session 1 replugged a DigiRig
+and it came back as `ttyUSB2`, leaving a saved `ttyUSB0` pointing at nothing.
+`/dev/serial/by-id/` carries the adapter's serial number and does not move;
+`ardop_ptt_parse` already accepts such a path, so this is a question of what the
+picker offers and in which order.
+
+### FU-4. Changing the keying method offers a port that belongs to it
+
+> **As an operator changing the keying method, I want the port field to move to
+> the obvious choice for that method, so that I am not left with a serial path
+> selected for a network service.**
+
+`fillPttTargets` preserves the previous text across a method change, so
+switching from Serial RTS to rigctld leaves `/dev/ttyUSB2` sitting in a field
+that now wants `host:port`, and nothing says so until the open fails. Preserving
+what the operator typed is right when the *same* method's list is refreshed and
+wrong when the method changes underneath it -- two different intents through one
+code path.
+
+Every method already has an obvious default, and it is already the first item in
+the list that gets built: the first serial port, `auto` for CM108,
+`127.0.0.1:4532` for rigctld. So this is a question of when to keep the old
+value, not of inventing a new one.
+
 ## Open decisions
 
 1. **QML for the instrument panel too, or only for the chrome?** The panels could
