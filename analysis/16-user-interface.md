@@ -931,6 +931,29 @@ Not scoped further than this. Whether it lives at the `shell/` level
 (alongside `shell/telemetry.c`) or the `app/` level, and whether it captures
 raw decoded frames or the higher-level ASP/session content, is open.
 
+## 13. Idea: CAT frequency rotation
+
+Raised during the interop session, not implemented, not otherwise scoped.
+
+Some stations do not sit on one frequency: they rotate continuously through a
+list, listening (and presumably calling) on each in turn. Nothing in this
+project drives the radio's VFO today -- `shell/ptt_cat.c`'s CAT grammar
+([15](15-platform-audio-and-ptt.md) §6) only ever sends the keying command for
+a family (Icom CI-V, Kenwood, Yaesu); it has no frequency-set frame for any of
+them. Supporting a rotation would mean adding one, plus a schedule (a list of
+frequencies and a dwell time) for the modem thread to step through while idle,
+pausing the rotation the moment a leader is detected so a station mid-exchange
+is not tuned away from -- the same "do not touch the radio while carrier-active"
+discipline PTT already has to observe.
+
+Two open questions worth naming before this is picked up: whether rotation is
+useful only for *listening* (find a station wherever its current slot is) or
+also for *calling* (retry a ConReq at each frequency in turn), since the second
+interacts with the busy detector and the CONREQ retry timer in ways the first
+does not; and whether the frequency list is a station-specific configuration an
+operator enters by hand, or something inferred from a channel table like
+`shell/radios.c`'s hardware table.
+
 ## Open decisions
 
 1. **QML for the instrument panel too, or only for the chrome?** The panels could
