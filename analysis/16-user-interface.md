@@ -907,6 +907,30 @@ the list that gets built: the first serial port, `auto` for CM108,
 `127.0.0.1:4532` for rigctld. So this is a question of when to keep the old
 value, not of inventing a new one.
 
+## 12. Proposal: a frame capture log, pcap-shaped
+
+Raised during the interop session ([20](20-field-results.md)) after a passive
+copy of a real 64-byte `4FSK.500.100` frame off the air, with nothing to do with
+it afterward: no way to save it, replay it, or compare it against a later
+capture.
+
+Every decoded frame already exists as a value in this codebase --
+`ardop_event`/`ardop_obs` at `ARDOP_EV_FRAME_DECODED`, with type, quality, S/N
+and payload -- so the gap is persistence, not data. The natural shape is
+something Wireshark already reads: a `pcapng` file with one custom block per
+frame (timestamp, frame type, quality, S/N, bandwidth, payload bytes), so a
+capture from the field opens in a tool an operator may already have, rather
+than a bespoke viewer this project would have to build and maintain. The
+History tab ([16](16-user-interface.md) §3, fed by `SessionHistory` in
+`app/ui/sessionhistory.h`) is the in-process analogue and already proves the
+event stream carries what a capture needs -- this is that stream written to
+disk in a format that outlives the process, plus a `--capture FILE` flag on
+`ardopb` for a session running headless.
+
+Not scoped further than this. Whether it lives at the `shell/` level
+(alongside `shell/telemetry.c`) or the `app/` level, and whether it captures
+raw decoded frames or the higher-level ASP/session content, is open.
+
 ## Open decisions
 
 1. **QML for the instrument panel too, or only for the chrome?** The panels could

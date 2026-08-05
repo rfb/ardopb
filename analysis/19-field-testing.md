@@ -215,14 +215,21 @@ file transfer is the thing we most want to hear about.
 
 ## Part 5 — Interoperability with `ardopcf`
 
-The one nothing here can substitute for.
+The one nothing else here can substitute for -- though [20](20-field-results.md)
+session 2 has now exercised the software half of it off the air, over a
+virtual-cable loopback rather than a radio: `ardopb` dialing a real `ardopcf`
+connects and transfers a file bit-exact. **On-air is still untested**, and so is
+the reverse direction cleanly -- session 2's `ardopcf`-dials-`ardopb` run lost
+its payload, but so did `ardopcf` talking to itself with no `ardopb` involved,
+which points at the test rig's live-audio bridge rather than settling anything
+about the protocol. Read that session before repeating the experiment.
 
 If you can run the original `ardopcf` on another machine (or another radio), a
 connect and a data transfer **in both directions** would tell us more than
 everything else in this document combined. The waveform is checked against a
 frozen corpus on every build; a live negotiated session with a foreign
-implementation is not, and until it is, this project should not be recommended
-to anyone who cannot debug it.
+implementation over real RF is not, and until it is, this project should not be
+recommended to anyone who cannot debug it.
 
 ---
 

@@ -364,6 +364,116 @@ with `ardopcf`. **A keying test proves the line, not the timing.**
 
 ---
 
+## Session 2 — 2026-08-05, VA7BFR
+
+Same build, same machine. On the air with `ardop-station` against known ARDOP
+stations: called out several times, no reply, and no passive traffic heard
+either, so the usual explanation -- a quiet band -- could not be ruled in or out
+from the operator's own receiver alone. A remote SDR near a called station heard
+the same signal levels the local radio did, which rules out "our RF never
+leaves the building," but not "the protocol never gets a reply." That gap is
+what motivated this session: `tools/loopback.sh` already builds an all-software
+rig for exactly this question ([13](13-completing-the-rebuild.md) W3, `19` Part
+5), and it had never actually been run against the reference implementation.
+
+### The rig
+
+`pflarue/ardop` built from source (the authority this project was forked from;
+`third_party/` carries no copy of it). GCC 14 rejects three implicit
+pointer-to-int conversions in the unrelated `lib/rawhid` CM108 code as hard
+errors by default; building with `-Wno-error=int-conversion
+-Wno-error=implicit-function-declaration` restores them to warnings and does
+not touch anything this session exercises. `~/.asoundrc` bridges ardopcf's
+ALSA-only audio onto the loopback's PulseAudio null sinks, exactly as the
+script's own header documents; harmless to leave in place for a later session.
+
+### Direction 1: ardopb dials, ardopcf answers
+
+**Connected and transferred 800 bytes bit-exact** (`sha256sum` matched).
+ardopcf's own log shows it decoding our ConReq at Quality 100:
+
+```
+[DecodeFrame] Frame: ConReq2000M Decode PASS,  Quality= 100,  RS fixed 0 (of 2 max).
+CONREQ From N0AAA to N0BBB Listen = 1
+```
+
+and ardopb decoding ardopcf's ConAck cleanly in return (`rx frame 0x3c q=93`).
+**This is the direction that matches the field symptom** -- an operator calling
+out -- and it is clean against real reference code. The one gap noticed along
+the way: `ARDOP_OBS_RX_FRAME`'s `quality` field is left at its zero
+initialiser for every short control frame (IDLE, BREAK, DataACK, DataNAK,
+DISC, END, the ConRej pair) in `core/modem/demodulate.c`'s
+`is_short_control_frame` branch, because those frames carry no payload to
+compute an RS-based quality from. Harmless to the *protocol* -- `core/link/link.c`
+derives ACK/NAK quality straight from the frame-type byte itself
+(`ardop_quality_from_type`), never from this field -- but it means `ardopb`'s
+own `[obs] rx frame 0x3c q=93` line is honest only for data-bearing frames and
+silently prints 0 for every control frame, which is confusing to read on its
+own and worth fixing for that reason alone.
+
+### Direction 2: ardopcf dials, ardopb answers
+
+Both sides logged `CONNECTED`. **Zero bytes arrived.** ardopcf's own log:
+
+```
+[STATUS: ARQ CONNECTION ESTABLISHED WITH N0AAA, SESSION BW = 2000 HZ]
+Sending Frame Type IDLE
+[ARDOPprotocol.SendData]  Send IDLE with Repeat, Set ProtocolState=IDLE
+[STATUS: INITIATING ARQ DISCONNECT]
+```
+
+ardopcf checked for queued data, found none yet (the 800 bytes had not finished
+crossing its TCP data port), sent IDLE, and our own `ardop-cat` client -- having
+seen `BUFFER` fall and `STATE` read `IDLE` -- declared the transfer done and
+disconnected. Nothing was ever radiated.
+
+### Control: ardopcf against itself, no ardopb anywhere
+
+Run specifically to find out whether direction 2 was ours. **It broke down the
+same way, with zero of this project's code running as either station.** The
+dialer repeated its own ConAck2000 roughly ten times; the listener answered
+every repeat with a fresh DataACK; neither side ever recognised the other's
+steady-state reply, and the dialer gave up and disconnected.
+
+That is the deciding fact. Directions 2 and 3 share one thing direction 1 did
+not: **two ALSA-plugin endpoints in the loop**, rather than one ALSA endpoint
+answering into `ardopb`'s native Pulse backend. Two live-audio ALSA→Pulse
+bridges in one exchange is the plainer explanation for jitter than a protocol
+defect that happens to vanish the instant `ardopb` is removed entirely.
+
+### What this session established, and what it did not
+
+**Established, with confidence:** `ardopb`'s ConReq framing is byte-correct
+against a real, independently-built reference decoder, in both directions of
+the handshake, and a full ARQ file transfer completes bit-exact when `ardopb`
+is the dialer. That is the direction the operator's field symptom lives in.
+
+**Not established:** why direction 2 lost its payload. The control run makes
+"an ardopb defect" the less likely explanation, not a ruled-out one -- distinguishing
+"the ALSA bridge is too lossy for a sustained exchange" from "something about
+being connected to `ardopb` specifically is slower to settle than one ardopcf
+expects" needs a harness that removes live audio from the question entirely:
+capture ardopcf's own output to WAV and feed it to `ardopb --decodewav`
+(the golden-corpus path, `test/golden/README.md`), or a second physical
+machine. Recorded here rather than resolved, because the honest conclusion of
+a live-audio test that fails is "audio was involved," not "the protocol was
+wrong."
+
+**Also not established:** why the operator's own on-air calls went
+unanswered. This session tested software correctness, not propagation or
+whether a called station was listening on the exact frequency and mode
+believed. Those remain open per the operator's own report.
+
+### Follow-ups
+
+| | Where it goes |
+|---|---|
+| Populate `quality` for short control frames in `ARDOP_OBS_RX_FRAME` (harmless to the protocol, confusing to read in isolation) | `core/modem/demodulate.c`, the `is_short_control_frame` branch |
+| Isolate direction 2 with `--decodewav` instead of live ALSA-bridged audio | `test/golden/`; needs an ardopcf WAV capture as fixture |
+| A frame-capture log, pcap-shaped, prompted by a passive `4FSK.500.100` copy with nowhere to go | written up as [16](16-user-interface.md) §12, not yet built |
+
+---
+
 ## Method note
 
 Everything in session 1 was established on the operator's own machine: `lsusb`
@@ -371,3 +481,8 @@ and `sysfs` for the topology, `TIOCMGET`/`TIOCMSET` for the serial lines, and
 read-only CI-V commands for the radio. Nothing was keyed by the assistant --
 every transmission in this log was initiated by the operator, at the radio, into
 a load they had checked.
+
+Session 2 ran entirely off the air: two virtual audio cables and processes on
+the operator's own machine, no radio, no RF, nothing that could key a
+transmitter. `ardopcf` was built from upstream source for the session and is
+not committed to this repository.
