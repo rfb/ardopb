@@ -638,9 +638,7 @@ ardop_ptt *ardop_ptt_open(const ardop_ptt_config *cfg)
 		/* Prove the link now rather than at the first transmission. */
 		rig_set(p, false);
 		if (p->fault != ARDOP_FAULT_NONE) {
-			ardop_cm108_close(p->hid);
-	p->hid = NULL;
-	ardop_net_close(&p->rig);
+			ardop_net_close(&p->rig);
 			free(p);
 			return NULL;
 		}
@@ -790,5 +788,12 @@ void ardop_ptt_close(ardop_ptt *p)
 		close(p->serial_fd);
 #endif
 	ardop_net_close(&p->rig);
+
+	/* The HID handle too. Its absence here leaked one hidraw descriptor per
+	 * device reopen -- found on a running station holding three of them --
+	 * and left a keying device open in a program that believed it had let
+	 * go. ardop_cm108_close unkeys before closing, which is the same
+	 * ordering the block above exists for. */
+	ardop_cm108_close(p->hid);
 	free(p);
 }

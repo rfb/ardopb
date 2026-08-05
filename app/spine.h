@@ -165,6 +165,7 @@ typedef enum {
 	APP_EV_DEVICE,    /**< @c text + @c code (an ::app_device_code). */
 	APP_EV_STATE,     /**< @c text: the other station, or empty. @c code: state. */
 	APP_EV_GUEST,     /**< @c text + @c code (an ::app_guest_code). */
+	APP_EV_LEADER,    /**< @c text: a leader was acquired. @c code: S/N, dB. */
 } app_event_kind;
 
 /**

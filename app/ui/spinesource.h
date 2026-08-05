@@ -103,6 +103,15 @@ signals:
 	void guestEvent(int code, const QString &text);
 
 	/**
+	 * @brief A leader was acquired: the offset in Hz and the S/N, as text.
+	 *
+	 * Emitted before any frame, and whether or not one follows. It is the
+	 * only sign that something was heard at all, which is what an operator
+	 * tuning an unfamiliar station is looking for.
+	 */
+	void leaderDetected(const QString &text);
+
+	/**
 	 * @brief Both queues have been drained; anything waiting may now move.
 	 *
 	 * Emitted last, which is the whole of its meaning: received payload has

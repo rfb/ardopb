@@ -466,6 +466,23 @@ void ardop_runtime_rx(ardop_runtime *rt, const int16_t *samples, size_t n,
 			 * carries quality, not S/N. Latch it here so the frame
 			 * it belongs to can report it. */
 			rt->last_sn = (int16_t)ev->sn;
+
+			/*
+			 * And report the acquisition itself, which nothing else
+			 * does. Between "heard nothing" and "decoded a frame"
+			 * lies "heard a leader and never got framing", and that
+			 * is the state an operator is in while tuning a station
+			 * they cannot yet copy -- previously invisible.
+			 *
+			 * offset_hz is the whole point. The demodulator has
+			 * just measured how far from 1500 Hz the signal
+			 * actually sits, and the tolerance is about +/-100 Hz;
+			 * an operator who can see that number tunes by it
+			 * instead of guessing which way to move the dial.
+			 */
+			emit(rt, &(ardop_obs){.kind = ARDOP_OBS_LEADER,
+					      .offset_hz = ev->offset_hz,
+					      .sn = ev->sn});
 			continue;   /* not a link input. */
 		}
 

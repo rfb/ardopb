@@ -50,6 +50,7 @@ typedef enum {
 	ARDOP_OBS_MODE,         /**< Protocol mode changed (mode). */
 	ARDOP_OBS_BANDWIDTH,    /**< Negotiated session width changed (bandwidth Hz). */
 	ARDOP_OBS_PTT,          /**< Transmitter keyed/unkeyed (key). */
+	ARDOP_OBS_LEADER,       /**< Acquisition started (offset_hz, sn). */
 	ARDOP_OBS_RX_FRAME,     /**< Frame decoded (frame_type, quality, sn). */
 	ARDOP_OBS_RX_FRAME_BAD, /**< Frame acquired but failed (frame_type). */
 	ARDOP_OBS_TX_FRAME,     /**< Frame handed to the modulator (frame_type). */
@@ -73,7 +74,8 @@ typedef struct {
 	bool busy;                /**< BUSY. */
 	uint8_t frame_type;       /**< RX_FRAME / RX_FRAME_BAD / TX_FRAME. */
 	int quality;              /**< RX_FRAME: decode quality 0..100. */
-	int sn;                   /**< RX_FRAME: leader signal/noise, dB. */
+	int sn;                   /**< LEADER / RX_FRAME: signal/noise, dB. */
+	float offset_hz;          /**< LEADER: measured tuning error, Hz. */
 	size_t buffer_len;        /**< BUFFER: bytes queued to send. */
 	const char *text;         /**< HOST_MSG: the message. */
 	const char *tag;          /**< RX_DATA: "ARQ"/"FEC". */

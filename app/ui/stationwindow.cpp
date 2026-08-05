@@ -177,6 +177,8 @@ StationWindow::StationWindow(ModemThread *modem, QWidget *parent)
 		&SessionHistory::append);
 	connect(m_spineSource, &SpineSource::guestEvent,
 		this, &StationWindow::onGuestEvent);
+	connect(m_spineSource, &SpineSource::leaderDetected,
+		this, &StationWindow::log);
 	connect(m_guests, &GuestsPage::message, this, &StationWindow::log);
 	connect(m_guests, &GuestsPage::settingsChanged, this,
 		[this] { m_saveTick.start(); });
