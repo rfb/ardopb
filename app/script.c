@@ -221,6 +221,14 @@ void app_script_event(app_script *sc, int side, const app_event *ev)
 		show(sc, side, ev->text);
 		break;
 
+	case APP_EV_LEADER:
+		/* Deliberately not shown. One line per acquired leader is what
+		 * an operator tuning a radio wants and the opposite of what a
+		 * transcript wants: in loopback every frame acquires, so this
+		 * would double the length of a comparison nobody could then
+		 * read. */
+		break;
+
 	case APP_EV_STATE:
 		/*
 		 * Shown only when there is a station on the other end.

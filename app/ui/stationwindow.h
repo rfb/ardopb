@@ -155,6 +155,7 @@ private:
 	QPlainTextEdit *m_log = nullptr;
 
 	QLabel *m_conn = nullptr;
+	QLabel *m_link = nullptr;
 	QLabel *m_frame = nullptr;
 	QLabel *m_owner = nullptr;
 

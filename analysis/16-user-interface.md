@@ -828,6 +828,132 @@ through untouched, which is what §6 bought.
 
 ---
 
+## 11. Requirements from field use
+
+Stories written after an operator used the interface against a real radio, kept
+here rather than in an issue tracker because each one is a disagreement between
+what this document designed and what somebody at a transmitter expected. The
+session that produced them is
+[20](20-field-results.md).
+
+### FU-1. *Test PTT* tests what is on the screen
+
+> **As an operator setting up a new radio, I want *Test PTT* to key using the
+> keying method currently shown in the fields, so that I can try one method and
+> then another without applying each of them first.**
+
+Today the button keys through the *opened* device, so a change to the pickers is
+silently not what gets tested, and an operator who has changed the method and
+not pressed Apply is told "PTT test: no device is open" -- which does not say
+"press Apply first" and does not hint that the two fields above it are being
+ignored. Setting up a radio means trying two or three keying methods in a row;
+that is the whole activity, and Apply-then-Test doubles it while making the
+failure mode confusing rather than obvious.
+
+Constraints for whoever builds it, none of them obstacles:
+
+- **A keying test need not open a sound card at all.** PTT and audio are
+  independent by design ([15](15-platform-audio-and-ptt.md) §6), which is
+  exactly what makes this cheap: parse the displayed spec, open it, key, unkey,
+  close.
+- **When the displayed spec matches the running one, test through the running
+  device.** Only that path exercises the backend's drain-then-unkey ordering,
+  which is the part worth testing on a station that is already up.
+- **Keep both existing guards** (`app/devices.c`): refuse while a transmission
+  is in progress, and refuse while a session is connected. Neither depends on
+  where the spec came from.
+- **Name the spec in the result message.** Once the tested method can differ
+  from the applied one, "PTT test: keyed and unkeyed" is no longer enough to say
+  *what* was keyed.
+
+### FU-2. Rate and address are fields, not syntax
+
+> **As an operator with a CAT-keyed radio, I want the serial rate and the CI-V
+> address as their own controls, so that I do not have to know a spec grammar to
+> configure a radio that is not on its defaults.**
+
+The working configuration for the session-1 station was
+`civ:/dev/ttyUSB0:9600@56`, typed into a combo box labelled **Port**. The hint
+text mentions `@a4` and `@94` and never mentions a rate at all. A radio at the
+wrong rate is silent, which is indistinguishable from a dead cable.
+
+### FU-3. Offer port names that survive a replug
+
+> **As an operator, I want the port I chose yesterday to still mean the same
+> device today, so that unplugging the interface does not silently invalidate my
+> configuration.**
+
+`/dev/ttyUSBn` is assigned in enumeration order. Session 1 replugged a DigiRig
+and it came back as `ttyUSB2`, leaving a saved `ttyUSB0` pointing at nothing.
+`/dev/serial/by-id/` carries the adapter's serial number and does not move;
+`ardop_ptt_parse` already accepts such a path, so this is a question of what the
+picker offers and in which order.
+
+### FU-4. Changing the keying method offers a port that belongs to it
+
+> **As an operator changing the keying method, I want the port field to move to
+> the obvious choice for that method, so that I am not left with a serial path
+> selected for a network service.**
+
+`fillPttTargets` preserves the previous text across a method change, so
+switching from Serial RTS to rigctld leaves `/dev/ttyUSB2` sitting in a field
+that now wants `host:port`, and nothing says so until the open fails. Preserving
+what the operator typed is right when the *same* method's list is refreshed and
+wrong when the method changes underneath it -- two different intents through one
+code path.
+
+Every method already has an obvious default, and it is already the first item in
+the list that gets built: the first serial port, `auto` for CM108,
+`127.0.0.1:4532` for rigctld. So this is a question of when to keep the old
+value, not of inventing a new one.
+
+## 12. Proposal: a frame capture log, pcap-shaped
+
+Raised during the interop session ([20](20-field-results.md)) after a passive
+copy of a real 64-byte `4FSK.500.100` frame off the air, with nothing to do with
+it afterward: no way to save it, replay it, or compare it against a later
+capture.
+
+Every decoded frame already exists as a value in this codebase --
+`ardop_event`/`ardop_obs` at `ARDOP_EV_FRAME_DECODED`, with type, quality, S/N
+and payload -- so the gap is persistence, not data. The natural shape is
+something Wireshark already reads: a `pcapng` file with one custom block per
+frame (timestamp, frame type, quality, S/N, bandwidth, payload bytes), so a
+capture from the field opens in a tool an operator may already have, rather
+than a bespoke viewer this project would have to build and maintain. The
+History tab ([16](16-user-interface.md) §3, fed by `SessionHistory` in
+`app/ui/sessionhistory.h`) is the in-process analogue and already proves the
+event stream carries what a capture needs -- this is that stream written to
+disk in a format that outlives the process, plus a `--capture FILE` flag on
+`ardopb` for a session running headless.
+
+Not scoped further than this. Whether it lives at the `shell/` level
+(alongside `shell/telemetry.c`) or the `app/` level, and whether it captures
+raw decoded frames or the higher-level ASP/session content, is open.
+
+## 13. Idea: CAT frequency rotation
+
+Raised during the interop session, not implemented, not otherwise scoped.
+
+Some stations do not sit on one frequency: they rotate continuously through a
+list, listening (and presumably calling) on each in turn. Nothing in this
+project drives the radio's VFO today -- `shell/ptt_cat.c`'s CAT grammar
+([15](15-platform-audio-and-ptt.md) §6) only ever sends the keying command for
+a family (Icom CI-V, Kenwood, Yaesu); it has no frequency-set frame for any of
+them. Supporting a rotation would mean adding one, plus a schedule (a list of
+frequencies and a dwell time) for the modem thread to step through while idle,
+pausing the rotation the moment a leader is detected so a station mid-exchange
+is not tuned away from -- the same "do not touch the radio while carrier-active"
+discipline PTT already has to observe.
+
+Two open questions worth naming before this is picked up: whether rotation is
+useful only for *listening* (find a station wherever its current slot is) or
+also for *calling* (retry a ConReq at each frequency in turn), since the second
+interacts with the busy detector and the CONREQ retry timer in ways the first
+does not; and whether the frequency list is a station-specific configuration an
+operator enters by hand, or something inferred from a channel table like
+`shell/radios.c`'s hardware table.
+
 ## Open decisions
 
 1. **QML for the instrument panel too, or only for the chrome?** The panels could

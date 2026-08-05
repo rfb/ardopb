@@ -113,7 +113,9 @@ static void test_internal_hub(void **state)
 	assert_true(c[0].ptt_is_guess);
 }
 
-/* A certain pairing beats an inferred one when both are available. */
+/* A certain pairing is offered before an inferred one -- and the inferred one is
+ * still offered, because ranking says which device this is, not which line
+ * keys. */
 static void test_same_device_outranks_same_hub(void **state)
 {
 	(void)state;
@@ -123,9 +125,45 @@ static void test_same_device_outranks_same_hub(void **state)
 	node(&n[2], "3-2.4", "/dev/ttyACM0", 0x0c26, 0x0004, false, true, false);
 
 	ardop_radio_candidate c[4];
-	assert_int_equal(ardop_usb_pair(n, 3, c, 4), 1);
+	assert_int_equal(ardop_usb_pair(n, 3, c, 4), 2);
+
 	assert_int_equal(c[0].link, ARDOP_USB_SAME_DEVICE);
 	assert_non_null(strstr(c[0].ptt_spec, "/dev/ttyACM0"));
+
+	assert_int_equal(c[1].link, ARDOP_USB_SAME_HUB);
+	assert_non_null(strstr(c[1].ptt_spec, "/dev/ttyUSB9"));
+	assert_string_equal(c[1].audio_id, "/dev/card1");
+}
+
+/*
+ * The DigiRig Mobile as it actually enumerates, and the case that cost a field
+ * session (analysis/20 finding 3).
+ *
+ * Its C-Media codec presents a HID interface on the *same USB device* as the
+ * sound card, which outranks the CP2102 bridge one level up -- and that pin is
+ * not bonded to PTT, so the only method offered was one that opens, writes,
+ * reports no fault and never keys. Both must be offered.
+ */
+static void test_digirig_offers_both_its_keying_lines(void **state)
+{
+	(void)state;
+	ardop_usb_node n[3];
+	node(&n[0], "1-2.2", "/dev/card0", 0x0d8c, 0x0012, true, false, false);
+	node(&n[1], "1-2.2", "/dev/hidraw2", 0x0d8c, 0x0012, false, false, true);
+	node(&n[2], "1-2.1", "/dev/ttyUSB0", 0x10c4, 0xea60, false, true, false);
+
+	ardop_radio_candidate c[4];
+	assert_int_equal(ardop_usb_pair(n, 3, c, 4), 2);
+
+	/* Certain first: the codec's own HID. */
+	assert_int_equal(c[0].link, ARDOP_USB_SAME_DEVICE);
+	assert_non_null(strstr(c[0].ptt_spec, "cm108:/dev/hidraw2"));
+
+	/* And the one that actually keys this interface, which used to be
+	 * dropped entirely. */
+	assert_int_equal(c[1].link, ARDOP_USB_SAME_HUB);
+	assert_string_equal(c[1].ptt_spec, "rts:/dev/ttyUSB0");
+	assert_string_equal(c[1].audio_id, "/dev/card0");
 }
 
 /*
@@ -334,6 +372,146 @@ static void test_scan_over_a_fixture_tree(void **state)
 	assert_int_equal(system(cmd), 0);
 }
 
+/* Write one USB device's string attributes, the ones udev builds a name from. */
+static void fixture_strings(const char *root, const char *usbpath,
+			    const char *manufacturer, const char *product,
+			    const char *serial)
+{
+	char dir[512], file[640], cmd[700];
+	snprintf(dir, sizeof dir, "%s/sys/bus/usb/devices/%s", root, usbpath);
+	snprintf(cmd, sizeof cmd, "mkdir -p '%s'", dir);
+	assert_int_equal(system(cmd), 0);
+
+	if (manufacturer) {
+		snprintf(file, sizeof file, "%s/manufacturer", dir);
+		write_file(file, manufacturer);
+	}
+	if (product) {
+		snprintf(file, sizeof file, "%s/product", dir);
+		write_file(file, product);
+	}
+	if (serial) {
+		snprintf(file, sizeof file, "%s/serial", dir);
+		write_file(file, serial);
+	}
+}
+
+/*
+ * Build a /sys/class entry the way the kernel does: a "device" symlink, stored
+ * *relative*, pointing at the USB interface directory.
+ */
+static void fixture_link(const char *root, const char *cls, const char *name,
+			 const char *usbpath, const char *iface)
+{
+	char dir[512], cmd[1400], target[512], link[640];
+
+	snprintf(dir, sizeof dir, "%s/sys/class/%s/%s", root, cls, name);
+	snprintf(cmd, sizeof cmd, "mkdir -p '%s'", dir);
+	assert_int_equal(system(cmd), 0);
+
+	snprintf(cmd, sizeof cmd, "mkdir -p '%s/sys/devices/%s/%s'", root,
+		 usbpath, iface);
+	assert_int_equal(system(cmd), 0);
+
+	snprintf(target, sizeof target, "../../../devices/%s/%s", usbpath, iface);
+	snprintf(link, sizeof link, "%s/device", dir);
+	snprintf(cmd, sizeof cmd, "ln -sfn '%s' '%s'", target, link);
+	assert_int_equal(system(cmd), 0);
+}
+
+/*
+ * The reader over links rather than the tests' own "usbpath" hint file.
+ *
+ * This is the shape the kernel actually presents, and the case that was broken
+ * for as long as only the hint file was covered: /sys/class/sound/card0/device
+ * is stored as "../../../1-2.2:1.0", so *reading* the link yields an interface
+ * name with no device path above it and the walk finds nothing at all. Every
+ * class is affected, so detection reported an empty machine on hardware that
+ * was plainly there.
+ */
+static void test_scan_follows_relative_device_links(void **state)
+{
+	(void)state;
+	const char *root = "test-usbtopo-links.tmp";
+
+	char cmd[256];
+	snprintf(cmd, sizeof cmd, "rm -rf '%s'", root);
+	assert_int_equal(system(cmd), 0);
+
+	/* A DigiRig Mobile: a C-Media sound card and a CP2102 bridge as two
+	 * devices behind the internal hub at 1-2. */
+	fixture_link(root, "sound", "card0", "usb1/1-2/1-2.2", "1-2.2:1.0");
+	fixture_link(root, "tty", "ttyUSB0", "usb1/1-2/1-2.1", "1-2.1:1.0");
+	fixture_ids(root, "1-2.2", "0d8c", "0012");
+	fixture_ids(root, "1-2.1", "10c4", "ea60");
+	fixture_strings(root, "1-2.2", "C-Media Electronics Inc.",
+			"USB Audio Device", NULL);
+
+	ardop_usb_node nodes[16];
+	size_t n = ardop_usb_scan(root, nodes, 16);
+	assert_int_equal(n, 2);
+
+	ardop_radio_candidate c[4];
+	size_t got = ardop_usb_pair(nodes, n, c, 4);
+	assert_int_equal(got, 1);
+	assert_int_equal(c[0].link, ARDOP_USB_SAME_HUB);
+	assert_string_equal(c[0].audio_id, "/dev/card0");
+	assert_non_null(strstr(c[0].ptt_spec, "rts:/dev/ttyUSB0"));
+
+	snprintf(cmd, sizeof cmd, "rm -rf '%s'", root);
+	assert_int_equal(system(cmd), 0);
+}
+
+/*
+ * The two names for one sound card.
+ *
+ * A card index does not appear in a PulseAudio-style id at all, so matching one
+ * against the other by index -- which is what the id below would have matched
+ * before, on the "0" in "0d8c" or in any pci address -- attaches a candidate to
+ * whichever device happened to enumerate first.
+ */
+static void test_audio_id_matches(void **state)
+{
+	(void)state;
+	const char *root = "test-usbtopo-key.tmp";
+
+	char cmd[256];
+	snprintf(cmd, sizeof cmd, "rm -rf '%s'", root);
+	assert_int_equal(system(cmd), 0);
+
+	fixture_link(root, "sound", "card0", "usb1/1-2/1-2.2", "1-2.2:1.0");
+	fixture_ids(root, "1-2.2", "0d8c", "0012");
+	fixture_strings(root, "1-2.2", "C-Media Electronics Inc.",
+			"USB Audio Device", NULL);
+
+	ardop_usb_node nodes[4];
+	assert_int_equal(ardop_usb_scan(root, nodes, 4), 1);
+	assert_string_equal(nodes[0].usbkey,
+			    "C-Media_Electronics_Inc._USB_Audio_Device");
+
+	assert_true(ardop_usb_audio_id_matches(
+		&nodes[0],
+		"alsa_input.usb-C-Media_Electronics_Inc._USB_Audio_Device-00."
+		"mono-fallback"));
+
+	/* Another card, whose id is full of digits that a card-index match
+	 * would have found. */
+	assert_false(ardop_usb_audio_id_matches(
+		&nodes[0],
+		"alsa_output.pci-0000_10_00.1.hdmi-stereo"));
+
+	/* ALSA has no such name and gives an index, which is then the whole
+	 * identity: card0 is "hw:0", and never "hw:10". */
+	assert_true(ardop_usb_audio_id_matches(&nodes[0], "hw:0,0"));
+	assert_false(ardop_usb_audio_id_matches(&nodes[0], "hw:10,0"));
+
+	assert_false(ardop_usb_audio_id_matches(&nodes[0], ""));
+	assert_false(ardop_usb_audio_id_matches(NULL, "hw:0,0"));
+
+	snprintf(cmd, sizeof cmd, "rm -rf '%s'", root);
+	assert_int_equal(system(cmd), 0);
+}
+
 /* A machine with no USB audio -- this one -- finds nothing and says so cleanly
  * rather than failing. */
 static void test_scan_of_an_empty_tree(void **state)
@@ -353,6 +531,7 @@ int main(void)
 		cmocka_unit_test(test_composite_device),
 		cmocka_unit_test(test_internal_hub),
 		cmocka_unit_test(test_same_device_outranks_same_hub),
+		cmocka_unit_test(test_digirig_offers_both_its_keying_lines),
 		cmocka_unit_test(test_two_identical_dongles),
 		cmocka_unit_test(test_audio_with_no_sibling),
 		cmocka_unit_test(test_unknown_chip_degrades),
@@ -360,6 +539,8 @@ int main(void)
 		cmocka_unit_test(test_ptt_spec_composition),
 #ifndef _WIN32
 		cmocka_unit_test(test_scan_over_a_fixture_tree),
+		cmocka_unit_test(test_scan_follows_relative_device_links),
+		cmocka_unit_test(test_audio_id_matches),
 		cmocka_unit_test(test_scan_of_an_empty_tree),
 #endif
 	};

@@ -273,6 +273,36 @@ static bool serial_open(ardop_ptt *p)
 		perror("ptt: open");
 		return false;
 	}
+
+	/*
+	 * A tty keeps whatever the last program left on it, and two of those
+	 * settings decide whether keying works at all.
+	 *
+	 * HUPCL is the safety one. Without it the modem lines survive close(),
+	 * so a process killed while keyed leaves the transmitter on the air
+	 * with nothing alive to unkey it -- and ardop_ptt_close, which exists
+	 * to prevent exactly that, never runs. This file's header promises that
+	 * "a serial line falls when the handle closes"; this is what makes the
+	 * promise true rather than inherited. Windows has no equivalent to set:
+	 * its driver drops the lines when the handle closes.
+	 *
+	 * CRTSCTS is the other. With hardware flow control on, the driver owns
+	 * RTS and quietly ignores TIOCMSET -- keying that reports success and
+	 * never happens. Nothing here uses the data lines, so it is never
+	 * wanted.
+	 *
+	 * Observed in the field: hamlib raises RTS and DTR on open (many CI-V
+	 * interfaces are powered from them), which on a DigiRig *is* PTT, and a
+	 * killed rigctld left an IC-746PRO transmitting
+	 * ([20](../analysis/20-field-results.md) finding 7).
+	 */
+	struct termios t;
+	if (tcgetattr(p->serial_fd, &t) == 0) {
+		t.c_cflag &= ~CRTSCTS;
+		t.c_cflag |= CLOCAL | CREAD | HUPCL;
+		(void)tcsetattr(p->serial_fd, TCSANOW, &t);
+	}
+
 	int bits = 0;
 	if (ioctl(p->serial_fd, TIOCMGET, &bits) == 0) {
 		bits &= ~(TIOCM_RTS | TIOCM_DTR);
@@ -608,9 +638,7 @@ ardop_ptt *ardop_ptt_open(const ardop_ptt_config *cfg)
 		/* Prove the link now rather than at the first transmission. */
 		rig_set(p, false);
 		if (p->fault != ARDOP_FAULT_NONE) {
-			ardop_cm108_close(p->hid);
-	p->hid = NULL;
-	ardop_net_close(&p->rig);
+			ardop_net_close(&p->rig);
 			free(p);
 			return NULL;
 		}
@@ -760,5 +788,12 @@ void ardop_ptt_close(ardop_ptt *p)
 		close(p->serial_fd);
 #endif
 	ardop_net_close(&p->rig);
+
+	/* The HID handle too. Its absence here leaked one hidraw descriptor per
+	 * device reopen -- found on a running station holding three of them --
+	 * and left a keying device open in a program that believed it had let
+	 * go. ardop_cm108_close unkeys before closing, which is the same
+	 * ordering the block above exists for. */
+	ardop_cm108_close(p->hid);
 	free(p);
 }

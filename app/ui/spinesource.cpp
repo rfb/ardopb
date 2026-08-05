@@ -150,6 +150,9 @@ void SpineSource::drainEvents()
 			emit guestEvent(m_event.code,
 					QString::fromUtf8(m_event.text));
 			break;
+		case APP_EV_LEADER:
+			emit leaderDetected(text);
+			break;
 		case APP_EV_OWNER:
 			emit ownerChanged(m_event.flag, text);
 			break;

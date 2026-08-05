@@ -280,6 +280,21 @@ static void observe(void *ctx, const ardop_obs *o)
 		emit(sp, APP_EV_STATE, (int)o->state, false, NULL,
 		     o->remote ? o->remote : "", NULL, 0);
 		break;
+	case ARDOP_OBS_LEADER: {
+		/*
+		 * The frame events reach the interface as telemetry records and
+		 * land in the history grid. This one does not belong there --
+		 * there is no frame yet, and there may never be one -- but it
+		 * is exactly what somebody tuning a station needs to see, so it
+		 * goes to the log as text, where it costs no wire format.
+		 */
+		char msg[64];
+		snprintf(msg, sizeof msg, "leader detected: %+.0f Hz, S/N %d dB",
+			 (double)o->offset_hz, o->sn);
+		emit(sp, APP_EV_LEADER, o->sn, false, NULL, msg, NULL, 0);
+		break;
+	}
+
 	case ARDOP_OBS_MODE:
 	case ARDOP_OBS_BANDWIDTH:
 	case ARDOP_OBS_RX_FRAME:

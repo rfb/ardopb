@@ -95,6 +95,13 @@ static void app_observe(void *ctx, const ardop_obs *o)
 			fprintf(stderr, "[obs] rx frame 0x%02x q=%d sn=%d\n",
 				o->frame_type, o->quality, o->sn);
 		break;
+	case ARDOP_OBS_LEADER:
+		/* Not behind --trace: this is the one line that tells an
+		 * operator tuning a station whether anything was heard at all,
+		 * and which way the dial is wrong. */
+		fprintf(stderr, "leader: %+.0f Hz, S/N %d dB\n",
+			(double)o->offset_hz, o->sn);
+		break;
 	case ARDOP_OBS_RX_FRAME_BAD:
 		if (a->trace)
 			fprintf(stderr, "[obs] rx frame 0x%02x FAILED\n",

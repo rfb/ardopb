@@ -126,6 +126,14 @@ StationWindow::StationWindow(ModemThread *modem, QWidget *parent)
 	m_conn = new QLabel(tr("no audio device"), this);
 	statusBar()->addWidget(m_conn);
 
+	/* The link gets its own label rather than sharing the audio one. Two
+	 * independent facts through one QLabel meant each overwrote the other,
+	 * and the link half could only avoid clobbering the audio text by
+	 * leaving whatever was already there -- which is how "connected to" then
+	 * outlived the connection it described. */
+	m_link = new QLabel(QString(), this);
+	statusBar()->addWidget(m_link);
+
 	m_owner = new QLabel(QString(), this);
 	statusBar()->addPermanentWidget(m_owner);
 
@@ -169,6 +177,8 @@ StationWindow::StationWindow(ModemThread *modem, QWidget *parent)
 		&SessionHistory::append);
 	connect(m_spineSource, &SpineSource::guestEvent,
 		this, &StationWindow::onGuestEvent);
+	connect(m_spineSource, &SpineSource::leaderDetected,
+		this, &StationWindow::log);
 	connect(m_guests, &GuestsPage::message, this, &StationWindow::log);
 	connect(m_guests, &GuestsPage::settingsChanged, this,
 		[this] { m_saveTick.start(); });
@@ -515,11 +525,36 @@ void StationWindow::onLinkState(int state, const QString &remote)
 		QString::fromUtf8(ardop_host_state_name((ardop_link_state)state)),
 		remote);
 
-	/* The status bar gains the one field the telemetry record does not
-	 * carry, next to the state it belongs with. */
-	m_conn->setText(remote.isEmpty()
-				? m_conn->text()
-				: tr("connected to %1").arg(remote));
+	/*
+	 * The status bar gains the one field the telemetry record does not
+	 * carry, next to the state it belongs with.
+	 *
+	 * The state has to be read, not just the callsign. A ConReq is
+	 * outstanding for as long as the calling sequence runs -- retries and
+	 * all -- and the remote callsign is known throughout it, so announcing
+	 * "connected to" on the strength of having a callsign claims a link
+	 * that does not exist yet. That is the one thing this line is read for,
+	 * and it was reported from the field
+	 * ([20](../analysis/20-field-results.md) finding 10).
+	 */
+	if (!m_link)
+		return;
+
+	switch ((ardop_link_state)state) {
+	case ARDOP_LINK_DISC:
+		m_link->setText(QString());
+		break;
+	case ARDOP_LINK_ISS_CON_REQ:
+		m_link->setText(remote.isEmpty()
+					? tr("calling...")
+					: tr("calling %1...").arg(remote));
+		break;
+	default:
+		m_link->setText(remote.isEmpty()
+					? tr("connected")
+					: tr("connected to %1").arg(remote));
+		break;
+	}
 }
 
 void StationWindow::applySavedStation(const ardop_settings *s)
