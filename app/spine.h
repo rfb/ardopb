@@ -132,6 +132,9 @@ typedef enum {
 	APP_DEV_EV_CLOSED,
 	APP_DEV_EV_RECOVERED,    /**< Rebuilt after a fault; transmit is allowed again. */
 	APP_DEV_EV_PTT_TEST,
+	APP_DEV_EV_PCAP_FAILED, /**< The session log could not be opened; audio/PTT
+				  * still came up -- a debugging aid must never be
+				  * the reason a station cannot get on the air. */
 } app_device_code;
 
 /**
@@ -384,6 +387,14 @@ bool app_set_platform(app_spine *sp, const ardop_platform_ops *ops, size_t block
 
 /** @brief Bind the TNC transport, or NULL to detach. **Modem thread only.** */
 void app_set_tnc(app_spine *sp, const app_tnc_ops *tnc);
+
+/**
+ * @brief Bind the session-capture sink, or NULL to detach. **Modem thread
+ * only.** Ownership stays with the caller (see ardop_runtime_set_capture);
+ * unlike ::app_set_platform, this cannot strand a keyed transmitter, so there
+ * is no tx-active guard.
+ */
+void app_set_capture(app_spine *sp, ardop_capture *cap);
 
 /**
  * @brief Run one iteration: drain commands, service the TNC, step the modem,

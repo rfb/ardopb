@@ -795,6 +795,42 @@ static void test_host_send_data_queues(void **state)
 }
 
 /*
+ * A field bug (found on the same captured on-air session as
+ * test_break_disarms_stale_repeat, once that collision was fixed and a real
+ * exchange got through): connected IRS holding queued host data, hearing the
+ * ISS go idle, must BREAK to reclaim the link on its own -- AUTOBREAK
+ * defaults TRUE in the reference (ARQ.c: `BOOL AutoBreak = TRUE`), and a
+ * real client is entitled to rely on that documented default rather than
+ * set it explicitly. ardop_link_init left auto_break at its zero-initialised
+ * false, so queued data just sat there, ACKing the far end's IDLE forever.
+ * No AUTOBREAK command appears anywhere in this test, deliberately: it
+ * proves the default, not the host command (see test_host.c for that).
+ */
+static void test_irs_data_auto_break_reclaims_link(void **state)
+{
+	(void)state;
+
+	ardop_link l;
+	connected_as_irs(&l);
+	l.tx_data = g_tx;
+	l.tx_cap = sizeof(g_tx);
+
+	const uint8_t data[] = {1, 2, 3, 4};
+	ardop_link_input q = host_send(data, sizeof(data));
+	ardop_action acts[8];
+	(void)ardop_link_step(&l, &q, 3000, acts, 8);
+	assert_int_equal(l.tx_len, sizeof(data));
+
+	ardop_link_input in = rx_frame(ARDOP_FT_IDLE);
+	size_t n = ardop_link_step(&l, &in, 4000, acts, 8);
+
+	const ardop_action *brk = find_action(acts, n, ARDOP_ACT_SEND_FRAME);
+	assert_non_null(brk);
+	assert_int_equal(brk->frame_type, ARDOP_FT_BREAK);
+	assert_int_equal(l.state, ARDOP_LINK_IRS_TO_ISS);
+}
+
+/*
  * ISS awaiting the IRS DataACK, with data queued: on the DataACK, tell the host
  * CONNECTED and send the first data frame at the most-robust mode for the
  * bandwidth, even parity (last acked seeded odd). Mirrors the ISS ConAck+DataACK
@@ -875,6 +911,47 @@ static ardop_link_input datanak(int quality)
 	return in;
 }
 
+/*
+ * A field bug (found via a captured on-air session, VA7DEP retrying a data
+ * frame that kept failing): idling with nothing to send arms a repeat timer
+ * for the IDLE keep-alive (arm_repeat, per test_iss_idle_when_empty above).
+ * If the IRS then BREAKs to take the link, that timer must not survive the
+ * handover -- the IRS role only ever sends response frames, which never arm
+ * one (arm_repeat's own doc comment) -- or step_timer keeps firing on the
+ * old deadline and resends the stale IDLE, transmitting on top of whatever
+ * the new ISS is sending. Confirmed by the same symptom recurring on
+ * successive real ARQ retries, all failing, until the on-air session was
+ * killed by hand.
+ */
+static void test_break_disarms_stale_repeat(void **state)
+{
+	(void)state;
+
+	ardop_link l;
+	iss_to_con_ack(&l);
+
+	/* Empties out to IDLE, arming a 2000 ms repeat for the IDLE it sends. */
+	ardop_action acts[8];
+	ardop_link_input in = dataack(90);
+	size_t n = ardop_link_step(&l, &in, 400, acts, 8);
+	assert_int_equal(l.state, ARDOP_LINK_IDLE);
+	assert_non_null(find_action(acts, n, ARDOP_ACT_SEND_FRAME));
+	assert_true(l.repeat_deadline > 0);
+
+	/* The IRS BREAKs: we yield the link. */
+	in = rx_frame(ARDOP_FT_BREAK);
+	n = ardop_link_step(&l, &in, 500, acts, 8);
+	assert_int_equal(l.state, ARDOP_LINK_IRS_FROM_ISS);
+	assert_int_equal(l.repeat_deadline, 0);
+
+	/* Well past the deadline the stale timer would have fired on: nothing
+	 * is sent, because there is no repeat armed any more. */
+	ardop_link_input none = {0};
+	none.kind = ARDOP_IN_NONE;
+	n = ardop_link_step(&l, &none, 30000, acts, 8);
+	assert_null(find_action(acts, n, ARDOP_ACT_SEND_FRAME));
+}
+
 /* Reach connected ISS with `len` payload queued and the first frame sent. */
 static void iss_sending(ardop_link *l, size_t len)
 {
@@ -908,13 +985,21 @@ static void test_iss_data_drain(void **state)
 
 	ardop_action acts[8];
 
-	/* ACK #1: drop 32 -> 48 left, send 0x4D (toggled). */
+	/* ACK #1: drop 32 -> 48 left, send 0x4D (toggled). The queue depth is
+	 * also pushed to the host here -- ARDOPC.c's RemoveDataFromQueue does
+	 * this on every drain ("called when ACK received, or on FEC send"),
+	 * not just on enqueue; without it a client's send-progress display
+	 * only ever sees the size once and looks stalled through the rest of
+	 * the send (a field symptom: Pat's progress sitting at 0%). */
 	ardop_link_input in = dataack(90);
 	size_t n = ardop_link_step(&l, &in, 500, acts, 8);
 	assert_int_equal(l.tx_len, 48);
 	const ardop_action *s = find_action(acts, n, ARDOP_ACT_SEND_FRAME);
 	assert_non_null(s);
 	assert_int_equal(s->frame_type, 0x4D);
+	const ardop_action *buf = find_action(acts, n, ARDOP_ACT_NOTIFY_HOST);
+	assert_non_null(buf);
+	assert_string_equal((const char *)buf->data, "BUFFER 48");
 
 	/* ACK #2: drop 32 -> 16 left, send 0x4C, carrying the last 16 bytes. */
 	in = dataack(90);
@@ -1323,8 +1408,10 @@ int main(void)
 		cmocka_unit_test(test_irs_data_nak),
 		cmocka_unit_test(test_irs_data_disc),
 		cmocka_unit_test(test_host_send_data_queues),
+		cmocka_unit_test(test_irs_data_auto_break_reclaims_link),
 		cmocka_unit_test(test_iss_sends_first_data),
 		cmocka_unit_test(test_iss_idle_when_empty),
+		cmocka_unit_test(test_break_disarms_stale_repeat),
 		cmocka_unit_test(test_iss_data_drain),
 		cmocka_unit_test(test_iss_gearshift),
 		cmocka_unit_test(test_timer_repeat_resends),

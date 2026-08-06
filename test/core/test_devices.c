@@ -225,6 +225,8 @@ static void test_selection_persists(void **state)
 	snprintf(sel.playback_name, sizeof sel.playback_name, "%s", "USB Audio CODEC");
 	snprintf(sel.ptt_spec, sizeof sel.ptt_spec, "%s", "rts:/dev/ttyUSB0");
 	snprintf(sel.backend, sizeof sel.backend, "%s", "alsa");
+	sel.pcap_enabled = true;
+	snprintf(sel.pcap_dir, sizeof sel.pcap_dir, "%s", "/home/op/ardop-sessions");
 
 	ardop_settings s;
 	memset(&s, 0, sizeof s);
@@ -237,6 +239,8 @@ static void test_selection_persists(void **state)
 	assert_string_equal(back.ptt_spec, sel.ptt_spec);
 	assert_string_equal(back.backend, sel.backend);
 	assert_false(back.null_device);
+	assert_true(back.pcap_enabled);
+	assert_string_equal(back.pcap_dir, sel.pcap_dir);
 
 	/* An empty store yields an empty selection, which means "system default"
 	 * rather than an error -- first run again. */
@@ -245,6 +249,8 @@ static void test_selection_persists(void **state)
 	app_devices_selection_load(&back, &empty);
 	assert_string_equal(back.capture_id, "");
 	assert_string_equal(back.ptt_spec, "");
+	assert_false(back.pcap_enabled);
+	assert_string_equal(back.pcap_dir, "");
 }
 
 int main(void)

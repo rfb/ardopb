@@ -136,6 +136,15 @@ static void reset_to_disc(ardop_link *l)
 	l->repeat_interval_ms = 0;
 	l->repeat_deadline = 0;
 	l->pending_deadline = 0;
+	l->stall_deadline = 0;
+}
+
+/* (Re)arm the silence deadline: rule 1.7. Called once a connection completes
+ * and again on every decoded frame thereafter, so an active IDLE/ACK exchange
+ * keeps pushing it out -- only real silence ever reaches it. */
+static void arm_stall(ardop_link *l, uint64_t now)
+{
+	l->stall_deadline = now + ARDOP_MS_TO_SAMPLES((uint64_t)l->arq_timeout * 1000u);
 }
 
 /* The session width a ConAck frame type establishes. */
@@ -425,6 +434,24 @@ static void tx_dequeue(ardop_link *l, int count)
 }
 
 /*
+ * Push the current queue depth to the host. Every caller of tx_dequeue()
+ * pairs it with this, mirroring RemoveDataFromQueue's own unconditional
+ * QueueCommandToHost("BUFFER %d") -- "called when ACK received, or on FEC
+ * send", not just when the host adds to the queue (step_host_send_data,
+ * below, is the other half of that same reference symmetry). A client's
+ * send-progress display is built by watching this shrink; without a push on
+ * every drain it only ever sees the queued size once and then nothing,
+ * indistinguishable from a stalled send.
+ */
+static void notify_buffer(ardop_link *l, ardop_action *actions, size_t *n,
+			  size_t max)
+{
+	char msg[32];
+	snprintf(msg, sizeof(msg), "BUFFER %zu", l->tx_len);
+	notify_host(l, actions, n, max, msg);
+}
+
+/*
  * Gear-shift: choose whether the next frame moves to a more robust or faster
  * mode. Ported from Gearshift_9. Shifts down after DownNAKS consecutive NAKs
  * (2 normally, 1 if the current mode has never worked); shifts up when the
@@ -563,6 +590,19 @@ static size_t step_timer(ardop_link *l, uint64_t now, ardop_action *actions,
 		return n;
 	}
 
+	/* Rule 1.7: arq_timeout seconds with no decoded frame at all -- not
+	 * "nothing productive", genuine silence. A local give-up, same as the
+	 * pending-timeout above and for the same reason: if the channel has
+	 * really gone quiet, transmitting a DISC into it is unlikely to reach
+	 * anyone, and if the far station is merely gone, there is nobody left
+	 * to tell. */
+	if (l->stall_deadline && now >= l->stall_deadline) {
+		l->stall_deadline = 0;
+		notify_host(l, actions, &n, max, "DISCONNECTED");
+		reset_to_disc(l);
+		return n;
+	}
+
 	/* The closing ID after END: once the hold expires, send our ID frame.
 	 * The original also waits for the busy detector to clear; that gate lands
 	 * with the BUSY_CHANGED events. */
@@ -645,6 +685,7 @@ static size_t step_iss_conack_rx(ardop_link *l, const ardop_event *ev,
 	if (ev->frame_type >= ARDOP_FRAME_DATA_ACK_MIN) {
 		l->pending = false;
 		iss_begin_sending(l);
+		arm_stall(l, now);
 
 		char msg[64];
 		snprintf(msg, sizeof(msg), "CONNECTED %s %d", l->remote.str,
@@ -682,12 +723,26 @@ static size_t step_iss_conack_rx(ardop_link *l, const ardop_event *ev,
  * @p outstanding_len is still cleared, because nothing is in flight any more.
  * The bytes it counted stay at the head of the queue and go out again once we
  * are the ISS.
+ *
+ * @p repeat_deadline is also cleared. Whatever we last sent as ISS/IDLE (a
+ * data frame or a keep-alive) was armed to resend on its own repeat timer
+ * (arm_repeat's doc comment: every sender frame that awaits a reply gets
+ * one); that timer does not know we have just handed the link away, and
+ * step_timer's resend fires purely on the deadline regardless of state. Left
+ * armed, it keeps transmitting the stale out_frame on top of the IRS's own
+ * traffic every repeat_interval_ms -- indistinguishable on the air from
+ * jamming the very station we just yielded to, and self-sustaining, since
+ * the ARDOP_IN_TX_DONE handler re-arms it after each of our own ACK/NAK
+ * replies for as long as it stays nonzero. The IRS role sends only
+ * response frames, which arm_repeat's callers never arm (see its doc
+ * comment) -- so nothing here needs to replace it.
  */
 static void iss_yield_on_break(ardop_link *l, ardop_action *actions, size_t *n,
 			       size_t max)
 {
 	l->outstanding_len = 0;
 	l->last_data_to_host = -1;
+	l->repeat_deadline = 0;
 	l->state = ARDOP_LINK_IRS_FROM_ISS;
 	send_control(l, actions, n, max, ardop_quality_to_ack_type(100));
 }
@@ -723,6 +778,7 @@ static size_t step_iss_data_rx(ardop_link *l, const ardop_event *ev,
 		l->last_data_acked = l->last_data_sent;
 		tx_dequeue(l, l->outstanding_len);
 		l->outstanding_len = 0;
+		notify_buffer(l, actions, &n, max);
 		l->avg_quality = ardop_quality_avg(
 			l->avg_quality, ardop_quality_from_type(ev->frame_type));
 		gearshift(l);
@@ -753,9 +809,10 @@ static size_t step_iss_data_rx(ardop_link *l, const ardop_event *ev,
 /*
  * Idling: the ISS has drained its queue and is sending IDLE keep-alives. A
  * DataACK to an IDLE resumes sending if the host has since queued data (else it
- * keeps idling, the repeat timer resending IDLE); a DISC ends the session.
- * Ported from ProcessRcvdARQFrame's IDLE arm. The 9-minute ID (needs the
- * ID-frame builder) and the BREAK turnover (A5) are deferred.
+ * keeps idling, the repeat timer resending IDLE); a BREAK yields the link
+ * (iss_yield_on_break); a DISC ends the session. Ported from
+ * ProcessRcvdARQFrame's IDLE arm. The 9-minute ID (needs the ID-frame
+ * builder) is deferred.
  */
 static size_t step_idle_rx(ardop_link *l, const ardop_event *ev, uint64_t now,
 			   ardop_action *actions, size_t max)
@@ -809,6 +866,7 @@ static size_t step_irs_conack_rx(ardop_link *l, const ardop_event *ev,
 		l->session_bw = conack_bandwidth(ev->frame_type);
 		l->pending = false;
 		l->pending_deadline = 0;
+		arm_stall(l, now);
 		l->avg_quality = 0;
 		l->state = ARDOP_LINK_IRS_DATA;
 
@@ -1050,9 +1108,7 @@ static size_t step_host_send_data(ardop_link *l, const ardop_host_cmd *cmd,
 		l->tx_len += take;
 	}
 
-	char msg[32];
-	snprintf(msg, sizeof(msg), "BUFFER %zu", l->tx_len);
-	notify_host(l, actions, &n, max, msg);
+	notify_buffer(l, actions, &n, max);
 	return n;
 }
 
@@ -1187,10 +1243,16 @@ void ardop_link_init(ardop_link *l)
 	l->state = ARDOP_LINK_DISC;
 	l->leader_ms = 240;        /* inherited LeaderLength default. */
 	l->reply_leader_ms = 240;  /* inherited intARQDefaultDlyMs default. */
+	l->arq_timeout = 120;      /* inherited ARDOPC.c ARQTimeout default. */
 	l->last_data_to_host = -1;
 	l->last_acked_type = -1;
 	l->fec_frame_type = 0x40;  /* 4PSK.200.100.E, the FECMODE default. */
 	l->tuning_range = 100;   /* inherited default; selects the 2000 modes. */
+	l->auto_break = true;    /* inherited ARQ.c AutoBreak default (TRUE) --
+				  * without it the IRS never reclaims the link
+				  * to send queued data unless a client sends an
+				  * explicit BREAK, which real clients (relying
+				  * on the documented default) do not. */
 }
 
 /* --- FEC: broadcast, no ACKs --------------------------------------------- */
@@ -1228,6 +1290,7 @@ static void fec_send_next(ardop_link *l, ardop_action *actions, size_t *n,
 		return;
 	}
 	tx_dequeue(l, take);          /* no ACKs in FEC: consume now. */
+	notify_buffer(l, actions, n, max);
 	l->fec_reps_sent = 0;
 	l->repeat_frame_type = l->fec_frame_type;
 	l->repeat_frame_len = (size_t)len;
@@ -1324,6 +1387,14 @@ size_t ardop_link_step(ardop_link *l, const ardop_link_input *in,
 {
 	switch (in->kind) {
 	case ARDOP_IN_RX:
+		/* Rule 1.7: any decoded frame heard while connected proves the
+		 * link is alive, however unproductive -- push the silence
+		 * deadline back out. Ahead of the mode/state dispatch below so
+		 * every ARQ path benefits without repeating this at each one. */
+		if (l->mode == ARDOP_MODE_ARQ && l->state != ARDOP_LINK_DISC
+		    && in->as.rx.kind == ARDOP_EV_FRAME_DECODED)
+			arm_stall(l, now_samples);
+
 		/* Receive-only mode bypasses the ARQ/FEC machine. */
 		if (l->mode == ARDOP_MODE_RXO)
 			return step_rxo_rx(l, &in->as.rx, actions,

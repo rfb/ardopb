@@ -165,6 +165,12 @@ typedef struct {
 	bool use_600_modes;         /**< 600-baud FM data modes in play (Use600Modes). */
 	int tuning_range;           /**< Tuning range, Hz; 0 selects the 2000 FM modes. */
 	bool auto_break;            /**< Break automatically when the ISS idles (AutoBreak). */
+	int arq_timeout;            /**< Seconds of silence before giving up, 30..240
+	                             *   (ARQTimeout). Reset on every decoded frame
+	                             *   while connected -- an active IDLE/ACK
+	                             *   exchange never trips it, by design (rule
+	                             *   1.7): this catches a genuinely dead link,
+	                             *   not an unproductive but alive one. */
 	uint8_t fec_frame_type;     /**< Data frame type used for FEC broadcast. */
 	int fec_repeats;            /**< Extra sends of each FEC frame (0..5, FECRepeats). */
 
@@ -209,6 +215,7 @@ typedef struct {
 	/* --- timers, as absolute sample deadlines (0 = inactive) --- */
 	uint64_t final_id_deadline; /**< tmrFinalID: when the closing ID may go. */
 	uint64_t pending_deadline;  /**< tmrIRSPendingTimeout: auto-abort a stuck pending. */
+	uint64_t stall_deadline;    /**< dttTimeoutTrip + ARQTimeout: give up on silence. */
 	uint64_t repeat_deadline;   /**< Next resend of the current repeated frame. */
 	uint16_t repeat_interval_ms;/**< Resend interval while repeating (0 = none). */
 	uint8_t repeat_frame_type;  /**< Frame type to resend on the repeat timer. */

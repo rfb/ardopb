@@ -10,6 +10,7 @@
 #include "modem/busy.h"
 #include "modem/demodulate.h"
 #include "modem/modulate.h"
+#include "shell/capture.h"
 #include "shell/telemetry.h"
 
 /**
@@ -121,6 +122,14 @@ typedef struct {
 	int busy_det;         /* sensitivity 0..10 (host BUSYDET); 0 disables. */
 	bool busy_state;      /* last reported busy, for change detection. */
 
+	/* CW identification after an IDFRAME (host CWID: FALSE/TRUE/ONOFF).
+	 * Stored and reported for the same handshake reason ARQTIMEOUT was
+	 * (see ardop_link::arq_timeout, link.h); not yet enforced --
+	 * generating the actual Morse audio is unported DSP, not a
+	 * link-layer rule. */
+	bool want_cwid;
+	bool cwid_onoff;   /* meaningless unless want_cwid. */
+
 	/* Observers, and the last values state-diffs are compared against. */
 	struct {
 		ardop_observer_fn fn;
@@ -144,6 +153,15 @@ typedef struct {
 	int16_t tlm_pmag[ARDOP_TLM_MAX_POINTS];
 	int16_t last_sn;      /* last frame's S/N, for the status mirror. */
 	int16_t last_quality; /* last frame's decode quality. */
+
+	/* Capture sink (see capture.h). NULL -- the default -- is free: every
+	 * capture call site is a null check first. A separate field from
+	 * tlm_fn/tlm_ctx above, deliberately: ardop_runtime_set_telemetry
+	 * unconditionally overwrites its one slot, and is already claimed by
+	 * --telemetry and by the GUI's live display stream, so reusing it here
+	 * would silently steal it from whichever caller set it first. Capture
+	 * and telemetry may both be attached at once. */
+	ardop_capture *capture;
 } ardop_runtime;
 
 /**
@@ -156,6 +174,16 @@ typedef struct {
  */
 void ardop_runtime_set_telemetry(ardop_runtime *rt, ardop_telemetry_fn fn,
 				 void *ctx);
+
+/**
+ * @brief Register the frame-capture sink, or NULL to disable.
+ *
+ * A separate field from the telemetry sink (::ardop_runtime_set_telemetry) --
+ * both may be attached at once, each serving a different consumer (a live
+ * display vs. an offline record for later review). The ::ardop_capture
+ * pointer is borrowed; ownership stays with the caller.
+ */
+void ardop_runtime_set_capture(ardop_runtime *rt, ardop_capture *cap);
 
 /**
  * @brief Emit a ::ARDOP_TLM_STATUS record summarising the current state.

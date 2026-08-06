@@ -85,6 +85,18 @@ a noise-injecting harness, or against the golden `snrNNdb` corpus.
 
 ### W1.6 — Protocol loose ends (small, each noted in code)
 - The overall send-timeout give-up (`tmrSendTimeout`) ending a stalled session.
+- ~~`ARQTIMEOUT`'s own stall-abort~~ **Done.** `ARQ.c` rule 1.7, ported: `ardop_link::arq_timeout`
+  (`core/link/link.h`, default 120 s, range 30-240, set by `shell/host.c`'s
+  `ARQTIMEOUT` -- the command existed before this, since Pat's TNC client blocks
+  on its reply during handshake; the gap was that nothing read it). Armed on
+  connect and rearmed on every decoded frame while connected -- matching the
+  reference's own ~14 reset sites in spirit, checked directly rather than
+  replicated one by one -- so an active IDLE/ACK exchange never trips it, only
+  genuine silence does. Distinct from `tmrSendTimeout` above, which is still
+  open. Motivated by a live capture ([20](20-field-results.md) session 3) that
+  turned out *not* to be what this fixes: VA7DEP idled for 88 s continuously
+  exchanging IDLE/ACK, which a faithful port correctly leaves alone -- the
+  session was blocked at the application layer (Pat), not a dead link.
 - The repeated-`ConReq` re-ack in `IRS_CON_ACK` (ISS missed our `ConAck`).
 - The busy-block guard (`ConRejBusy` when the channel was busy just before the
   leader) — needs `BUSY_CHANGED` events threaded from the demod's busy detector

@@ -457,12 +457,21 @@ void ardop_host_command(ardop_runtime *rt, const char *line, uint64_t now,
 	 * handshakes -- so a station that faults on it faults on the first thing
 	 * a client says to it.
 	 *
-	 * A no-op here, and correctly so: the runtime is already initialised by
-	 * the time any socket exists, and there is nothing left for this to do.
-	 * The documented return is None.
+	 * There is nothing left to do -- the runtime is already initialised by
+	 * the time any socket exists -- but the reply is not optional. The docs
+	 * say "None"; the reference source (src/common/HostInterface.c) says
+	 * SendReplyToHost("INITIALIZE") -- the bare keyword, echoed back -- and
+	 * that is the one that is right: Pat's TNC client (wl2k-go/transport/
+	 * ardop) blocks on its response channel for a reply whose command word
+	 * is INITIALIZE before it sends anything else, so a station that stays
+	 * silent here never gets a second command. Observed directly: Pat's
+	 * activity log stops dead at "INITIALIZE" and never reaches PROTOCOLMODE,
+	 * MYCALL or a connect attempt.
 	 */
-	if (strcmp(kw, "INITIALIZE") == 0)
+	if (strcmp(kw, "INITIALIZE") == 0) {
+		replyf(reply, cap, "INITIALIZE");
 		return;
+	}
 
 	/*
 	 * BUSYDET, which was reachable from this program's own settings and not
@@ -488,6 +497,70 @@ void ardop_host_command(ardop_runtime *rt, const char *line, uint64_t now,
 		}
 		rt->busy_det = (int)v;
 		replyf(reply, cap, "BUSYDET now %ld", v);
+		return;
+	}
+
+	/*
+	 * ARQTIMEOUT: seconds of silence before giving up (link.h's
+	 * ardop_link::arq_timeout, enforced by rule 1.7 in core/link/link.c --
+	 * an active but unproductive IDLE/ACK exchange does not trip it, only
+	 * genuine silence does). Lives on the link, not the runtime, matching
+	 * AUTOBREAK just above: it is link.c's own timer that reads it.
+	 *
+	 * Pat's TNC client (wl2k-go/transport/ardop) sends this immediately
+	 * after PROTOCOLMODE during its own INITIALIZE handshake and, like
+	 * INITIALIZE itself, waits on the reply -- an unrecognised-command
+	 * FAULT here stopped a client's connect sequence dead, one step further
+	 * into it than the INITIALIZE gap.
+	 */
+	if (strcmp(kw, "ARQTIMEOUT") == 0) {
+		if (params == NULL) {
+			replyf(reply, cap, "ARQTIMEOUT %d", l->arq_timeout);
+			return;
+		}
+		char *end = NULL;
+		long v = strtol(params, &end, 10);
+		if (end == params || *end != '\0' || v < 30 || v > 240) {
+			replyf(reply, cap, "FAULT Syntax Err: ARQTIMEOUT %s",
+			       params);
+			return;
+		}
+		l->arq_timeout = (int)v;
+		replyf(reply, cap, "ARQTIMEOUT now %ld", v);
+		return;
+	}
+
+	/*
+	 * CWID: a Morse identifier appended after an IDFRAME, in one of two
+	 * styles (TRUE: FSK mark/space tones; ONOFF: traditional on-off keying)
+	 * or disabled (FALSE). Three states, not a boolean, matching the
+	 * reference exactly. Like ARQTIMEOUT, this is on Pat's handshake path
+	 * and had to answer before the gap in what it *does* was reachable: the
+	 * value is stored and reported, but nothing generates the actual CW
+	 * audio yet (core/modem/modulate.c has no Morse keyer).
+	 */
+	if (strcmp(kw, "CWID") == 0) {
+		if (params == NULL) {
+			replyf(reply, cap, "CWID %s",
+			       !rt->want_cwid ? "FALSE"
+					      : rt->cwid_onoff ? "ONOFF" : "TRUE");
+			return;
+		}
+		if (strcmp(params, "TRUE") == 0) {
+			rt->want_cwid = true;
+			rt->cwid_onoff = false;
+		} else if (strcmp(params, "FALSE") == 0) {
+			rt->want_cwid = false;
+		} else if (strcmp(params, "ONOFF") == 0) {
+			rt->want_cwid = true;
+			rt->cwid_onoff = true;
+		} else {
+			replyf(reply, cap, "FAULT Syntax Err: CWID %s", params);
+			return;
+		}
+		replyf(reply, cap, "CWID now %s",
+		       !rt->want_cwid ? "FALSE"
+				      : rt->cwid_onoff ? "ONOFF" : "TRUE");
 		return;
 	}
 

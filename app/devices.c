@@ -1,9 +1,13 @@
+/* localtime_r for the capture filename's timestamp. */
+#define _DEFAULT_SOURCE
+
 #include "app/devices.h"
 
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "app/ring.h"
 #include "shell/backend_ma.h"
@@ -42,12 +46,20 @@ struct app_devices {
 	/* Modem-thread state. */
 	ardop_ma_backend *mb;
 	ardop_ptt *ptt;
+	/* Named pcap, not cap: open_devices() already has a local ardop_audio_device
+	 * cap for the audio *capture* device, and this is the unrelated session log
+	 * (shell/capture.h). NULL unless enabled. */
+	ardop_capture *pcap;
 	ardop_platform_ops ops;
 	app_device_selection requested;
 	app_device_selection in_use;
 	ardop_audio_match cap_match, play_match;
 	char detail[APP_TEXT_MAX];
 	char ptt_describe[64];
+	bool pcap_open_failed;   /* Reported as APP_DEV_EV_PCAP_FAILED, not
+				  * SUBSTITUTED -- a different situation from a
+				  * device swap, even though both share dv->detail
+				  * as their text. */
 
 	/* Published for any thread. */
 	_Atomic int state;           /* app_dev_state */
@@ -159,8 +171,12 @@ static void set_state(app_devices *dv, app_dev_state st)
  */
 static void teardown(app_devices *dv, app_spine *sp)
 {
-	if (sp)
+	if (sp) {
 		(void)app_set_platform(sp, NULL, 0);
+		app_set_capture(sp, NULL);
+	}
+	ardop_capture_close(dv->pcap);
+	dv->pcap = NULL;
 
 	ardop_backend_ma_close(dv->mb);
 	dv->mb = NULL;
@@ -205,6 +221,7 @@ static bool open_devices(app_devices *dv, app_spine *sp,
 			 const app_device_selection *sel)
 {
 	dv->detail[0] = '\0';
+	dv->pcap_open_failed = false;
 
 	/* PTT first and independently of audio: the keying method and the sound
 	 * card are unrelated in reality, and an operator can pair any interface
@@ -250,6 +267,42 @@ static bool open_devices(app_devices *dv, app_spine *sp,
 		return false;
 	}
 
+	/* The session log, if asked for. A failure here must not fail device
+	 * open -- a debugging aid can never be the reason a station cannot get
+	 * on the air -- so it is reported (APP_DEV_EV_PCAP_FAILED, in
+	 * apply_open) rather than returned. */
+	if (sel->pcap_enabled) {
+		if (!ardop_mkdir_p(sel->pcap_dir)) {
+			/* Precision-capped, not a bare %s: pcap_dir is longer
+			 * than dv->detail can ever guarantee holding whole, and
+			 * an explicit bound lets the compiler prove that rather
+			 * than merely trusting snprintf's own truncation. */
+			snprintf(dv->detail, sizeof dv->detail,
+				 "session log: cannot create %.200s",
+				 sel->pcap_dir);
+			dv->pcap_open_failed = true;
+		} else {
+			time_t t = (time_t)(ardop_wall_ms() / 1000u);
+			struct tm tmv;
+			localtime_r(&t, &tmv);
+			char stamp[32];
+			strftime(stamp, sizeof stamp, "%Y%m%d-%H%M%S", &tmv);
+
+			char path[600];
+			snprintf(path, sizeof path, "%s/session-%s.pcap",
+				 sel->pcap_dir, stamp);
+			dv->pcap = ardop_capture_open(path);
+			if (!dv->pcap) {
+				snprintf(dv->detail, sizeof dv->detail,
+					 "session log: cannot open %.200s",
+					 path);
+				dv->pcap_open_failed = true;
+			} else {
+				app_set_capture(sp, dv->pcap);
+			}
+		}
+	}
+
 	dv->cap_match = ardop_backend_ma_capture_match(dv->mb);
 	dv->play_match = ardop_backend_ma_playback_match(dv->mb);
 
@@ -293,7 +346,9 @@ static void apply_open(app_devices *dv, app_spine *sp,
 	set_state(dv, APP_DEV_RUNNING);
 	atomic_fetch_add_explicit(&dv->generation, 1, memory_order_relaxed);
 
-	if (dv->detail[0])
+	if (dv->pcap_open_failed)
+		app_report_device(sp, APP_DEV_EV_PCAP_FAILED, dv->detail);
+	else if (dv->detail[0])
 		app_report_device(sp, APP_DEV_EV_SUBSTITUTED, dv->detail);
 	else if (recovered)
 		app_report_device(sp, APP_DEV_EV_RECOVERED,
@@ -425,6 +480,9 @@ void app_devices_selection_load(app_device_selection *sel,
 	snprintf(sel->ptt_spec, sizeof sel->ptt_spec, "%s",
 		 ardop_settings_get(s, "ptt.spec", ""));
 	sel->null_device = ardop_settings_get_bool(s, "audio.null_device", false);
+	sel->pcap_enabled = ardop_settings_get_bool(s, "pcap.enabled", false);
+	snprintf(sel->pcap_dir, sizeof sel->pcap_dir, "%s",
+		 ardop_settings_get(s, "pcap.dir", ""));
 }
 
 bool app_devices_selection_store(const app_device_selection *sel,
@@ -436,5 +494,7 @@ bool app_devices_selection_store(const app_device_selection *sel,
 	       ardop_settings_set(s, "audio.playback.name", sel->playback_name) &&
 	       ardop_settings_set(s, "audio.backend", sel->backend) &&
 	       ardop_settings_set(s, "ptt.spec", sel->ptt_spec) &&
-	       ardop_settings_set_bool(s, "audio.null_device", sel->null_device);
+	       ardop_settings_set_bool(s, "audio.null_device", sel->null_device) &&
+	       ardop_settings_set_bool(s, "pcap.enabled", sel->pcap_enabled) &&
+	       ardop_settings_set(s, "pcap.dir", sel->pcap_dir);
 }

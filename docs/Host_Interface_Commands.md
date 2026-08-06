@@ -388,7 +388,9 @@ Performs initialization of the modem. The first command that needs to be issued 
 
 - Mode: ANY
 - Arguments: None
-- Returns: None
+- Returns: `INITIALIZE`
+
+Despite the reference implementation's own docs saying "None" here, the reply is not optional in practice: at least one widely-used TNC client (Pat's `wl2k-go/transport/ardop`) blocks on its response channel waiting for a reply whose command word is `INITIALIZE` before it sends anything else. A modem that stays silent on this command leaves such a client stalled before its handshake even begins.
 
 #### INPUTNOISE
 

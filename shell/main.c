@@ -1,8 +1,11 @@
+#define _DEFAULT_SOURCE /* localtime_r, for --log's timestamped filenames. */
+
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "shell/audio_devices.h"
 #include "shell/backend_ma.h"
@@ -10,7 +13,9 @@
 #include "shell/host_tcp.h"
 #include "shell/loop.h"
 #include "shell/platform.h"
+#include "shell/capture.h"
 #include "shell/runtime.h"
+#include "shell/wavwriter.h"
 #include "shell/sys.h"
 #include "shell/ptt.h"
 #include "shell/build.h"
@@ -51,6 +56,8 @@ struct app {
 	const ardop_platform_ops *ops;
 	ardop_host_tcp *host;   /* NULL unless --host is given. */
 	ardop_telemetry_tcp *tlm; /* NULL unless --telemetry is given. */
+	ardop_capture *capture; /* NULL unless --capture is given. */
+	ardop_wav_writer *rec;  /* NULL unless --record is given. */
 	bool trace;             /* --trace: print every observation. */
 };
 
@@ -122,11 +129,51 @@ static void app_observe(void *ctx, const ardop_obs *o)
 	}
 }
 
+/* Surfaces the host command channel's own traffic -- what a client sent and
+ * what it got back -- which app_observe() above never sees: ardop_obs only
+ * carries the link's own unsolicited notifications, not the raw command/reply
+ * exchange. Text mirrors app/tnc_host_tcp.c's watch_observer() so a captured
+ * ardopb log reads the same as ardop-station's guest log. Always on when
+ * --host is given (not gated on --trace): this is the session narrative a
+ * client's own log would otherwise be the only record of. */
+static void app_host_watch(void *ctx, ardop_host_ev_kind kind,
+			   const char *channel, const char *detail,
+			   const char *reply)
+{
+	(void)ctx;
+	switch (kind) {
+	case ARDOP_HOST_EV_LISTENING:
+		fprintf(stderr, "TNC interface listening on %s\n", detail);
+		break;
+	case ARDOP_HOST_EV_CONNECTED:
+		fprintf(stderr, "%s client connected from %s\n", channel,
+			detail[0] ? detail : "an unknown address");
+		break;
+	case ARDOP_HOST_EV_DISCONNECTED:
+		fprintf(stderr, "%s client disconnected%s%s\n", channel,
+			detail[0] ? " -- " : "", detail);
+		break;
+	case ARDOP_HOST_EV_REFUSED:
+		fprintf(stderr,
+			"refused a second %s client from %s -- one host at a "
+			"time\n", channel,
+			detail[0] ? detail : "an unknown address");
+		break;
+	case ARDOP_HOST_EV_COMMAND:
+		if (reply && reply[0])
+			fprintf(stderr, "[%s] %s -> %s\n", channel, detail, reply);
+		else
+			fprintf(stderr, "[%s] %s\n", channel, detail);
+		break;
+	}
+}
+
 static void usage(const char *me)
 {
 	fprintf(stderr,
 		"usage: %s MYCALL [--listen] [--id] [--trace] [--host PORT]\n"
-		"       [--telemetry [PORT]]\n"
+		"       [--telemetry [PORT]] [--capture FILE] [--record FILE]\n"
+		"       [--log DIR]\n"
 		"       [--null [SECONDS] | --audio [CAPTURE PLAYBACK]]\n"
 		"       [--audio-backend NAME] [--ptt SPEC] [--list-devices]\n"
 		"\n"
@@ -138,6 +185,18 @@ static void usage(const char *me)
 		"                   otherwise; use alsa to bypass PulseAudio.\n"
 		"  --ptt SPEC       none | rts:DEV | dtr:DEV | rigctld:HOST:PORT\n"
 		"                   (a bare device path means rts:).\n"
+		"  --capture FILE   write every frame, and the session's\n"
+		"                   narrative around them, to a .pcap file for\n"
+		"                   offline review (apps/ardop-pcap-dump).\n"
+		"  --record FILE    write raw RX audio (12 kHz mono WAV, the\n"
+		"                   modem's own rate) for replay through\n"
+		"                   --decodewav-style tools while trying a\n"
+		"                   demodulator change.\n"
+		"  --log DIR        write both of the above at once, under one\n"
+		"                   timestamp (DIR/session-<ts>.pcap and .wav),\n"
+		"                   so they can never end up out of step with\n"
+		"                   each other. DIR is created if missing.\n"
+		"                   Mutually exclusive with --capture/--record.\n"
 		"  --list-devices   print the audio devices and exit.\n"
 		"  --version        print the build identifier and exit.\n",
 		me);
@@ -174,6 +233,9 @@ int main(int argc, char **argv)
 	enum backend_kind kind = BACKEND_NULL;
 	uint64_t null_seconds = 5;
 	const char *cap = NULL, *play = NULL, *ptt_spec = NULL;
+	const char *capture_path = NULL;
+	const char *record_path = NULL;
+	const char *log_dir = NULL;
 	uint16_t host_port = 0;
 	uint16_t tlm_port = 0;
 	bool want_tlm = false;
@@ -228,11 +290,61 @@ int main(int argc, char **argv)
 			if (i + 1 < argc && argv[i + 1][0] != '-')
 				tlm_port = (uint16_t)strtoul(argv[++i], NULL,
 							     10);
+		} else if (!strcmp(argv[i], "--capture")) {
+			if (i + 1 >= argc) {
+				usage(argv[0]);
+				return 2;
+			}
+			capture_path = argv[++i];
+		} else if (!strcmp(argv[i], "--record")) {
+			if (i + 1 >= argc) {
+				usage(argv[0]);
+				return 2;
+			}
+			record_path = argv[++i];
+		} else if (!strcmp(argv[i], "--log")) {
+			if (i + 1 >= argc) {
+				usage(argv[0]);
+				return 2;
+			}
+			log_dir = argv[++i];
 		} else {
 			fprintf(stderr, "unknown option: %s\n", argv[i]);
 			usage(argv[0]);
 			return 2;
 		}
+	}
+
+	/* --log DIR is sugar for --capture/--record sharing one timestamp, so
+	 * the two files can never drift apart the way a hand-picked pair of
+	 * names can (a session recorded under one callsign's filename that
+	 * turns out, on inspection, to hold a different one). Built here, once
+	 * argv is fully parsed, so the ordinary --capture/--record paths below
+	 * need no special-casing. */
+	char log_capture_path[600], log_record_path[600];
+	if (log_dir) {
+		if (capture_path || record_path) {
+			fprintf(stderr,
+				"--log cannot be combined with --capture or "
+				"--record\n");
+			return 2;
+		}
+		if (!ardop_mkdir_p(log_dir)) {
+			fprintf(stderr, "--log: cannot create %s\n", log_dir);
+			return 1;
+		}
+		time_t t = (time_t)(ardop_wall_ms() / 1000u);
+		struct tm tmv;
+		localtime_r(&t, &tmv);
+		char stamp[32];
+		strftime(stamp, sizeof stamp, "%Y%m%d-%H%M%S", &tmv);
+
+		snprintf(log_capture_path, sizeof log_capture_path,
+			 "%s/session-%s.pcap", log_dir, stamp);
+		snprintf(log_record_path, sizeof log_record_path,
+			 "%s/session-%s.wav", log_dir, stamp);
+		capture_path = log_capture_path;
+		record_path = log_record_path;
 	}
 
 	/* Before any device is opened: an interrupt must be able to unkey. PTT
@@ -310,6 +422,7 @@ int main(int argc, char **argv)
 				(unsigned)host_port);
 			return 1;
 		}
+		ardop_host_tcp_observe(app.host, app_host_watch, &app);
 	}
 	/* Default the telemetry port to host_port + 2, clear of the command and
 	 * data ports (PORT and PORT + 1). */
@@ -330,6 +443,22 @@ int main(int argc, char **argv)
 		}
 		ardop_telemetry_tcp_attach(app.tlm, &rt);
 	}
+	if (capture_path) {
+		app.capture = ardop_capture_open(capture_path);
+		if (!app.capture) {
+			fprintf(stderr, "capture: cannot open %s\n",
+				capture_path);
+			return 1;
+		}
+		ardop_runtime_set_capture(&rt, app.capture);
+	}
+	if (record_path) {
+		app.rec = ardop_wav_writer_open(record_path);
+		if (!app.rec) {
+			fprintf(stderr, "record: cannot open %s\n", record_path);
+			return 1;
+		}
+	}
 	ardop_runtime_observe(&rt, app_observe, &app);
 
 	if (send_id) {
@@ -343,6 +472,7 @@ int main(int argc, char **argv)
 	 * blocks). Equivalent to ardop_loop_run when there is no host server. */
 	ardop_loop lp;
 	ardop_loop_init(&lp, &rt, &ops);
+	lp.rec = app.rec;
 	if (mb)
 		lp.block = ardop_backend_ma_block(mb);
 
@@ -379,6 +509,8 @@ int main(int argc, char **argv)
 	if (app.host)
 		ardop_host_tcp_close(app.host);
 	ardop_telemetry_tcp_close(app.tlm);
+	ardop_capture_close(app.capture);
+	ardop_wav_writer_close(app.rec);
 	if (mb)
 		ardop_backend_ma_close(mb);
 	/* After the backends: unkeying must outlive the device that keyed. */

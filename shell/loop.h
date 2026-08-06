@@ -5,6 +5,7 @@
 
 #include "shell/platform.h"
 #include "shell/runtime.h"
+#include "shell/wavwriter.h"
 
 /**
  * @file loop.h
@@ -54,6 +55,11 @@ typedef struct {
 	size_t block;
 	int16_t in[ARDOP_LOOP_BLOCK];
 	int16_t out[ARDOP_LOOP_BLOCK];
+
+	/* A live recording of RX audio (see wavwriter.h), or NULL. Not touched
+	 * by ardop_loop_init() -- set it after, the same way a caller wires
+	 * PTT through the observer rather than a field here. */
+	ardop_wav_writer *rec;
 } ardop_loop;
 
 /**

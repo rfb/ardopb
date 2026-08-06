@@ -1,8 +1,11 @@
 #include "devicespage.h"
 
+#include <QDir>
+#include <QFileDialog>
 #include <QFormLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
+#include <QStandardPaths>
 #include <QVBoxLayout>
 
 extern "C" {
@@ -63,6 +66,18 @@ QString describeState(app_dev_state s)
 	return QObject::tr("unknown");
 }
 
+/* Where session logs land when the operator has never chosen: Documents
+ * rather than Downloads, since a .pcap capture is something to keep and
+ * revisit, not a delivery, and files.recv_dir already claims Downloads. */
+QString defaultPcapDir()
+{
+	QString base =
+		QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
+	if (base.isEmpty())
+		base = QDir::homePath();
+	return QDir(base).filePath(QStringLiteral("ardop-sessions"));
+}
+
 }   // namespace
 
 DevicesPage::DevicesPage(ModemThread *modem, QWidget *parent)
@@ -121,6 +136,33 @@ DevicesPage::DevicesPage(ModemThread *modem, QWidget *parent)
 	onPttMethodChanged(0);
 
 	root->addWidget(pickBox);
+
+	/* --- session capture ------------------------------------------------ */
+	auto *pcapBox = new QGroupBox(tr("Session log"), this);
+	auto *pcapLayout = new QVBoxLayout(pcapBox);
+
+	m_pcapEnable = new QCheckBox(
+		tr("Write every frame to a .pcap file, for offline review"),
+		this);
+	m_pcapEnable->setToolTip(
+		tr("One timestamped file per time devices are opened. Open it "
+		   "with apps/ardop-pcap-dump, or wireshark -r."));
+	pcapLayout->addWidget(m_pcapEnable);
+
+	auto *pcapRow = new QHBoxLayout;
+	m_pcapDir = defaultPcapDir();   /* until setSelection() says otherwise. */
+	m_pcapDirLabel = new QLabel(m_pcapDir, this);
+	m_pcapDirLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+	m_pcapDirLabel->setWordWrap(true);
+	m_pcapDirLabel->setStyleSheet("color: palette(mid);");
+	pcapRow->addWidget(m_pcapDirLabel, 1);
+	m_pcapChange = new QPushButton(tr("Change…"), this);
+	pcapRow->addWidget(m_pcapChange);
+	pcapLayout->addLayout(pcapRow);
+
+	connect(m_pcapChange, &QPushButton::clicked, this,
+		&DevicesPage::onChoosePcapDir);
+	root->addWidget(pcapBox);
 
 	/* --- actions ------------------------------------------------------- */
 	auto *actions = new QHBoxLayout;
@@ -409,6 +451,10 @@ app_device_selection DevicesPage::selection() const
 
 	const QByteArray backend = m_backend.toUtf8();
 	qstrncpy(sel.backend, backend.constData(), sizeof sel.backend);
+
+	sel.pcap_enabled = m_pcapEnable->isChecked();
+	qstrncpy(sel.pcap_dir, m_pcapDir.toUtf8().constData(),
+		 sizeof sel.pcap_dir);
 	return sel;
 }
 
@@ -420,6 +466,11 @@ void DevicesPage::setSelection(const app_device_selection &sel)
 	at = m_playback->findData(QString::fromUtf8(sel.playback_id));
 	if (at >= 0)
 		m_playback->setCurrentIndex(at);
+
+	m_pcapEnable->setChecked(sel.pcap_enabled);
+	const QString pcapDir = QString::fromUtf8(sel.pcap_dir);
+	m_pcapDir = pcapDir.isEmpty() ? defaultPcapDir() : pcapDir;
+	m_pcapDirLabel->setText(m_pcapDir);
 
 	const QString spec = QString::fromUtf8(sel.ptt_spec);
 	for (size_t i = 0; i < sizeof kMethods / sizeof kMethods[0]; i++) {
@@ -434,6 +485,16 @@ void DevicesPage::setSelection(const app_device_selection &sel)
 	}
 	m_pttMethod->setCurrentIndex(0);
 	m_pttTarget->setCurrentText(QString());
+}
+
+void DevicesPage::onChoosePcapDir()
+{
+	const QString dir = QFileDialog::getExistingDirectory(
+		this, tr("Where should session logs go?"), m_pcapDir);
+	if (dir.isEmpty())
+		return;
+	m_pcapDir = QDir::toNativeSeparators(dir);
+	m_pcapDirLabel->setText(m_pcapDir);
 }
 
 void DevicesPage::onApply()
