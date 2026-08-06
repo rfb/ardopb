@@ -129,6 +129,45 @@ static void app_observe(void *ctx, const ardop_obs *o)
 	}
 }
 
+/* Surfaces the host command channel's own traffic -- what a client sent and
+ * what it got back -- which app_observe() above never sees: ardop_obs only
+ * carries the link's own unsolicited notifications, not the raw command/reply
+ * exchange. Text mirrors app/tnc_host_tcp.c's watch_observer() so a captured
+ * ardopb log reads the same as ardop-station's guest log. Always on when
+ * --host is given (not gated on --trace): this is the session narrative a
+ * client's own log would otherwise be the only record of. */
+static void app_host_watch(void *ctx, ardop_host_ev_kind kind,
+			   const char *channel, const char *detail,
+			   const char *reply)
+{
+	(void)ctx;
+	switch (kind) {
+	case ARDOP_HOST_EV_LISTENING:
+		fprintf(stderr, "TNC interface listening on %s\n", detail);
+		break;
+	case ARDOP_HOST_EV_CONNECTED:
+		fprintf(stderr, "%s client connected from %s\n", channel,
+			detail[0] ? detail : "an unknown address");
+		break;
+	case ARDOP_HOST_EV_DISCONNECTED:
+		fprintf(stderr, "%s client disconnected%s%s\n", channel,
+			detail[0] ? " -- " : "", detail);
+		break;
+	case ARDOP_HOST_EV_REFUSED:
+		fprintf(stderr,
+			"refused a second %s client from %s -- one host at a "
+			"time\n", channel,
+			detail[0] ? detail : "an unknown address");
+		break;
+	case ARDOP_HOST_EV_COMMAND:
+		if (reply && reply[0])
+			fprintf(stderr, "[%s] %s -> %s\n", channel, detail, reply);
+		else
+			fprintf(stderr, "[%s] %s\n", channel, detail);
+		break;
+	}
+}
+
 static void usage(const char *me)
 {
 	fprintf(stderr,
@@ -383,6 +422,7 @@ int main(int argc, char **argv)
 				(unsigned)host_port);
 			return 1;
 		}
+		ardop_host_tcp_observe(app.host, app_host_watch, &app);
 	}
 	/* Default the telemetry port to host_port + 2, clear of the command and
 	 * data ports (PORT and PORT + 1). */

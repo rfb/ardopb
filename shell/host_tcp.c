@@ -296,6 +296,14 @@ static void service_data(ardop_host_tcp *h, ardop_runtime *rt, uint64_t now)
 		ardop_host_cmd sd = {.kind = ARDOP_CMD_SEND_DATA,
 				     .data = payload, .data_len = plen};
 		ardop_runtime_host(rt, &sd, now);
+		/* The data channel has no reply to pair a command with (see
+		 * service_data's own comment above), but a client queuing bytes
+		 * to send is exactly as much session narrative as a cmd-channel
+		 * command -- and was invisible until now: nothing else reports
+		 * that this channel carried anything at all. */
+		char detail[32];
+		snprintf(detail, sizeof detail, "%zu bytes queued", plen);
+		report(h, ARDOP_HOST_EV_COMMAND, "data", detail, NULL);
 		memmove(h->data_buf, h->data_buf + consumed,
 			h->data_buf_len - consumed);
 		h->data_buf_len -= consumed;
