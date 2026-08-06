@@ -20,11 +20,75 @@
  * is deliberate: every observable change passes through this one function, so a
  * new event kind cannot forget to update a display. The record is 17 bytes and
  * the sink drops on backpressure, so the redundancy is free. */
+static void capture_observation(ardop_runtime *rt, const ardop_obs *o);
+
 static void emit(ardop_runtime *rt, const ardop_obs *o)
 {
 	for (int i = 0; i < rt->n_observers; i++)
 		rt->observers[i].fn(rt->observers[i].ctx, o);
 	ardop_runtime_telemetry_status(rt);
+	capture_observation(rt, o);
+}
+
+/*
+ * Every ardop_obs kind capture.h models, in the one place every observation
+ * already passes through -- adding a new kind later is a switch arm here, not
+ * a new call site. RX_FRAME/RX_FRAME_BAD/TX_FRAME are excluded: their payload
+ * bytes only exist at capture_frame()'s three call sites below, not on
+ * ardop_obs. MODE (redundant with frame-type changes already in the frame
+ * log), BUFFER (TX-queue bookkeeping), and DEVICE/OWNER/GUEST (local
+ * TNC-client/host-side infra, not the RF session) are deliberately not
+ * modelled by capture.h.
+ */
+static void capture_observation(ardop_runtime *rt, const ardop_obs *o)
+{
+	if (!rt->capture)
+		return;
+
+	switch (o->kind) {
+	case ARDOP_OBS_LEADER:
+		ardop_capture_write_leader(rt->capture, o->offset_hz,
+					   (int16_t)o->sn);
+		break;
+	case ARDOP_OBS_STATE:
+		ardop_capture_write_state(rt->capture, (uint8_t)o->state,
+					  o->remote);
+		break;
+	case ARDOP_OBS_PTT:
+		ardop_capture_write_ptt(rt->capture, o->key);
+		break;
+	case ARDOP_OBS_BANDWIDTH:
+		ardop_capture_write_bandwidth(rt->capture,
+					      (uint16_t)o->bandwidth);
+		break;
+	case ARDOP_OBS_BUSY:
+		ardop_capture_write_busy(rt->capture, o->busy);
+		break;
+	case ARDOP_OBS_RX_DATA:
+		ardop_capture_write_rx_data(rt->capture, o->tag, o->data,
+					    o->data_len);
+		break;
+	case ARDOP_OBS_HOST_MSG:
+		ardop_capture_write_host_msg(rt->capture, o->text);
+		break;
+	default:
+		break;
+	}
+}
+
+/* Write one frame to the capture sink, if attached. Payload is NULL/0 for a
+ * bad frame: demodulate.h documents ev->data as valid only for
+ * FRAME_DECODED, so a failed decode is recorded with no payload rather than
+ * whatever the demod buffer still happens to hold. */
+static void capture_frame(ardop_runtime *rt, uint8_t frame_type,
+			  ardop_capture_kind kind, int16_t quality, int16_t sn,
+			  const uint8_t *payload, size_t payload_len)
+{
+	if (!rt->capture)
+		return;
+	uint16_t n = payload_len > 0xFFFFu ? 0xFFFFu : (uint16_t)payload_len;
+	ardop_capture_write_frame(rt->capture, kind, frame_type, quality, sn,
+				  (uint16_t)rt->link.session_bw, payload, n);
 }
 
 /* Emit the changes in the link's observable state since the last check. Called
@@ -92,6 +156,8 @@ static void start_tx(ardop_runtime *rt, uint8_t frame_type,
 	/* Quality and S/N are receive figures; a transmitted frame has neither,
 	 * and -1 says so rather than reporting somebody else's. */
 	emit_frame_record(rt, frame_type, ARDOP_TLM_DIR_TX, -1, -1);
+	capture_frame(rt, frame_type, ARDOP_CAPTURE_FRAME_TX, -1, -1, encoded,
+		     len);
 	if (!rt->ptt_keyed) {
 		rt->ptt_keyed = true;
 		emit(rt, &(ardop_obs){.kind = ARDOP_OBS_PTT, .key = true});
@@ -151,6 +217,11 @@ void ardop_runtime_set_telemetry(ardop_runtime *rt, ardop_telemetry_fn fn,
 	rt->tlm_fn = fn;
 	rt->tlm_ctx = ctx;
 	rt->tlm_accum_len = 0;
+}
+
+void ardop_runtime_set_capture(ardop_runtime *rt, ardop_capture *cap)
+{
+	rt->capture = cap;
 }
 
 void ardop_runtime_telemetry_status(ardop_runtime *rt)
@@ -496,6 +567,9 @@ void ardop_runtime_rx(ardop_runtime *rt, const int16_t *samples, size_t n,
 					      .sn = rt->last_sn});
 			emit_frame_record(rt, ev->frame_type, ARDOP_TLM_DIR_RX,
 					  (int16_t)ev->quality, rt->last_sn);
+			capture_frame(rt, ev->frame_type, ARDOP_CAPTURE_FRAME_RX,
+				     (int16_t)ev->quality, rt->last_sn, ev->data,
+				     (size_t)ev->data_len);
 			/* Snapshot the symbols before the next frame overwrites
 			 * phases[]/mags[]. */
 			emit_constellation(rt, ev->frame_type);
@@ -508,6 +582,9 @@ void ardop_runtime_rx(ardop_runtime *rt, const int16_t *samples, size_t n,
 			emit_frame_record(rt, ev->frame_type,
 					  ARDOP_TLM_DIR_RX_FAILED, -1,
 					  rt->last_sn);
+			capture_frame(rt, ev->frame_type,
+				     ARDOP_CAPTURE_FRAME_RX_FAILED, -1,
+				     rt->last_sn, NULL, 0);
 		}
 		else
 			continue;

@@ -57,6 +57,12 @@ typedef struct {
 	char backend[32];                       /**< "", "alsa", "wasapi", ... */
 	char ptt_spec[ARDOP_PTT_TARGET_MAX + 24]; /**< "rts:/dev/ttyUSB0", "none" */
 	bool null_device;                       /**< The synthetic device, for tests. */
+
+	/* Named pcap_*, not capture_*: the fields above already use "capture"
+	 * for the audio input device, and this is an unrelated thing -- a
+	 * session log (shell/capture.h), not a sound card. */
+	bool pcap_enabled;                      /**< Write every session to a .pcap. */
+	char pcap_dir[512];                     /**< One timestamped file per open. */
 } app_device_selection;
 
 /** @brief Where the devices are. */

@@ -43,6 +43,7 @@ static void serve_rx(ardop_loop *lp)
 	lp->t += n;
 	if (n > 0) {
 		ardop_runtime_telemetry_audio(lp->rt, lp->in, n);
+		ardop_wav_writer_append(lp->rec, lp->in, n);
 		ardop_runtime_rx(lp->rt, lp->in, n, lp->t);
 	}
 	ardop_runtime_timer(lp->rt, lp->t);

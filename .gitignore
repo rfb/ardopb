@@ -79,6 +79,10 @@ newArdopSampleArrays.c
 # host-client apps (built by `make apps`)
 /apps/ardop-cat
 /apps/ardop-chat
+/apps/ardop-pcap-dump
+
+# field-test session recordings (--log / GUI capture output)
+/capture/
 
 # the station application's spine harness (built by `make app`)
 /app/ardop-spine

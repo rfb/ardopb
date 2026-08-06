@@ -460,6 +460,11 @@ void app_set_tnc(app_spine *sp, const app_tnc_ops *tnc)
 	sp->tnc = tnc;
 }
 
+void app_set_capture(app_spine *sp, ardop_capture *cap)
+{
+	ardop_runtime_set_capture(&sp->rt, cap);
+}
+
 ardop_runtime *app_runtime(app_spine *sp)
 {
 	return &sp->rt;

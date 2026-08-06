@@ -1,6 +1,7 @@
 #ifndef ARDOP_UI_DEVICESPAGE_H_
 #define ARDOP_UI_DEVICESPAGE_H_
 
+#include <QCheckBox>
 #include <QComboBox>
 #include <QLabel>
 #include <QLineEdit>
@@ -79,6 +80,7 @@ private slots:
 	void onApply();
 	void onClose();
 	void onTestPtt();
+	void onChoosePcapDir();
 
 private:
 	void fillDevices();
@@ -95,6 +97,13 @@ private:
 	QComboBox *m_pttMethod = nullptr;
 	QComboBox *m_pttTarget = nullptr;   /**< Editable: a list, not a cage. */
 	QLabel *m_pttHint = nullptr;
+
+	/* Named m_pcap*, not m_capture*: that name is already the audio capture
+	 * picker above. This is the unrelated session log (shell/capture.h). */
+	QCheckBox *m_pcapEnable = nullptr;
+	QLabel *m_pcapDirLabel = nullptr;
+	QPushButton *m_pcapChange = nullptr;
+	QString m_pcapDir;
 
 	QPushButton *m_apply = nullptr;
 	QPushButton *m_close = nullptr;

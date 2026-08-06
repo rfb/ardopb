@@ -129,8 +129,8 @@ core/%.o: core/%.c
 
 # --- shell/ : the I/O-free runtime + the platform backends -----------------
 SHELL_OBJS = shell/runtime.o shell/loop.o shell/host.o shell/telemetry.o \
-	shell/ring.o shell/resample.o shell/net.o shell/sys.o shell/fault.o \
-	shell/settings.o shell/build.o
+	shell/capture.o shell/wavwriter.o shell/ring.o shell/resample.o \
+	shell/net.o shell/sys.o shell/fault.o shell/settings.o shell/build.o
 
 shell/%.o: shell/%.c
 	$(CC) -I. $(CORE_CPPFLAGS) $(CFLAGS) $(CORE_CFLAGS) -c -o $@ $<
@@ -240,7 +240,7 @@ ardopb: ardopb$(EXE)
 endif
 
 # --- apps/ : host-client applications (plain TCP clients) ------------------
-APPS = apps/ardop-cat$(EXE) apps/ardop-chat$(EXE)
+APPS = apps/ardop-cat$(EXE) apps/ardop-chat$(EXE) apps/ardop-pcap-dump$(EXE)
 
 # -I. so the apps can reach shell/net.h and shell/sys.h. They remain plain host
 # clients with no dependency on the modem's C API -- net/sys are a platform
@@ -260,6 +260,12 @@ apps/ardop-cat$(EXE):  apps/ardop_cat.o  app/asp_wire.o $(APP_OBJS) ; $(APP_LINK
 # frame of the chosen mode holds, which is the budget a TEXT_B has to fit in.
 apps/ardop-chat$(EXE): apps/ardop_chat.o apps/fecchat.o app/asp_wire.o \
                        core/codec/frame.o $(APP_OBJS) ; $(APP_LINK)
+# No sockets, so not $(APP_OBJS) -- just the pure pcap/record decode, the
+# frame-type name table, and sys.o for ardop_wall_ms (linked in with
+# capture.o's impure half even though this tool only reads, never writes).
+apps/ardop-pcap-dump$(EXE): apps/ardop_pcap_dump.o core/codec/frame.o \
+                            shell/capture.o shell/sys.o
+	$(CC) $(STATIC) $^ -o $@ $(PLATFORM_LDLIBS)
 
 apps: $(APPS)
 
@@ -412,6 +418,8 @@ CORE_TESTS = \
 	test/core/test_loop$(EXE) \
 	test/core/test_host$(EXE) \
 	test/core/test_telemetry$(EXE) \
+	test/core/test_capture$(EXE) \
+	test/core/test_wavwriter$(EXE) \
 	test/core/test_ring$(EXE) \
 	test/core/test_resample$(EXE) \
 	test/core/test_spine$(EXE) \
