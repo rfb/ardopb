@@ -1,7 +1,5 @@
 # ardopb: AI driven re-implementation of ARDOP
 
-`------------------ START HUMAN MESSAGE ------------------`
-
 The radio community deserves a high quality, open-source digital modem. 
 
 In 2022 I set out to improve ardopc. I had been participating in Winlink Wednesdays, and I want to improve reliability with my local relay and perhaps introduce some automation and soon I discovered the timing issues which caused connections to fail on different hardware. 
