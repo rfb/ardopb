@@ -516,11 +516,22 @@ static void run_line(app_spine *sp, const char *line)
 /* True for the commands that start, steer or end a session -- the ones that
  * would collide with a guest's. Configuration is deliberately not in this set:
  * refusing a guest's MYCALL would break Pat's startup handshake, and refusing
- * the application's would be the same mistake pointed the other way. */
+ * the application's would be the same mistake pointed the other way.
+ *
+ * ABORT/DD is deliberately not in this set either, and for the opposite
+ * reason from configuration: it is the one session command an operator needs
+ * to be able to reach *regardless* of who holds the link, not one they need
+ * to share. A guest that will not (or cannot -- Pat has no host command that
+ * cancels a call in progress; confirmed against a live session) give up a
+ * doomed connection attempt otherwise leaves the operator with no recourse
+ * but killing the process. Letting ABORT through is not a silent coup: it
+ * still runs through notify_host("ABORT"), which reaches the guest over the
+ * same channel any other unsolicited status line does, so Pat sees it happen
+ * rather than finding out from a connection that just stops answering. */
 static bool line_is_session(const char *up)
 {
 	static const char *const kSession[] = {
-		"ARQCALL", "DISCONNECT", "ABORT", "DD", "FECSEND", "SENDID",
+		"ARQCALL", "DISCONNECT", "FECSEND", "SENDID",
 		"LISTEN", "BREAK",
 	};
 	for (size_t i = 0; i < sizeof kSession / sizeof kSession[0]; i++) {
@@ -537,11 +548,11 @@ static bool cmd_is_session(ardop_host_cmd_kind k)
 	switch (k) {
 	case ARDOP_CMD_CONNECT:
 	case ARDOP_CMD_DISCONNECT:
-	case ARDOP_CMD_ABORT:
 	case ARDOP_CMD_FEC_SEND:
 	case ARDOP_CMD_SEND_ID:
 	case ARDOP_CMD_BREAK:
 		return true;
+	case ARDOP_CMD_ABORT:   /* see line_is_session's doc comment. */
 	case ARDOP_CMD_SEND_DATA:
 	case ARDOP_CMD_SET_MODE:
 		return false;
@@ -777,6 +788,34 @@ void app_step(app_spine *sp)
 			sp->tnc_attached_local = now;
 			atomic_store_explicit(&sp->tnc_attached, now,
 					      memory_order_release);
+
+			/*
+			 * A guest that leaves mid-call, before anyone has
+			 * answered, is the situation ABORT exists to escape --
+			 * and the one case this spine can resolve on its own,
+			 * without an operator having to notice. Pat has no host
+			 * command that cancels a call in progress (confirmed
+			 * live: dropping the connection is the only signal it
+			 * ever gives), so treating the drop itself as that
+			 * signal is the only way an unreachable station's
+			 * ConReq retries ever stop once the client that started
+			 * them is gone.
+			 *
+			 * Scoped tightly to ISS_CON_REQ -- calling, nobody has
+			 * answered yet -- because any other state is a real
+			 * session an operator, or a reconnecting guest, may
+			 * still want: the same reasoning cmd_is_session's own
+			 * doc comment gives for exempting ABORT from guest
+			 * ownership in the first place, applied here to the
+			 * mirror case of the guest itself disappearing.
+			 */
+			if (!now && sp->rt.link.state == ARDOP_LINK_ISS_CON_REQ) {
+				ardop_host_cmd abort_cmd = {
+					.kind = ARDOP_CMD_ABORT};
+				ardop_runtime_host(&sp->rt, &abort_cmd,
+						   sp->loop.t);
+			}
+
 			emit(sp, APP_EV_OWNER, 0, now, NULL,
 			     now ? "TNC client attached; it owns the link"
 				 : "TNC client left",

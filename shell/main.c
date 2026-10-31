@@ -476,10 +476,38 @@ int main(int argc, char **argv)
 	if (mb)
 		lp.block = ardop_backend_ma_block(mb);
 
+	/* Edge detector for the host client's presence -- see the ABORT injection
+	 * below. */
+	bool host_was_connected = false;
+
 	while (!ardop_stop_requested()
 	       && !(ops.should_stop && ops.should_stop(ops.ctx))) {
-		if (app.host)
+		if (app.host) {
 			ardop_host_tcp_service(app.host, &rt, lp.t);
+
+			/*
+			 * Pat has no host command that cancels a call in
+			 * progress (confirmed live; app/spine.c's
+			 * cmd_is_session doc comment has the full reasoning) --
+			 * dropping the TNC connection is the only cancellation
+			 * signal it ever gives. A client that leaves mid-call,
+			 * before anyone has answered, is the one case this
+			 * loop can resolve on its own. Scoped to ISS_CON_REQ
+			 * for the same reason app/spine.c's app_step scopes
+			 * its own copy of this: any other state is a real
+			 * session an operator or a reconnecting guest may
+			 * still want.
+			 */
+			bool host_connected =
+				ardop_host_tcp_client_connected(app.host);
+			if (host_was_connected && !host_connected
+			    && rt.link.state == ARDOP_LINK_ISS_CON_REQ) {
+				ardop_host_cmd abort_cmd = {
+					.kind = ARDOP_CMD_ABORT};
+				ardop_runtime_host(&rt, &abort_cmd, lp.t);
+			}
+			host_was_connected = host_connected;
+		}
 		ardop_telemetry_tcp_service(app.tlm, &rt);
 		ardop_loop_step(&lp);
 
