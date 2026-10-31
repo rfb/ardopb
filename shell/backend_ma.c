@@ -266,21 +266,39 @@ static void ma_set_ptt(void *ctx, bool key)
 	 * never from an audio callback.
 	 */
 
+	uint64_t deadline = ardop_mono_ms() + DRAIN_TIMEOUT_MS;
+
 	/* 1. The interpolator is still holding (ntaps-1)/2 device samples that
 	 *    were accepted and never emitted. This is a tail cut entirely
-	 *    separate from the ring, and it lands on the last symbol. */
+	 *    separate from the ring, and it lands on the last symbol.
+	 *
+	 *    Bounded the same way step 2 below is. ardop_ring_write returns 0
+	 *    once the ring is full, and if the playback thread has stopped
+	 *    draining it -- the fault this whole path exists to survive -- an
+	 *    unconditional write-until-done loop here can never make progress
+	 *    either. Confirmed live: a lost playback device left the modem
+	 *    thread spinning here at 100% CPU with no syscalls, forever, with
+	 *    PTT still keyed -- exactly the hang this function's own header
+	 *    comment promises never happens. */
 	size_t tail = ardop_resample_flush(&b->tx_rs, b->scratch,
 					   b->scratch_len);
 	size_t off = 0;
-	while (off < tail)
-		off += ardop_ring_write(&b->play_ring, b->scratch + off,
-					tail - off);
+	while (off < tail) {
+		size_t n = ardop_ring_write(&b->play_ring, b->scratch + off,
+					    tail - off);
+		off += n;
+		if (n == 0 && off < tail
+		    && !ardop_signal_wait(&b->play_sig, 50)
+		    && ardop_mono_ms() > deadline) {
+			fault_set(b, ARDOP_FAULT_PLAYBACK_LOST);
+			break;
+		}
+	}
 
 	/* 2. Wait for the device to actually consume the ring. write_audio
 	 *    returned as soon as the samples were queued; several hundred
 	 *    milliseconds of the transmission may not have been played, let
 	 *    alone radiated. */
-	uint64_t deadline = ardop_mono_ms() + DRAIN_TIMEOUT_MS;
 	while (ardop_ring_avail(&b->play_ring) > 0) {
 		if (!ardop_signal_wait(&b->play_sig, 50)
 		    && ardop_mono_ms() > deadline) {
@@ -387,6 +405,28 @@ void ardop_backend_ma_close(ardop_ma_backend *b)
 	if (b->ptt)
 		ardop_ptt_set(b->ptt, false);
 
+	/*
+	 * ma_device_uninit() joins the device's own worker thread, and that
+	 * join has no timeout of its own. Confirmed live, against a real
+	 * re-enumerated USB card: the worker thread stayed parked in
+	 * PulseAudio's own poll loop forever, never noticing the stop
+	 * request, and this hung the modem thread indefinitely
+	 * (ma_thread_wait__posix -> pthread_join, third_party/miniaudio.h --
+	 * a file this tree cannot patch).
+	 *
+	 * There is no fix here that is safe for every caller. Skipping the
+	 * uninit for an already-faulted device sounds right, but a
+	 * ma_context whose devices were never uninited turned out to jam the
+	 * *next* ardop_backend_ma_open() on the same context just as badly
+	 * (proven live in this tree's own test suite, not merely suspected) --
+	 * and the device manager rebuilds a backend on this same context
+	 * while the process keeps running, which is exactly the case that
+	 * breaks. A caller that is about to exit the process instead (ardopb's
+	 * own fault path, shell/main.c) does not have that constraint and can
+	 * safely skip calling this function altogether once a fault has
+	 * already latched, relying on process exit to reclaim what a graceful
+	 * uninit would have -- see shell/main.c's cleanup sequence.
+	 */
 	if (b->capture_started)
 		ma_device_uninit(&b->capture);
 	if (b->playback_started)
@@ -595,6 +635,13 @@ void ardop_backend_ma_stall_capture(ardop_ma_backend *b)
 	/* Stopping the device stops the callback, which is precisely what an
 	 * unplug does. The handle stays valid so close() still works. */
 	ma_device_stop(&b->capture);
+}
+
+void ardop_backend_ma_stall_playback(ardop_ma_backend *b)
+{
+	if (!b || !b->playback_started)
+		return;
+	ma_device_stop(&b->playback);
 }
 
 ardop_audio_match ardop_backend_ma_capture_match(const ardop_ma_backend *b)

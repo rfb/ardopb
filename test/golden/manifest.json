@@ -4377,6 +4377,101 @@
    "session_id": "3C",
    "tx_samples": 52740,
    "tx_sha256": "754814c378a740fba86da4d5a68b248ec68b0a20d9734ea49eb76a233a2170e1"
+  },
+  {
+   "audio": {
+    "clean": {
+     "file": "field_va7dep-b2f-proposal.wav.gz",
+     "sha256": "8075e9d6d38b472d7c5873743501eac3b103e8494d4ba6d3094a4056329ed970"
+    }
+   },
+   "decode": {
+    "decoded": true,
+    "frame_type": "4PSK.500.100.E",
+    "payload": "4232465749484a4d245d0d3b50513a2032363532353632350d434d532076696120564137444550203e0d",
+    "quality": 87
+   },
+   "frame_type": "4PSK.500.100.E",
+   "id": "field/va7dep-b2f-proposal",
+   "kind": "field",
+   "sample_rate": 12000,
+   "source": "Real off-air ARQ session with VA7DEP, 2026-08-05 ~20:37 local (session-20260805-203717), field-testing a DigiRig Mobile + Icom IC-746PRO; ~-10 dB S/N. Second data frame of the exchange: our reply proposal line, ;FW:/;PR: B2F handshake content."
+  },
+  {
+   "audio": {
+    "clean": {
+     "file": "field_va7dep-rms-trimode-banner.wav.gz",
+     "sha256": "e11f24c69d66116682cc58a92194bc9e27d1c8a7c91c3cf41773cbe2daa6e543"
+    }
+   },
+   "decode": {
+    "decoded": true,
+    "frame_type": "4PSK.500.100.O",
+    "payload": "524d53205472696d6f646520312e342e322e3020564137444550202d2044656c746120416d617465757220526164696f20536f63696574790d0a5641374246522068617320323133206461696c79206d696e757465732072656d61696e696e672077697468205641374445502028434e38394e44290d5b574c324b2d352e302d",
+    "quality": 83
+   },
+   "frame_type": "4PSK.500.100.O",
+   "id": "field/va7dep-rms-trimode-banner",
+   "kind": "field",
+   "sample_rate": 12000,
+   "source": "Real off-air ARQ session with VA7DEP, 2026-08-05 ~20:37 local (session-20260805-203717), field-testing a DigiRig Mobile + Icom IC-746PRO; ~-10 dB S/N. First data frame of the exchange: VA7DEP's RMS Trimode B2F banner."
+  },
+  {
+   "audio": {
+    "clean": {
+     "file": "field_w7owo-4psk-200-100-banner.wav.gz",
+     "sha256": "dfae3f6f4ecd53c6599dae11164a9fece6206b6d195726297e9c7c7465d3f133"
+    }
+   },
+   "decode": {
+    "decoded": true,
+    "frame_type": "4PSK.200.100.O",
+    "payload": "524d53205472696d6f646520312e342e322e302059616d68696c6c20436f756e7479204f522048462047617465776179202d204e2d53204469706f6c652c2020",
+    "quality": 90
+   },
+   "frame_type": "4PSK.200.100.O",
+   "id": "field/w7owo-4psk-200-100-banner",
+   "kind": "field",
+   "sample_rate": 12000,
+   "source": "Real off-air ARQ session with W7OWO (Yamhill County OR HF Gateway), 2026-08-06 ~07:23 local (session-20260806-072250), field-testing a DigiRig Mobile + Icom IC-746PRO; ~+2 dB S/N, 200 Hz bandwidth. RMS Trimode B2F banner, first content frame of the exchange."
+  },
+  {
+   "audio": {
+    "clean": {
+     "file": "field_w7owo-8psk-500-100-e.wav.gz",
+     "sha256": "2f4d16ceddca559f0755d21932f501016196dadce8ae042efbd24db0ca944fd2"
+    }
+   },
+   "decode": {
+    "decoded": true,
+    "frame_type": "8PSK.500.100.E",
+    "payload": "d678915b57e4c0bb7315ae06336f27627ea2dbf18086c6987fff6c493317764cc395b3917cc42df755835c8973d2c1b90656fc8a15fa49cb0b02c65b5fbf99f9851080e84818353a08d5569d960ba105e9063cd429b1f085195c068cd3756062cfa772ecc0a46a1f34ddd84d00d114104c417245a5cc3878bffcf48dcced5e863ee272d2d8156df437cb524f9cfced224543db8a0e9d332078a651094c592034f432e2598b8c484cb71396e376e9bff29f7c2876c36f6e4f242599ab3923b19eeed4ee02833e34a43b4f3b038600708f7faa72c1e0ad7842",
+    "quality": 71
+   },
+   "frame_type": "8PSK.500.100.E",
+   "id": "field/w7owo-8psk-500-100-e",
+   "kind": "field",
+   "sample_rate": 12000,
+   "source": "Real off-air ARQ session with W7OWO, 2026-08-06 ~07:25 local (session-20260806-072250), field-testing a DigiRig Mobile + Icom IC-746PRO; ~-2 dB S/N -- the weakest signal in this session's successful decodes. Parity complement of field/w7owo-8psk-500-100-o, same near-max 216-byte size, proving both 8PSK.500.100 frame types decode off-air."
+  },
+  {
+   "audio": {
+    "clean": {
+     "file": "field_w7owo-8psk-500-100-o.wav.gz",
+     "sha256": "0d60a11fd1f4b410b472a49d556391ee85f609646f8f544eafd1690081cead4d"
+    }
+   },
+   "decode": {
+    "decoded": true,
+    "frame_type": "8PSK.500.100.O",
+    "payload": "236ea78038fbf1f9cddccfed3e3e482e68fa83e39802fa8f18a0ea2446e52ecdbfb43be07dc5412452f3b9eff840befbd37f7e7b86f7707a32b868e41791d64317dd6c66cf576f8c966bd9847a3afe563971dd03e5e37ee60ede7253f22a8ac3bca54de39d36dd019277c2cdeed23c6ad1ae6d02bbedb837f0467d5d44622afe76c5b0d6eac5967edcf5db85766c3bde4c7af069ae3a09d32bcadcd5255682c8f6b7c8ce96963859a6ec9f51b7a0b91a1e63b2f4c847515f8e851a655ceea9f8ea9dd403748c534aa8bd7356ca2b396227d0c2ed8d7837f5",
+    "quality": 75
+   },
+   "frame_type": "8PSK.500.100.O",
+   "id": "field/w7owo-8psk-500-100-o",
+   "kind": "field",
+   "sample_rate": 12000,
+   "source": "Real off-air ARQ session with W7OWO, 2026-08-06 ~07:25 local (session-20260806-072250), field-testing a DigiRig Mobile + Icom IC-746PRO; ~+3 dB S/N. First 8PSK.500.100 field case: near-max-capacity (216 byte) frame, denser constellation than any prior field coverage."
   }
  ],
  "config": {

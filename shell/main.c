@@ -476,10 +476,38 @@ int main(int argc, char **argv)
 	if (mb)
 		lp.block = ardop_backend_ma_block(mb);
 
+	/* Edge detector for the host client's presence -- see the ABORT injection
+	 * below. */
+	bool host_was_connected = false;
+
 	while (!ardop_stop_requested()
 	       && !(ops.should_stop && ops.should_stop(ops.ctx))) {
-		if (app.host)
+		if (app.host) {
 			ardop_host_tcp_service(app.host, &rt, lp.t);
+
+			/*
+			 * Pat has no host command that cancels a call in
+			 * progress (confirmed live; app/spine.c's
+			 * cmd_is_session doc comment has the full reasoning) --
+			 * dropping the TNC connection is the only cancellation
+			 * signal it ever gives. A client that leaves mid-call,
+			 * before anyone has answered, is the one case this
+			 * loop can resolve on its own. Scoped to ISS_CON_REQ
+			 * for the same reason app/spine.c's app_step scopes
+			 * its own copy of this: any other state is a real
+			 * session an operator or a reconnecting guest may
+			 * still want.
+			 */
+			bool host_connected =
+				ardop_host_tcp_client_connected(app.host);
+			if (host_was_connected && !host_connected
+			    && rt.link.state == ARDOP_LINK_ISS_CON_REQ) {
+				ardop_host_cmd abort_cmd = {
+					.kind = ARDOP_CMD_ABORT};
+				ardop_runtime_host(&rt, &abort_cmd, lp.t);
+			}
+			host_was_connected = host_connected;
+		}
 		ardop_telemetry_tcp_service(app.tlm, &rt);
 		ardop_loop_step(&lp);
 
@@ -511,7 +539,21 @@ int main(int argc, char **argv)
 	ardop_telemetry_tcp_close(app.tlm);
 	ardop_capture_close(app.capture);
 	ardop_wav_writer_close(app.rec);
-	if (mb)
+	/*
+	 * A faulted device is not safe to close gracefully: ardop_backend_ma_
+	 * close() joins the device's worker thread with no timeout of its
+	 * own, and a device that stopped responding (the fault this branch
+	 * exists for) can leave that join blocked forever -- confirmed live,
+	 * against a real re-enumerated USB card (backend_ma.c's own comment
+	 * on ardop_backend_ma_close has the full account, including why the
+	 * fix does not belong in that function: it is also called by the
+	 * device manager to rebuild a backend without exiting the process,
+	 * where skipping the close corrupts the *next* open instead). ardopb
+	 * has no such caller past this point -- it is exiting regardless --
+	 * so skipping the close and letting process exit reclaim the device
+	 * handles is safe here specifically.
+	 */
+	if (mb && ardop_backend_ma_fault(mb) == ARDOP_FAULT_NONE)
 		ardop_backend_ma_close(mb);
 	/* After the backends: unkeying must outlive the device that keyed. */
 	ardop_ptt_close(ptt);

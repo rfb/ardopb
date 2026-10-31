@@ -134,6 +134,19 @@ unsigned ardop_backend_ma_ratio(const ardop_ma_backend *b);
  */
 void ardop_backend_ma_stall_capture(ardop_ma_backend *b);
 
+/**
+ * @brief **For tests only.** Stop the playback device so unkeying with a full
+ *        ring cannot drain it.
+ *
+ * The playback-side twin of ::ardop_backend_ma_stall_capture, for the same
+ * reason: a claim about a fault path -- ma_set_ptt's unkey drain giving up
+ * once the device stops consuming, rather than spinning forever with the
+ * ring full and PTT still keyed -- is not worth much until an automated test
+ * actually executes it. It did not, once: see
+ * test_playback_loss_does_not_hang_unkey.
+ */
+void ardop_backend_ma_stall_playback(ardop_ma_backend *b);
+
 /** @brief Device-rate samples the playback callback has actually consumed. */
 uint64_t ardop_backend_ma_played(const ardop_ma_backend *b);
 

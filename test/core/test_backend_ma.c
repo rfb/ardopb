@@ -223,6 +223,50 @@ static void test_capture_loss_faults(void **state)
 	ardop_backend_ma_close(b);
 }
 
+/*
+ * The playback-side twin of test_capture_loss_faults, closing the specific
+ * gap a live field incident exposed: an already-full ring -- what "the device
+ * stopped draining" looks like from the inside -- must not turn
+ * ma_set_ptt(false)'s unkey drain into an unbounded spin. The hang was real:
+ * a stuck ardopb process, PTT keyed, pinning one CPU core at 100% with zero
+ * syscalls, found live via gdb with the modem thread stuck in
+ * ardop_ring_write, the ring already full and nothing left to drain it.
+ */
+static void test_playback_loss_does_not_hang_unkey(void **state)
+{
+	(void)state;
+	ardop_platform_ops ops;
+	ardop_ma_backend *b = open_null(&ops);
+	assert_non_null(b);
+
+	ops.set_ptt(ops.ctx, true);
+	ardop_backend_ma_stall_playback(b);
+
+	/* Fill the ring to capacity and past it: write_audio's own bounded
+	 * wait-for-space gives up once the device stops draining, latching
+	 * PLAYBACK_LOST and leaving the ring as full as it will ever get --
+	 * exactly the state a live, ongoing transmission was in when its
+	 * device disappeared. */
+	enum { BURST = 60000 };   /* 5 s at the modem rate: more than any
+				    * plausible one-second device ring. */
+	static int16_t tone[BURST];
+	for (size_t i = 0; i < BURST; i++)
+		tone[i] = (int16_t)((i % 240) * 100 - 12000);
+	ops.write_audio(ops.ctx, tone, BURST);
+	assert_int_equal(ardop_backend_ma_fault(b), ARDOP_FAULT_PLAYBACK_LOST);
+
+	/* The regression: unkeying into a ring that cannot be drained must give
+	 * up within a bounded time, not spin forever with PTT still keyed. */
+	uint64_t began = ardop_mono_ms();
+	ops.set_ptt(ops.ctx, false);
+	uint64_t took = ardop_mono_ms() - began;
+
+	assert_true(took < 6000);
+	assert_int_equal(ardop_backend_ma_fault(b), ARDOP_FAULT_PLAYBACK_LOST);
+
+	ardop_backend_ma_close(b);
+}
+
 int main(void)
 {
 	ardop_test_setup();
@@ -232,6 +276,7 @@ int main(void)
 		cmocka_unit_test(test_capture_delivers_at_the_modem_rate),
 		cmocka_unit_test(test_block_size_is_sane),
 		cmocka_unit_test(test_capture_loss_faults),
+		cmocka_unit_test(test_playback_loss_does_not_hang_unkey),
 		cmocka_unit_test(test_rate_ratio_is_integral),
 	};
 	return cmocka_run_group_tests(tests, NULL, NULL);

@@ -137,6 +137,27 @@ StationWindow::StationWindow(ModemThread *modem, QWidget *parent)
 	m_owner = new QLabel(QString(), this);
 	statusBar()->addPermanentWidget(m_owner);
 
+	/* Next to the owner label on purpose: that is where "who is in control
+	 * right now" already lives, and this is the override for it. Disabled
+	 * until onLinkState sees anything other than DISC -- see its own doc
+	 * comment, stationwindow.h, for why this exists outside StationPage. */
+	m_globalAbort = new QPushButton(tr("Abort"), this);
+	m_globalAbort->setToolTip(
+		tr("Stops immediately, without a graceful teardown. Works even "
+		   "while a TNC client holds the link."));
+	m_globalAbort->setEnabled(false);
+	connect(m_globalAbort, &QPushButton::clicked, this, [this]() {
+		if (!m_modem)
+			return;
+		ardop_host_cmd cmd {};
+		cmd.kind = ARDOP_CMD_ABORT;
+		if (m_modem->submitCmd(cmd))
+			log(tr("abort"));
+		else
+			log(tr("abort refused: the command queue is full"));
+	});
+	statusBar()->addPermanentWidget(m_globalAbort);
+
 	m_frame = new QLabel(tr("no frames yet"), this);
 	statusBar()->addPermanentWidget(m_frame);
 
@@ -537,6 +558,9 @@ void StationWindow::onLinkState(int state, const QString &remote)
 	 * and it was reported from the field
 	 * ([20](../analysis/20-field-results.md) finding 10).
 	 */
+	if (m_globalAbort)
+		m_globalAbort->setEnabled((ardop_link_state)state != ARDOP_LINK_DISC);
+
 	if (!m_link)
 		return;
 

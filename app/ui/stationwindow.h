@@ -4,6 +4,7 @@
 #include <QLabel>
 #include <QMainWindow>
 #include <QPlainTextEdit>
+#include <QPushButton>
 #include <QTabWidget>
 #include <QTimer>
 
@@ -158,6 +159,19 @@ private:
 	QLabel *m_link = nullptr;
 	QLabel *m_frame = nullptr;
 	QLabel *m_owner = nullptr;
+
+	/*
+	 * The one control that follows the operator across every tab, not just
+	 * the Station page's own. StationPage's Abort button is only visible
+	 * while that tab is showing, and the situation it exists for -- a
+	 * guest-driven call the operator wants to kill and cannot cancel any
+	 * other way (a TNC client with no host command that cancels one in
+	 * progress; confirmed live against Pat) -- does not wait for the
+	 * operator to be looking at the right tab. It is not gated on guest
+	 * ownership, for the same reason app/spine.c's ABORT exception is not:
+	 * see cmd_is_session's doc comment there.
+	 */
+	QPushButton *m_globalAbort = nullptr;
 
 	bool m_geometrySet = false;
 	QString m_remoteCall;   /**< From APP_EV_STATE; see spinesource.h. */

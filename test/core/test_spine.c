@@ -550,6 +550,121 @@ static void test_tnc_takeover(void **state)
 	app_close(sp);
 }
 
+/*
+ * ABORT is the one session command line_is_session()/cmd_is_session()
+ * deliberately exclude, and for the opposite reason configuration is
+ * excluded: not because it is shared, but because an operator needs to be
+ * able to reach it *regardless* of who holds the link. A guest with no host
+ * command that cancels a call in progress (Pat, confirmed live) otherwise
+ * leaves the operator's own Abort button doing nothing while a doomed
+ * connection attempt runs its course -- which is what this guards against.
+ */
+static void test_abort_reaches_the_link_even_when_owned(void **state)
+{
+	(void)state;
+
+	app_spine *sp = open_with_device();
+	assert_non_null(sp);
+
+	struct fake_tnc fake;
+	memset(&fake, 0, sizeof fake);
+	app_tnc_ops ops = {
+		.ctx = &fake,
+		.service = fake_service,
+		.attached = fake_attached,
+		.notify = fake_notify,
+		.send_data = fake_send_data,
+	};
+	app_set_tnc(sp, &ops);
+	app_step(sp);
+	(void)drain(sp);
+
+	/* Start a real call attempt before any guest is attached, exactly the
+	 * state a doomed ARQCALL from Pat would leave the link in. */
+	assert_true(app_submit_line(sp, "MYCALL N0AAA"));
+	app_step(sp);
+	assert_true(app_submit_line(sp, "ARQCALL N0BBB 10"));
+	app_step(sp);
+	(void)drain(sp);
+	assert_int_equal(app_runtime(sp)->link.state, ARDOP_LINK_ISS_CON_REQ);
+
+	/* The guest attaches mid-attempt -- ordinary session commands are now
+	 * refused (test_tnc_takeover already proves this for ARQCALL), but
+	 * ABORT must not be. */
+	fake.attached = true;
+	app_step(sp);
+	(void)drain(sp);
+
+	ardop_host_cmd abort = {.kind = ARDOP_CMD_ABORT};
+	assert_true(app_submit_cmd(sp, &abort));
+	app_step(sp);
+
+	app_event ev;
+	bool refused = false;
+	while (app_events_pop(sp, &ev))
+		if (ev.kind == APP_EV_REPLY &&
+		    strstr(ev.text, "TNC client owns the link"))
+			refused = true;
+	assert_false(refused);
+	assert_int_equal(app_runtime(sp)->link.state, ARDOP_LINK_DISC);
+
+	app_close(sp);
+}
+
+/*
+ * Pat has no host command that cancels a call in progress -- confirmed live,
+ * see cmd_is_session's doc comment in app/spine.c -- so dropping the TNC
+ * connection is the only cancellation signal it ever gives. This is the mirror
+ * of test_abort_reaches_the_link_even_when_owned: instead of an operator
+ * reaching for Abort, the guest disappearing has to do the same job on its
+ * own, or an unreachable station's ConReq retries never stop once the client
+ * that started them is gone.
+ */
+static void test_guest_disconnect_aborts_unanswered_call(void **state)
+{
+	(void)state;
+
+	app_spine *sp = open_with_device();
+	assert_non_null(sp);
+
+	struct fake_tnc fake;
+	memset(&fake, 0, sizeof fake);
+	app_tnc_ops ops = {
+		.ctx = &fake,
+		.service = fake_service,
+		.attached = fake_attached,
+		.notify = fake_notify,
+		.send_data = fake_send_data,
+	};
+	app_set_tnc(sp, &ops);
+	app_step(sp);
+	(void)drain(sp);
+
+	/* Reach ISS_CON_REQ before any guest is attached, exactly as
+	 * test_abort_reaches_the_link_even_when_owned does. */
+	assert_true(app_submit_line(sp, "MYCALL N0AAA"));
+	app_step(sp);
+	assert_true(app_submit_line(sp, "ARQCALL N0BBB 10"));
+	app_step(sp);
+	(void)drain(sp);
+	assert_int_equal(app_runtime(sp)->link.state, ARDOP_LINK_ISS_CON_REQ);
+
+	/* The guest attaches mid-attempt, exactly as Pat would have been the one
+	 * that placed this call in the first place. */
+	fake.attached = true;
+	app_step(sp);
+	(void)drain(sp);
+	assert_int_equal(app_runtime(sp)->link.state, ARDOP_LINK_ISS_CON_REQ);
+
+	/* It leaves before anyone answered -- the only "cancel" Pat has. */
+	fake.attached = false;
+	app_step(sp);
+
+	assert_int_equal(app_runtime(sp)->link.state, ARDOP_LINK_DISC);
+
+	app_close(sp);
+}
+
 /* --- configuration --------------------------------------------------------- */
 
 /*
@@ -829,6 +944,68 @@ static void test_host_messages_are_deep_copied(void **state)
 	app_loopback_close(lb);
 }
 
+/*
+ * The narrow scope of test_guest_disconnect_aborts_unanswered_call: a guest
+ * that drops off mid-*session*, with someone already on the other end, must
+ * not have that read as a call to abort. That would turn an ordinary
+ * reconnect blip into a dropped QSO the remote station did nothing to
+ * deserve.
+ */
+static void test_guest_disconnect_does_not_abort_established_session(
+	void **state)
+{
+	(void)state;
+
+	app_loopback *lb = app_loopback_open(NULL);
+	assert_non_null(lb);
+	app_spine *a = app_loopback_side(lb, 0);
+	app_spine *b = app_loopback_side(lb, 1);
+
+	struct fake_tnc fake;
+	memset(&fake, 0, sizeof fake);
+	app_tnc_ops ops = {
+		.ctx = &fake,
+		.service = fake_service,
+		.attached = fake_attached,
+		.notify = fake_notify,
+		.send_data = fake_send_data,
+	};
+	app_set_tnc(a, &ops);
+
+	/* No guest attached yet -- ARQCALL is an operator command and would be
+	 * refused otherwise (test_tnc_takeover), so the call has to be placed
+	 * and answered before the guest shows up at all. */
+	assert_true(app_submit_config(a, APP_CFG_MYCALL,
+				      (app_cfg_value){.str = "N0AAA"}));
+	assert_true(app_submit_config(b, APP_CFG_MYCALL,
+				      (app_cfg_value){.str = "N0BBB"}));
+	assert_true(app_submit_config(b, APP_CFG_LISTEN,
+				      (app_cfg_value){.flag = true}));
+	app_loopback_step(lb);
+
+	struct trace ta;
+	memset(&ta, 0, sizeof ta);
+	assert_true(app_submit_line(a, "ARQCALL N0BBB 2000"));
+	int steps = 0;
+	while (steps++ < MAX_STEPS && !saw(&ta, "CONNECTED")) {
+		app_loopback_step(lb);
+		collect(a, &ta);
+	}
+	assert_true(saw(&ta, "CONNECTED"));
+	assert_true(app_runtime(a)->link.state != ARDOP_LINK_ISS_CON_REQ);
+
+	/* The guest attaches to the session already in progress, then drops
+	 * off -- the edge this rule must not mistake for a doomed ConReq. */
+	fake.attached = true;
+	app_step(a);
+	fake.attached = false;
+	app_step(a);
+
+	assert_true(app_runtime(a)->link.state != ARDOP_LINK_DISC);
+
+	app_loopback_close(lb);
+}
+
 /* --- device lifetime ------------------------------------------------------- */
 
 /*
@@ -878,10 +1055,14 @@ int main(void)
 		cmocka_unit_test(test_fault_is_recoverable),
 		cmocka_unit_test(test_closing_is_not_clearable),
 		cmocka_unit_test(test_tnc_takeover),
+		cmocka_unit_test(test_abort_reaches_the_link_even_when_owned),
+		cmocka_unit_test(test_guest_disconnect_aborts_unanswered_call),
 		cmocka_unit_test(test_config_shares_the_host_validator),
 		cmocka_unit_test(test_display_drops_are_counted),
 		cmocka_unit_test(test_loopback_session),
 		cmocka_unit_test(test_host_messages_are_deep_copied),
+		cmocka_unit_test(
+			test_guest_disconnect_does_not_abort_established_session),
 		cmocka_unit_test(test_device_change_refused_while_transmitting),
 	};
 	return cmocka_run_group_tests(tests, NULL, NULL);

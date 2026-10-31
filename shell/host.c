@@ -531,6 +531,36 @@ void ardop_host_command(ardop_runtime *rt, const char *line, uint64_t now,
 	}
 
 	/*
+	 * IDLETIMEOUT: seconds with nothing productive -- no data delivered,
+	 * none queued to send -- before giving up anyway (link.h's
+	 * ardop_link::idle_timeout). Not an ARDOP host command; not in any
+	 * reference implementation's command list. ARQTIMEOUT deliberately
+	 * does not cover this case (its own doc comment, and rule 1.7's), so
+	 * a spec-faithful link has no opinion about a peer that stays
+	 * connected, alive, and silent forever -- correct per spec, and, on a
+	 * live field session, meant a human had to notice an active-but-
+	 * empty link and disconnect it by hand. This is that judgment call,
+	 * opted into locally: 0 disables it and restores the standard
+	 * behavior.
+	 */
+	if (strcmp(kw, "IDLETIMEOUT") == 0) {
+		if (params == NULL) {
+			replyf(reply, cap, "IDLETIMEOUT %d", l->idle_timeout);
+			return;
+		}
+		char *end = NULL;
+		long v = strtol(params, &end, 10);
+		if (end == params || *end != '\0' || v < 0 || v > 600) {
+			replyf(reply, cap, "FAULT Syntax Err: IDLETIMEOUT %s",
+			       params);
+			return;
+		}
+		l->idle_timeout = (int)v;
+		replyf(reply, cap, "IDLETIMEOUT now %ld", v);
+		return;
+	}
+
+	/*
 	 * CWID: a Morse identifier appended after an IDFRAME, in one of two
 	 * styles (TRUE: FSK mark/space tones; ONOFF: traditional on-off keying)
 	 * or disabled (FALSE). Three states, not a boolean, matching the

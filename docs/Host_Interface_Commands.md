@@ -128,6 +128,35 @@ Valid arguments is an integer between 30 and 240
 - `ARQTIMEOUT` returns `ARQTIMEOUT 120`
 - `ARQTIMEOUT 30` returns `ARQTIMEOUT now 30`
 
+Note this is a silence timer: it resets on every decoded frame, including a
+bare `IDLE`/ACK exchange with no real content -- so a connection that stays
+alive, answering, but never actually has anything to send never trips it.
+That is correct behavior per the spec: an unproductive-but-alive link is not
+a dead one. See `IDLETIMEOUT` below for the (non-standard) alternative.
+
+
+#### IDLETIMEOUT
+
+**This command is not part of the ARDOP host interface** -- it exists only
+in this rebuild (`ardopb`), not in `ardopcf` or any other implementation.
+It closes the gap `ARQTIMEOUT` deliberately leaves open, above: seconds with
+nothing productive happening -- no data delivered, none queued to send --
+before disconnecting anyway, even though the link is demonstrably alive and
+answering. Unlike a silence timeout, this one is a local policy choice, not
+a claim about the channel, so it sends a real `DISC` (the same as a host
+`DISCONNECT`) rather than just giving up locally.
+
+Added after a live field session idled on bare `IDLE`/ACK long enough that a
+human had to notice and disconnect it by hand.
+
+Valid arguments are an integer between 0 and 600. 0 disables it, restoring
+the standard ARDOP behavior (never disconnect an active link on its own).
+
+- Mode: ARQ
+- Arguments: An integer of seconds, or 0 to disable
+- `IDLETIMEOUT` returns `IDLETIMEOUT 90` (the default)
+- `IDLETIMEOUT 0` returns `IDLETIMEOUT now 0`
+
 
 #### AUTOBREAK
 
