@@ -23,8 +23,8 @@ Both need only `python3`. No libraries, no audio hardware, ~6 seconds.
 
 | | |
 |---|---|
-| `manifest.json` | The corpus. 130 cases: expected TX hash, and expected decode result for each. |
-| `audio/*.wav.gz` | 17 frozen recordings, gzipped. Real audio for a subset of cases, including degraded copies. |
+| `manifest.json` | The corpus. 130 synthetic cases (expected TX hash, expected decode result) plus a small, growing set of `field/*` cases (real off-air audio, decode result only — see below). |
+| `audio/*.wav.gz` | Frozen recordings, gzipped: real audio for a subset of the synthetic cases (including degraded copies) plus every `field/*` case. |
 | `ardop_golden.py` | Shared machinery: the case matrix, the ardopcf drivers, the output parser. |
 | `gen_golden.py` | Writes the corpus. |
 | `test_golden.py` | Checks the inherited `ardopcf` build against the corpus. Never writes to it. |
@@ -103,6 +103,54 @@ recovers, matched byte-for-byte, is within tolerance. One recorded case
 `data` failure, the SDFT decoder recovers it, and the core recovers the same
 bytes.
 
+### Field cases: real off-air audio (`kind: "field"`)
+
+Everything above comes from ardopcf's own modulator against synthetic noise —
+useful, but self-consistency, not interoperability (see "What this corpus
+does not cover" below). `test/golden/add_field_case.py` adds the other kind
+of case: a slice of a real `ardopb --record`/`--log` capture, checked the
+same way by `golden-core`/`golden-shell` but distinguished by
+`"kind": "field"` rather than `"control"`/`"data"`.
+
+A field case has no `tx_sha256` and no `decode_sdft` — there is no reference
+modulator input to re-encode and hash (`test_golden_tx.py`'s `kind == "data"`
+filter skips these for exactly that reason), and no SDFT decoder in this
+rebuild to compare against. Ground truth is not "the bytes the frame was
+built from" (unknowable for someone else's transmission); it is what the
+core demodulator recovers from the slice, which the tool requires to be
+*exactly one frame* before it will freeze it — a check on the slice
+boundaries, not a proof the recovered bytes are correct. Confirm the payload
+against the session's own `capture.pcap` (`ardop-pcap-dump`) by hand before
+trusting a new case; the tool's docstring says so, this is the reminder that
+it matters.
+
+```sh
+./add_field_case.py --wav capture/session-*.wav --start N --end N \
+                     --id field/SLUG --source "one-line provenance"
+```
+
+Finding `--start`/`--end`: `CORE_DECODE_DEBUG=1 core_decode_wav FILE.wav`
+prints a `[LEADER]`/`[DECODED]` line per event next to the sample offset of
+the 1200-sample block it occurred in; bracket one frame's leader-to-decode
+span with a few thousand samples of margin on each side.
+
+The field cases so far, all from real ARQ exchanges
+([20](../../analysis/20-field-results.md)) with a DigiRig Mobile + Icom
+IC-746PRO — genuine weak-signal, real-radio, cross-implementation audio,
+which is exactly the gap the "no real channels" / "self-consistency, not
+interoperability" notes below describe:
+
+- `field/va7dep-rms-trimode-banner`, `field/va7dep-b2f-proposal` — the two
+  B2F data frames from a complete VA7DEP exchange at ~-10 dB S/N,
+  `4PSK.500.100`.
+- `field/w7owo-4psk-200-100-banner` — a W7OWO exchange at ~+2 dB S/N, the
+  first field coverage of the 200 Hz bandwidth.
+- `field/w7owo-8psk-500-100-o`, `field/w7owo-8psk-500-100-e` — same W7OWO
+  session, both parities of `8PSK.500.100` (the densest constellation with
+  field coverage so far) at near-max 216-byte payloads, +3 dB and -2 dB S/N
+  respectively -- the latter the weakest signal in that session's successful
+  decodes.
+
 ### The assembled-shell cutover checks (`make golden-shell`, `make golden-tx`)
 
 These prove the rebuilt **program** — not just isolated core functions —
@@ -154,12 +202,17 @@ State these plainly, because the corpus is easy to over-trust.
   [`analysis/03-timing-model.md`](../../analysis/03-timing-model.md) can appear
   here. This is a feature — it is what makes the corpus deterministic — but it
   means the corpus cannot defend Stage 2.
-- **No real channels.** Additive white Gaussian noise only. No multipath, no
-  fading, no frequency offset, no interference.
-- **Self-consistency, not interoperability.** These vectors were produced by
-  ardopcf, so they prove a rebuild matches *ardopcf*, not that ardopcf matches
-  ARDOP_Win. Recordings from another implementation would be strictly better
-  evidence and would be a valuable addition.
+- **No real channels, mostly.** The 130 synthetic cases use additive white
+  Gaussian noise only — no multipath, no fading, no frequency offset, no
+  interference. The `field/*` cases (above) are a real channel, but five
+  frames' worth across two sessions; this is a start, not a substitute for
+  the synthetic corpus's controlled, reproducible degradation.
+- **Self-consistency, not interoperability, mostly.** The 130 synthetic
+  vectors were produced by ardopcf, so they prove a rebuild matches
+  *ardopcf*, not that ardopcf matches ARDOP_Win. The `field/*` cases are real
+  interoperability evidence (real exchanges with two different far-end
+  stations, VA7DEP and W7OWO, implementation unknown) but, again, a handful
+  of frames, not systematic coverage.
 
 ---
 
@@ -216,7 +269,9 @@ vector is roughly 7× the size of the clean one it came from (100 KiB vs 14 KiB
 for `4PSK.200.100.E`), which is why degraded copies exist for only four frame
 types at two SNRs.
 
-Current cost: ~1.0 MiB of audio plus a 225 KiB manifest.
+Current cost: ~1.6 MiB of audio (including five `field/*` cases, which do not
+compress as well as the synthetic tones — real off-air noise is closer to
+incompressible) plus a 232 KiB manifest.
 
 ---
 
