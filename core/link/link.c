@@ -137,6 +137,7 @@ static void reset_to_disc(ardop_link *l)
 	l->repeat_deadline = 0;
 	l->pending_deadline = 0;
 	l->stall_deadline = 0;
+	l->idle_deadline = 0;
 }
 
 /* (Re)arm the silence deadline: rule 1.7. Called once a connection completes
@@ -145,6 +146,19 @@ static void reset_to_disc(ardop_link *l)
 static void arm_stall(ardop_link *l, uint64_t now)
 {
 	l->stall_deadline = now + ARDOP_MS_TO_SAMPLES((uint64_t)l->arq_timeout * 1000u);
+}
+
+/* (Re)arm the idle deadline: not part of the spec (see idle_timeout's doc
+ * comment, link.h). Called once a connection completes and again on genuine
+ * activity -- data delivered, or the host queuing data to send -- so, unlike
+ * arm_stall, a bare IDLE/ACK exchange does *not* keep pushing this one out.
+ * A no-op when idle_timeout is 0 (disabled), so a link that never calls this
+ * a second time just never trips it. */
+static void arm_idle(ardop_link *l, uint64_t now)
+{
+	if (l->idle_timeout <= 0)
+		return;
+	l->idle_deadline = now + ARDOP_MS_TO_SAMPLES((uint64_t)l->idle_timeout * 1000u);
 }
 
 /* The session width a ConAck frame type establishes. */
@@ -571,6 +585,9 @@ static void iss_send_next(ardop_link *l, uint64_t now, ardop_action *actions,
 
 /* --- timer service (ARDOP_IN_NONE) --------------------------------------- */
 
+static size_t step_host_disconnect(ardop_link *l, uint64_t now,
+				   ardop_action *actions, size_t max);
+
 /*
  * Service the deadlines: give up on a pending connection that never completed,
  * and resend the outstanding frame if no response arrived within the repeat
@@ -601,6 +618,17 @@ static size_t step_timer(ardop_link *l, uint64_t now, ardop_action *actions,
 		notify_host(l, actions, &n, max, "DISCONNECTED");
 		reset_to_disc(l);
 		return n;
+	}
+
+	/* idle_timeout (not part of the spec -- see its doc comment, link.h):
+	 * the link is demonstrably alive, unlike the silence case above, so a
+	 * DISC is worth sending rather than just vanishing locally -- the peer
+	 * gets a real reason instead of a connection that quietly stops
+	 * answering. step_host_disconnect() is exactly the host DISCONNECT
+	 * command's own behavior; this is that command, self-issued. */
+	if (l->idle_deadline && now >= l->idle_deadline) {
+		l->idle_deadline = 0;
+		return step_host_disconnect(l, now, actions, max);
 	}
 
 	/* The closing ID after END: once the hold expires, send our ID frame.
@@ -686,6 +714,7 @@ static size_t step_iss_conack_rx(ardop_link *l, const ardop_event *ev,
 		l->pending = false;
 		iss_begin_sending(l);
 		arm_stall(l, now);
+		arm_idle(l, now);
 
 		char msg[64];
 		snprintf(msg, sizeof(msg), "CONNECTED %s %d", l->remote.str,
@@ -772,12 +801,16 @@ static size_t step_iss_data_rx(ardop_link *l, const ardop_event *ev,
 		return n;
 	}
 
-	/* DataACK: confirm and advance. */
+	/* DataACK: confirm and advance. Reaching this function at all means a
+	 * real data frame was outstanding -- sending IDLE moves the state to
+	 * ARDOP_LINK_IDLE, handled elsewhere, so every DataACK here confirms
+	 * actual content, never a bare keepalive. */
 	if (ev->frame_type >= ARDOP_FRAME_DATA_ACK_MIN) {
 		l->ack_ctr++;
 		l->last_data_acked = l->last_data_sent;
 		tx_dequeue(l, l->outstanding_len);
 		l->outstanding_len = 0;
+		arm_idle(l, now);
 		notify_buffer(l, actions, &n, max);
 		l->avg_quality = ardop_quality_avg(
 			l->avg_quality, ardop_quality_from_type(ev->frame_type));
@@ -867,6 +900,7 @@ static size_t step_irs_conack_rx(ardop_link *l, const ardop_event *ev,
 		l->pending = false;
 		l->pending_deadline = 0;
 		arm_stall(l, now);
+		arm_idle(l, now);
 		l->avg_quality = 0;
 		l->state = ARDOP_LINK_IRS_DATA;
 
@@ -961,6 +995,10 @@ static size_t step_irs_data_rx(ardop_link *l, const ardop_event *ev,
 	/* A good data frame. */
 	if (ev->kind == ARDOP_EV_FRAME_DECODED
 	    && ardop_frame_is_data(ev->frame_type)) {
+		/* A real data frame decoded, whether or not it turns out to be
+		 * a retransmission we have already delivered: the peer is
+		 * actively trying to get content through, not just idling. */
+		arm_idle(l, now);
 		/* Requested a break: send it on a new (still-unacked) frame,
 		 * before ACKing, so the ISS keeps that frame for after the
 		 * turnover (rule 3.4). */
@@ -1097,7 +1135,8 @@ static size_t step_host_connect(ardop_link *l, const ardop_host_cmd *cmd,
  * this only enqueues. Bytes past the queue capacity are dropped.
  */
 static size_t step_host_send_data(ardop_link *l, const ardop_host_cmd *cmd,
-				  ardop_action *actions, size_t max)
+				  uint64_t now, ardop_action *actions,
+				  size_t max)
 {
 	size_t n = 0;
 
@@ -1106,6 +1145,10 @@ static size_t step_host_send_data(ardop_link *l, const ardop_host_cmd *cmd,
 		size_t take = cmd->data_len < room ? cmd->data_len : room;
 		memcpy(l->tx_data + l->tx_len, cmd->data, take);
 		l->tx_len += take;
+		/* The host has something to say: give it time to actually get
+		 * said (queued, then sent, then acknowledged) before idle_timeout
+		 * decides nothing is happening. */
+		arm_idle(l, now);
 	}
 
 	notify_buffer(l, actions, &n, max);
@@ -1212,7 +1255,7 @@ static size_t step_host(ardop_link *l, const ardop_host_cmd *cmd,
 	case ARDOP_CMD_CONNECT:
 		return step_host_connect(l, cmd, now, actions, max);
 	case ARDOP_CMD_SEND_DATA:
-		return step_host_send_data(l, cmd, actions, max);
+		return step_host_send_data(l, cmd, now, actions, max);
 	case ARDOP_CMD_DISCONNECT:
 		return step_host_disconnect(l, now, actions, max);
 	case ARDOP_CMD_ABORT:
@@ -1244,6 +1287,12 @@ void ardop_link_init(ardop_link *l)
 	l->leader_ms = 240;        /* inherited LeaderLength default. */
 	l->reply_leader_ms = 240;  /* inherited intARQDefaultDlyMs default. */
 	l->arq_timeout = 120;      /* inherited ARDOPC.c ARQTimeout default. */
+	l->idle_timeout = 90;      /* not inherited -- see idle_timeout's doc
+				    * comment (link.h). Enabled by default: a
+				    * live field session sat idling, with a
+				    * human required to notice and disconnect
+				    * by hand, before this existed. Zero
+				    * disables it entirely (host IDLETIMEOUT). */
 	l->last_data_to_host = -1;
 	l->last_acked_type = -1;
 	l->fec_frame_type = 0x40;  /* 4PSK.200.100.E, the FECMODE default. */

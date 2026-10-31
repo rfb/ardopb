@@ -1127,6 +1127,94 @@ static void test_timer_pending_timeout(void **state)
 	assert_int_equal(l.state, ARDOP_LINK_DISC);
 }
 
+/*
+ * idle_timeout (not part of the spec -- see its doc comment, link.h): a
+ * connection that stays alive on bare IDLE/ACK, with nothing productive ever
+ * happening, gives up on its own after idle_timeout seconds -- unlike
+ * arq_timeout/stall_deadline, which a genuinely active exchange (even an
+ * unproductive one) correctly never trips. Motivated by a live field session
+ * that idled long enough to need a human to notice and disconnect by hand.
+ */
+static void test_idle_timeout_disconnects_when_unproductive(void **state)
+{
+	(void)state;
+
+	ardop_link l;
+	iss_to_con_ack(&l);
+	l.idle_timeout = 5;   /* small, for a readable deadline below. */
+
+	ardop_action acts[8];
+	ardop_link_input ack = dataack(90);
+	/* CONNECTED at now 400: arm_idle uses idle_timeout=5 -> deadline 60400. */
+	(void)ardop_link_step(&l, &ack, 400, acts, 8);
+	assert_int_equal(l.idle_deadline, 400 + 60000);
+
+	ardop_link_input none = {0};
+	none.kind = ARDOP_IN_NONE;
+	size_t n = ardop_link_step(&l, &none, 400 + 60000, acts, 8);
+
+	const ardop_action *notify = find_action(acts, n, ARDOP_ACT_NOTIFY_HOST);
+	assert_non_null(notify);
+	assert_string_equal((const char *)notify->data,
+			    "STATUS INITIATING ARQ DISCONNECT");
+	const ardop_action *send = find_action(acts, n, ARDOP_ACT_SEND_FRAME);
+	assert_non_null(send);
+	assert_int_equal(send->frame_type, ARDOP_FT_DISC);
+	assert_int_equal(l.idle_deadline, 0);
+}
+
+/*
+ * Real data -- either direction -- pushes idle_deadline back out, exactly
+ * like arm_stall does for every decoded frame, but selectively: only actual
+ * content counts, not the keepalive exchange idle_timeout exists to detect.
+ * This is the ISS side (sending real data and getting it ACKed);
+ * step_irs_data_rx's mirror (receiving real data) is exercised implicitly by
+ * every field/* golden case and by test_irs_data_deliver_and_dedup.
+ */
+static void test_idle_timeout_resets_on_real_data(void **state)
+{
+	(void)state;
+
+	ardop_link l;
+	iss_sending(&l, 80);   /* first frame (32 B) sent; tx_len 80. */
+	l.idle_timeout = 5;
+
+	ardop_action acts[8];
+	ardop_link_input in = dataack(90);
+	/* Confirms the real, outstanding frame -- not a bare IDLE ACK, per
+	 * step_iss_data_rx's own comment: reaching it at all means real data
+	 * was in flight. */
+	(void)ardop_link_step(&l, &in, 500, acts, 8);
+	assert_int_equal(l.tx_len, 48);
+	assert_int_equal(l.idle_deadline, 500 + 60000);
+}
+
+/* idle_timeout 0 disables the mechanism entirely: arm_idle never sets the
+ * deadline, so step_timer's check (l.idle_deadline itself being nonzero)
+ * never has anything to trip, no matter how long the link idles. */
+static void test_idle_timeout_disabled_by_zero(void **state)
+{
+	(void)state;
+
+	ardop_link l;
+	iss_to_con_ack(&l);
+	l.idle_timeout = 0;
+
+	ardop_action acts[8];
+	ardop_link_input ack = dataack(90);
+	(void)ardop_link_step(&l, &ack, 400, acts, 8);
+	assert_int_equal(l.idle_deadline, 0);
+
+	/* Comfortably under stall_deadline's own (unrelated, still-armed at
+	 * its default 120 s) threshold, so this proves idle_timeout=0
+	 * specifically, not incidentally riding on a different timer. */
+	ardop_link_input none = {0};
+	none.kind = ARDOP_IN_NONE;
+	size_t n = ardop_link_step(&l, &none, 400 + 500000, acts, 8);
+	assert_null(find_action(acts, n, ARDOP_ACT_NOTIFY_HOST));
+	assert_int_equal(l.state, ARDOP_LINK_IDLE);
+}
+
 /* Drive a connected ISS to IDLE (queue empty). */
 static void iss_idle(ardop_link *l)
 {
@@ -1417,6 +1505,9 @@ int main(void)
 		cmocka_unit_test(test_timer_repeat_resends),
 		cmocka_unit_test(test_timer_repeat_follows_latest),
 		cmocka_unit_test(test_timer_pending_timeout),
+		cmocka_unit_test(test_idle_timeout_disconnects_when_unproductive),
+		cmocka_unit_test(test_idle_timeout_resets_on_real_data),
+		cmocka_unit_test(test_idle_timeout_disabled_by_zero),
 		cmocka_unit_test(test_idle_resumes_on_data),
 		cmocka_unit_test(test_idle_disc),
 		cmocka_unit_test(test_host_disconnect),

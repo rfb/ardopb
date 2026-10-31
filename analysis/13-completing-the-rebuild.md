@@ -97,6 +97,14 @@ a noise-injecting harness, or against the golden `snrNNdb` corpus.
   turned out *not* to be what this fixes: VA7DEP idled for 88 s continuously
   exchanging IDLE/ACK, which a faithful port correctly leaves alone -- the
   session was blocked at the application layer (Pat), not a dead link.
+  That correct-per-spec gap kept recurring live (VA7DEP again, then VA7TSA)
+  until it needed a human watching the session to notice and disconnect by
+  hand every time -- correct is not the same as useful for a field tool one
+  person is running solo. `ardop_link::idle_timeout` (default 90 s, host
+  `IDLETIMEOUT`, **not** part of the spec -- see its own doc comment) closes
+  that gap locally: armed on connect and rearmed only by genuine activity
+  (data delivered or queued), not by the keepalive exchange itself, so it
+  disconnects exactly the case rule 1.7 was correctly leaving alone.
 - The repeated-`ConReq` re-ack in `IRS_CON_ACK` (ISS missed our `ConAck`).
 - The busy-block guard (`ConRejBusy` when the channel was busy just before the
   leader) — needs `BUSY_CHANGED` events threaded from the demod's busy detector
