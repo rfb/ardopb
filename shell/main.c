@@ -539,7 +539,21 @@ int main(int argc, char **argv)
 	ardop_telemetry_tcp_close(app.tlm);
 	ardop_capture_close(app.capture);
 	ardop_wav_writer_close(app.rec);
-	if (mb)
+	/*
+	 * A faulted device is not safe to close gracefully: ardop_backend_ma_
+	 * close() joins the device's worker thread with no timeout of its
+	 * own, and a device that stopped responding (the fault this branch
+	 * exists for) can leave that join blocked forever -- confirmed live,
+	 * against a real re-enumerated USB card (backend_ma.c's own comment
+	 * on ardop_backend_ma_close has the full account, including why the
+	 * fix does not belong in that function: it is also called by the
+	 * device manager to rebuild a backend without exiting the process,
+	 * where skipping the close corrupts the *next* open instead). ardopb
+	 * has no such caller past this point -- it is exiting regardless --
+	 * so skipping the close and letting process exit reclaim the device
+	 * handles is safe here specifically.
+	 */
+	if (mb && ardop_backend_ma_fault(mb) == ARDOP_FAULT_NONE)
 		ardop_backend_ma_close(mb);
 	/* After the backends: unkeying must outlive the device that keyed. */
 	ardop_ptt_close(ptt);

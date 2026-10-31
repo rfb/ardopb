@@ -340,6 +340,20 @@ static void serial_set(ardop_ptt *p, bool key)
 		bits &= ~line;
 	if (ioctl(p->serial_fd, TIOCMSET, &bits) != 0)
 		p->fault = ARDOP_FAULT_PTT_LOST;
+	/*
+	 * Both ioctls above can report success on a stale descriptor -- a USB-
+	 * serial adapter that drops off the bus and re-enumerates on the same
+	 * port can come back at the same device path, live, twice in one field
+	 * session, leaving this fd pointing at a dead kernel object while PTT
+	 * stayed asserted on hardware the process could no longer reach. A
+	 * TIOCMGET readback that confirms the bit actually changed was tried
+	 * here and reverted: it false-faulted against a pty in testing (ptys do
+	 * not implement modem-control-line loopback the way a real USB-UART
+	 * bridge does), which means it cannot be verified without the real
+	 * hardware this bit downs -- and the failure mode if it is wrong is
+	 * every future PTT call, not just a rare re-enumeration. Left as a
+	 * known gap rather than shipped unverified.
+	 */
 #endif
 }
 
@@ -360,12 +374,27 @@ static void rig_set(ardop_ptt *p, bool key)
 	char cmd[8];
 	int n = snprintf(cmd, sizeof(cmd), "T %d\n", key ? 1 : 0);
 	size_t off = 0;
+	/* Bounded the same way the reply-wait below it is. A retry-on-AGAIN
+	 * loop with no deadline assumes the peer will eventually drain the
+	 * socket; a rigctld that is hung but has not closed the connection
+	 * (the CAT-link twin of the playback backend's "device gone but the
+	 * ring never drains") never does, and this spun forever with no
+	 * escape until it was given one. */
+	uint64_t write_deadline = ardop_mono_ms() + 200;
 	while (off < (size_t)n) {
 		size_t moved = 0;
 		ardop_net_status st = ardop_net_send(p->rig, cmd + off,
 						     (size_t)n - off, &moved);
-		if (st == ARDOP_NET_AGAIN)
+		if (st == ARDOP_NET_AGAIN) {
+			if (ardop_mono_ms() > write_deadline) {
+				fprintf(stderr, "ptt: rigctld did not accept "
+					"the command within 200 ms\n");
+				p->fault = ARDOP_FAULT_PTT_LOST;
+				return;
+			}
+			ardop_sleep_ms(2);
 			continue;
+		}
 		if (st != ARDOP_NET_OK) {
 			fprintf(stderr, "ptt: rigctld write failed: %s\n",
 				ardop_net_last_error());
